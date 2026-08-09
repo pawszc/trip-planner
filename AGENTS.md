@@ -1,0 +1,17 @@
+# Zasady pracy w repozytorium
+
+- Najpierw przeczytaj dokumentację projektu w `docs/`.
+- Nie pracuj bezpośrednio na branchu `main`.
+- Twarde ograniczenia zawsze waliduje kod.
+- LLM nie wykonuje arytmetyki finansowej.
+- Brak danych nie może zostać ukryty ani uzupełniony przez model.
+- Nie dodawaj sekretów ani plików `.env` do repozytorium.
+- Każda zmiana domeny wymaga testów.
+- Każdy naprawiony błąd wymaga testu regresyjnego.
+- Przed zakończeniem pracy uruchom `npm run verify`.
+- Przed pull requestem uruchom `npm run verify:full`.
+- Nie pomijaj ani nie wyłączaj testów tylko po to, aby uzyskać zielony wynik.
+- Nie commituj `node_modules`, `gen`, `dist`, `coverage`, `test-results` ani `playwright-report`.
+- Nie dodawaj zależności bez udokumentowanego uzasadnienia.
+- Stosuj małe, czytelne moduły i ścisłe typowanie TypeScript.
+- Raportuj wszystkie znane ograniczenia.

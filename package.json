@@ -1,0 +1,61 @@
+{
+  "name": "trip-planner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.19.0",
+  "description": "Deterministic-first AI trip planning foundation",
+  "workspaces": [
+    "app/trip-planner-ui"
+  ],
+  "engines": {
+    "node": ">=24 <27"
+  },
+  "scripts": {
+    "start": "cds-serve",
+    "dev": "concurrently -k -s first -n backend,frontend -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "cds-tsx serve --in-memory",
+    "dev:frontend": "npm run dev --workspace @trip-planner/ui",
+    "dev:backend:e2e": "cds-tsx serve --in-memory --port 4004",
+    "dev:frontend:e2e": "npm run dev --workspace @trip-planner/ui -- --host 127.0.0.1 --port 4173",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cds build --production",
+    "build:frontend": "npm run build --workspace @trip-planner/ui",
+    "lint": "eslint . && prettier --check .",
+    "typecheck": "tsc --noEmit -p tsconfig.json && npm run typecheck --workspace @trip-planner/ui",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "playwright test",
+    "verify": "npm run lint && npm run typecheck && npm run test:unit && npm run test:integration && npm run build",
+    "verify:full": "npm run verify && npm run test:e2e"
+  },
+  "dependencies": {
+    "@cap-js/sqlite": "3.0.2",
+    "@sap/cds": "10.0.5"
+  },
+  "devDependencies": {
+    "@cap-js/cds-test": "1.0.2",
+    "@cap-js/cds-typer": "0.40.2",
+    "@cap-js/cds-types": "0.18.0",
+    "@playwright/test": "1.62.1",
+    "@sap/cds-dk": "10.0.6",
+    "@types/node": "26.2.0",
+    "concurrently": "10.0.4",
+    "eslint": "10.8.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.3",
+    "prettier": "3.9.6",
+    "tsx": "4.23.11",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.66.0",
+    "vitest": "4.1.10"
+  },
+  "cds": {
+    "requires": {
+      "db": {
+        "kind": "sqlite"
+      }
+    }
+  }
+}

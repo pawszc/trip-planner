@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node", "vitest/globals", "@cap-js/cds-types"]
+  },
+  "include": ["srv/**/*.ts", "test/unit/**/*.ts", "test/fixtures/**/*.ts", "*.config.ts"],
+  "exclude": ["app", "node_modules", "gen", "dist"]
+}
