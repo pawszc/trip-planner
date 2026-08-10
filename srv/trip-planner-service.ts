@@ -10,6 +10,7 @@ import {
   type TripRequestValidationInput,
 } from './validation/trip-request-validation.ts';
 
+/** Minimalny kształt rekordu potrzebny hookom CAP do egzekwowania reguł domenowych. */
 interface PersistedTripRequest extends TripRequestValidationInput {
   ID: string;
   status: TripRequestStatus;
@@ -17,6 +18,10 @@ interface PersistedTripRequest extends TripRequestValidationInput {
 
 type MutableTripRequest = Partial<PersistedTripRequest>;
 
+/**
+ * Normalizuje dane z CAP do wejścia walidatora. Jest to potrzebne między innymi dlatego,
+ * że Decimal może przyjść z warstwy transportowej jako tekst, a PATCH zawiera tylko część pól.
+ */
 function normalizeTripRequest(data: MutableTripRequest): TripRequestValidationInput {
   return {
     originCity: String(data.originCity ?? ''),
@@ -29,6 +34,7 @@ function normalizeTripRequest(data: MutableTripRequest): TripRequestValidationIn
   };
 }
 
+/** Tłumaczy błąd domenowy na kontrolowaną odpowiedź HTTP 400 bez gubienia jego kodu. */
 function rejectDomainError(request: Request, error: unknown): never {
   if (error instanceof DomainError) {
     return request.reject({ status: 400, code: error.code, message: error.message });
@@ -39,12 +45,14 @@ function rejectDomainError(request: Request, error: unknown): never {
 
 export default class TripPlannerService extends cds.ApplicationService {
   override async init(): Promise<void> {
+    // Encja i konstruktory zapytań pochodzą z modelu załadowanego przez CAP.
     const { TripRequests } = this.entities;
     const { SELECT, UPDATE } = cds.ql;
     if (!TripRequests) {
       throw new Error('Brak encji TripRequests w modelu usługi.');
     }
 
+    // Każdy nowy rekord zaczyna jako DRAFT; klient nie może nadać innego statusu.
     this.before('CREATE', TripRequests, (request: Request) => {
       const data = request.data as MutableTripRequest;
       data.status = 'DRAFT';
@@ -55,6 +63,7 @@ export default class TripPlannerService extends cds.ApplicationService {
       }
     });
 
+    // PATCH łączymy z aktualnym rekordem, aby zawsze walidować pełny brief.
     this.before('UPDATE', TripRequests, async (request: Request) => {
       const ID = String(request.data.ID ?? request.params[0]?.ID ?? '');
       const current = await SELECT.one.from(TripRequests).where({ ID });
@@ -75,6 +84,7 @@ export default class TripPlannerService extends cds.ApplicationService {
       }
     });
 
+    // Usunięcie jest dozwolone wyłącznie dla roboczego, jeszcze niepotwierdzonego briefu.
     this.before('DELETE', TripRequests, async (request: Request) => {
       const ID = String(request.data.ID ?? request.params[0]?.ID ?? '');
       const current = await SELECT.one.from(TripRequests).where({ ID });
@@ -86,6 +96,7 @@ export default class TripPlannerService extends cds.ApplicationService {
       }
     });
 
+    // Akcja ponownie sprawdza dane, wykonuje przejście stanu i zwraca świeży rekord z bazy.
     this.on('confirmConstraints', async (request: Request) => {
       const ID = String(request.params[0]?.ID ?? '');
       const current = (await SELECT.one.from(TripRequests).where({ ID })) as
@@ -107,6 +118,7 @@ export default class TripPlannerService extends cds.ApplicationService {
       }
     });
 
+    // Na końcu CAP rejestruje standardowe handlery CRUD dla projekcji OData.
     await super.init();
   }
 }

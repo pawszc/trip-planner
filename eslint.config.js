@@ -5,6 +5,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
+    // Artefakty instalacji, kompilacji i testów nie są kodem źródłowym do analizy.
     ignores: [
       '**/node_modules/**',
       '**/gen/**',
@@ -33,11 +34,13 @@ export default tseslint.config(
       },
     },
     rules: {
+      // Importy typów są jawne, a `any` nie może omijać ścisłego modelu TypeScript.
       '@typescript-eslint/consistent-type-imports': 'error',
       '@typescript-eslint/no-explicit-any': 'error',
     },
   },
   {
+    // Reguły React dotyczą wyłącznie aplikacji przeglądarkowej, nie backendu CAP.
     files: ['app/trip-planner-ui/**/*.{ts,tsx}'],
     plugins: {
       'react-hooks': reactHooks,

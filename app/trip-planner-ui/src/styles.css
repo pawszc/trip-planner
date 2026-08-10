@@ -1,3 +1,4 @@
+/* Globalne kolory i typografia tworzą lekkie tło bez osobnego systemu projektowego. */
 :root {
   font-family: '72', 'Segoe UI', system-ui, sans-serif;
   color: #173044;
@@ -25,6 +26,7 @@ select {
   font: inherit;
 }
 
+/* Główna kolumna oraz nagłówek strony. */
 .page-shell {
   width: min(960px, calc(100% - 2rem));
   margin: 0 auto;
@@ -51,6 +53,7 @@ select {
   line-height: 1.6;
 }
 
+/* Karta zawiera naprzemiennie formularz albo podsumowanie zapisanego briefu. */
 .content-card {
   padding: clamp(1.25rem, 4vw, 2.5rem);
   border: 1px solid rgba(45, 89, 108, 0.12);
@@ -112,6 +115,7 @@ select {
   margin-top: 1rem;
 }
 
+/* Status i siatka podsumowania eksponują dane zwrócone przez backend. */
 .summary {
   margin-top: 1.75rem;
 }
@@ -165,6 +169,7 @@ select {
   font-weight: 600;
 }
 
+/* Na telefonie formularz i podsumowanie przechodzą do jednej kolumny. */
 @media (max-width: 640px) {
   .page-shell {
     width: min(100% - 1rem, 960px);

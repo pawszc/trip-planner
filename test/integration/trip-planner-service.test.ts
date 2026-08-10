@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { validTripRequest } from '../fixtures/trip-request.js';
 
+// CAP uruchamia rzeczywisty serwis OData na bazie SQLite przechowywanej w pamięci.
 process.env.CDS_TYPESCRIPT = 'true';
 const { default: cds } = await import('@sap/cds');
 const test = cds.test('serve', 'all', '--in-memory').in(process.cwd());
@@ -12,9 +13,11 @@ interface CreatedTripRequest {
   status: string;
 }
 
+// Każdy test dostaje pustą bazę, więc przypadki nie zależą od kolejności wykonania.
 beforeEach(test.data.reset);
 
 describe('TripPlannerService', () => {
+  // Ten przypadek obejmuje pełną drogę POST -> SQLite -> GET.
   it('creates and reads a valid TripRequest', async () => {
     const created = await POST('/trip-planner/TripRequests', validTripRequest);
     const tripRequest = created.data as CreatedTripRequest;
@@ -45,6 +48,7 @@ describe('TripPlannerService', () => {
     expect((read.data as CreatedTripRequest).status).toBe('DRAFT');
   });
 
+  // Akcja jest związana z encją i może zostać wykonana tylko raz dla danego ID.
   it('confirms constraints and rejects repeated confirmation', async () => {
     const created = await POST('/trip-planner/TripRequests', validTripRequest);
     const tripRequest = created.data as CreatedTripRequest;

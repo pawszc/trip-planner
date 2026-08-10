@@ -3,6 +3,7 @@ import { confirmTripRequestStatus, DomainError } from '../../srv/domain/trip-req
 import { validateTripRequest } from '../../srv/validation/trip-request-validation.js';
 import { validTripRequest } from '../fixtures/trip-request.js';
 
+// Testy jednostkowe wywołują czystą domenę bez serwera CAP, HTTP i bazy danych.
 describe('TripRequest domain validation', () => {
   it('accepts a valid trip request', () => {
     expect(() => validateTripRequest(validTripRequest)).not.toThrow();
@@ -42,6 +43,7 @@ describe('TripRequest domain validation', () => {
   });
 });
 
+// Przejście statusu testujemy osobno, ponieważ stan briefu jest niezależną regułą domenową.
 describe('TripRequest status transition', () => {
   it('confirms a draft', () => {
     expect(confirmTripRequestStatus('DRAFT')).toBe('CONSTRAINTS_CONFIRMED');

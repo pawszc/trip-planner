@@ -1,8 +1,10 @@
 import { expect, test } from '@playwright/test';
 
 test('saves a brief and confirms constraints', async ({ page }) => {
+  // Vite i CAP są uruchamiane automatycznie przez konfigurację Playwright.
   await page.goto('/');
 
+  // Komponenty UI5 używają Shadow DOM, dlatego pola wskazujemy po stabilnych test ID.
   await page.getByTestId('origin-city').locator('input').fill('Warszawa');
   await page.getByTestId('start-date').locator('input').fill('2026-10-10');
   await page.getByTestId('end-date').locator('input').fill('2026-10-13');
@@ -13,6 +15,7 @@ test('saves a brief and confirms constraints', async ({ page }) => {
 
   await page.getByTestId('save-brief').click();
 
+  // Najpierw sprawdzamy zapis szkicu, a potem zmianę statusu przez akcję CAP.
   await expect(page.getByTestId('brief-summary')).toContainText('Warszawa');
   await expect(page.getByTestId('status')).toHaveText('DRAFT');
 

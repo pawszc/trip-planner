@@ -9,6 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # CI odtwarza czystą instalację dokładnie z package-lock.json.
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -24,6 +25,7 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
+      # Pełna weryfikacja obejmuje lint, typy, testy, build i przepływ E2E.
       - name: Verify project
         run: npm run verify:full
 

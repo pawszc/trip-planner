@@ -13,6 +13,7 @@ import {
   type TripRequestDraft,
 } from './api.js';
 
+// Wartości startowe są jedynym źródłem początkowego stanu formularza.
 const initialDraft: TripRequestDraft = {
   originCity: '',
   startDate: '',
@@ -23,6 +24,7 @@ const initialDraft: TripRequestDraft = {
   pace: 'BALANCED',
 };
 
+// Etykiety tłumaczą techniczne wartości API na tekst zrozumiały w interfejsie.
 const paceLabels: Record<Pace, string> = {
   RELAXED: 'Spokojne',
   BALANCED: 'Zrównoważone',
@@ -30,15 +32,20 @@ const paceLabels: Record<Pace, string> = {
 };
 
 export default function App() {
+  // `draft` przechowuje dane formularza, zanim backend nada im ID i status.
   const [draft, setDraft] = useState(initialDraft);
+  // Obecność `saved` przełącza widok z formularza na podsumowanie zapisanego briefu.
   const [saved, setSaved] = useState<TripRequest | null>(null);
+  // Wspólne stany operacji sieciowych blokują wielokrotne kliknięcia i pokazują błędy CAP.
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /** Aktualizuje jedno pole i zachowuje typ właściwy dla jego nazwy. */
   const update = <K extends keyof TripRequestDraft>(key: K, value: TripRequestDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
+  // Przeglądarka sprawdza atrybuty pól, a backend zawsze wykonuje pełną walidację domenową.
   const saveBrief = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
@@ -52,6 +59,7 @@ export default function App() {
     }
   };
 
+  // Status zmienia dedykowana akcja domenowa; frontend nie ustawia go lokalnie ani przez PATCH.
   const confirmBrief = async () => {
     if (!saved) return;
     setLoading(true);
@@ -181,6 +189,7 @@ export default function App() {
 
             <div className="field">
               <label htmlFor="pace">Tempo podróży</label>
+              {/* Tempo określa preferowaną liczbę aktywności w przyszłym planie dnia. */}
               <select
                 id="pace"
                 data-testid="pace"
@@ -207,6 +216,7 @@ export default function App() {
             </div>
           </form>
         ) : (
+          // Po zapisie pokazujemy dane zwrócone przez backend, łącznie z nadanym statusem.
           <article className="summary" data-testid="brief-summary" aria-live="polite">
             <div className="summary-heading">
               <div>
@@ -251,6 +261,7 @@ export default function App() {
                 {loading ? 'Potwierdzanie…' : 'Potwierdź ograniczenia'}
               </Button>
             ) : (
+              // Potwierdzonego briefu nie można ponownie potwierdzić ani edytować.
               <MessageStrip className="message" hideCloseButton data-testid="next-stage-message">
                 Ograniczenia potwierdzone. Wyszukiwanie wariantów zostanie dodane w kolejnym etapie.
               </MessageStrip>
