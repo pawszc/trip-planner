@@ -5,7 +5,7 @@ export default defineConfig({
   // Plugin kompiluje JSX i zapewnia szybkie odświeżanie komponentów React.
   plugins: [react()],
   server: {
-    allowedHosts: ['dxx.tails198b2.ts.net'],
+    allowedHosts: ['dxx.tail5198b2.ts.net'],
     proxy: {
       // Żądania aplikacyjne trafiają do lokalnego CAP; przeglądarka widzi jeden origin.
       '/trip-planner': {
