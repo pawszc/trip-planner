@@ -5,6 +5,10 @@ export default defineConfig({
   // Plugin kompiluje JSX i zapewnia szybkie odświeżanie komponentów React.
   plugins: [react()],
   server: {
+    // Stały port i bind sieciowy umożliwiają dostęp przez wystawiony endpoint Tailscale.
+    host: '0.0.0.0',
+    port: 4173,
+    strictPort: true,
     allowedHosts: ['dxx.tail5198b2.ts.net'],
     proxy: {
       // Żądania aplikacyjne trafiają do lokalnego CAP; przeglądarka widzi jeden origin.
