@@ -3,11 +3,11 @@ import {
   type RejectionReason,
   type TripCandidate,
   TRANSPORT_MODE_VALUES,
-} from '../domain/candidate.js';
-import { FRESHNESS_TYPE_VALUES, type Money, type SourceSnapshot } from '../domain/money.js';
-import { SOFT_PREFERENCE_KEYS } from '../domain/trip-request.js';
-import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.js';
-import { createRejectionReason } from './rejection-reasons.js';
+} from '../domain/candidate.ts';
+import { FRESHNESS_TYPE_VALUES, type Money, type SourceSnapshot } from '../domain/money.ts';
+import { SOFT_PREFERENCE_KEYS } from '../domain/trip-request.ts';
+import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.ts';
+import { createRejectionReason } from './rejection-reasons.ts';
 
 export interface CandidateValidationResult {
   candidate: TripCandidate;

@@ -54,3 +54,27 @@ export const customTripRequestODataPayload = {
   softPreferences_travelComfort: customSoftPreferences.travelComfort,
   softPreferences_priceSensitivity: customSoftPreferences.priceSensitivity,
 };
+
+/** Brief referencyjny odpowiada dokładnie wersjonowanym fixture'om providerów Fazy 2B. */
+export const referenceTripRequestODataPayload = {
+  ...validTripRequest,
+  originCity: 'Wrocław',
+  totalBudget: 4500,
+  pace: 'RELAXED',
+  hardConstraints_hardBudgetLimit: true,
+  hardConstraints_earliestDepartureTime: '07:00',
+  hardConstraints_latestReturnTime: '22:00',
+  hardConstraints_maxConnections: 1,
+  hardConstraints_maxTravelMinutes: 480,
+  hardConstraints_allowFlight: false,
+  hardConstraints_allowTrain: true,
+  hardConstraints_allowBus: true,
+  softPreferences_food: 5,
+  softPreferences_nature: 5,
+  softPreferences_history: 3,
+  softPreferences_museums: 2,
+  softPreferences_nightlife: 1,
+  softPreferences_centralAccommodation: 4,
+  softPreferences_travelComfort: 4,
+  softPreferences_priceSensitivity: 4,
+};

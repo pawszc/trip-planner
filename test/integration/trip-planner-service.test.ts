@@ -2,10 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { Request } from '@sap/cds';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { HardConstraints, SoftPreferences } from '../../srv/domain/trip-request.js';
+import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
+import { MOCK_FIXTURE_VERSION } from '../../srv/providers/fixtures/fixture-source.js';
 import {
   customHardConstraints,
   customSoftPreferences,
   customTripRequestODataPayload,
+  referenceTripRequestODataPayload,
   validTripRequest,
 } from '../fixtures/trip-request.js';
 
@@ -47,6 +50,87 @@ interface WorkflowRunResponse {
   modifiedAt: string;
 }
 
+interface PlanningRunResponse {
+  ID: string;
+  tripRequest_ID: string;
+  workflowRun_ID: string;
+  requestFingerprint: string;
+  status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
+  providerFixtureVersion: string;
+  engineVersion: string;
+  scoringVersion: string;
+  builtCandidateCount: number;
+  validCandidateCount: number;
+  rejectedCandidateCount: number;
+  selectedOptionCount: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+interface WorkflowTransitionResponse {
+  planningRun_ID: string;
+  sequence: number;
+  fromState: string;
+  toState: string;
+}
+
+interface RankedOptionResponse {
+  ID: string;
+  tripRequest_ID: string;
+  workflowRun_ID: string;
+  planningRun_ID: string;
+  providerFixtureVersion: string;
+  scoringVersion: string;
+  rank: number;
+  role: string;
+  destinationCode: string;
+  destinationCity: string;
+  transportMode: string;
+  totalAmountMinor: number | string;
+  costPerPersonMinor: number | string;
+  confirmedAmountMinor: number | string;
+  estimatedAmountMinor: number | string;
+  unknownCategoryCount: number;
+  totalScore: number | string;
+}
+
+interface BudgetItemResponse {
+  rankedOption_ID: string;
+  planningRun_ID: string;
+  sourceSnapshot_ID: string | null;
+  category: string;
+  classification: 'CONFIRMED' | 'ESTIMATED' | 'UNKNOWN';
+  amountMinor: number | string | null;
+}
+
+interface SourceSnapshotResponse {
+  ID: string;
+  tripRequest_ID: string;
+  workflowRun_ID: string;
+  planningRun_ID: string;
+  rankedOption_ID: string;
+  providerFixtureVersion: string;
+  scoringVersion: string;
+  provider: string;
+  sourceUrl: string;
+  fixtureVersion: string;
+  demonstrationData: boolean;
+}
+
+interface RejectionReasonResponse {
+  candidateId: string;
+  planningRun_ID: string;
+  code: string;
+  message: string;
+}
+
+interface RejectionSummaryResponse {
+  planningRun_ID: string;
+  code: string;
+  candidateCount: number;
+  occurrenceCount: number;
+}
+
 interface ODataCollection<T> {
   value: T[];
 }
@@ -79,6 +163,10 @@ function actionUrl(ID: string): string {
   return `/trip-planner/TripRequests(${ID})/TripPlannerService.confirmConstraints`;
 }
 
+function startPlanningActionUrl(ID: string): string {
+  return `/trip-planner/TripRequests(${ID})/TripPlannerService.startPlanning`;
+}
+
 function hardConstraintsFromOData(tripRequest: CreatedTripRequest): HardConstraints {
   return {
     hardBudgetLimit: tripRequest.hardConstraints_hardBudgetLimit,
@@ -109,6 +197,30 @@ async function readWorkflowRuns(tripRequestID: string): Promise<WorkflowRunRespo
   const filter = encodeURIComponent(`tripRequest_ID eq ${tripRequestID}`);
   const response = await GET(`/trip-planner/WorkflowRuns?$filter=${filter}`);
   return (response.data as ODataCollection<WorkflowRunResponse>).value;
+}
+
+async function readPlanningCollection<T>(
+  entity: string,
+  field: 'tripRequest_ID' | 'planningRun_ID',
+  ID: string,
+  orderBy?: string,
+): Promise<T[]> {
+  const filter = encodeURIComponent(`${field} eq ${ID}`);
+  const order = orderBy ? `&$orderby=${encodeURIComponent(orderBy)}` : '';
+  const response = await GET(`/trip-planner/${entity}?$filter=${filter}${order}`);
+  return (response.data as ODataCollection<T>).value;
+}
+
+async function createConfirmedReferenceTrip(): Promise<CreatedTripRequest> {
+  const created = await POST('/trip-planner/TripRequests', referenceTripRequestODataPayload);
+  const tripRequest = created.data as CreatedTripRequest;
+  await POST(actionUrl(tripRequest.ID), {});
+  return tripRequest;
+}
+
+async function startReferencePlanning(tripRequestID: string): Promise<PlanningRunResponse> {
+  const response = await POST(startPlanningActionUrl(tripRequestID), {});
+  return response.data as PlanningRunResponse;
 }
 
 // Błąd testowy jest rzucany po handlerze akcji, ale przed commitem requestu CAP.
@@ -360,5 +472,300 @@ describe('TripPlannerService', () => {
     const read = await GET(`/trip-planner/TripRequests(${tripRequest.ID})`);
     expect((read.data as CreatedTripRequest).status).toBe('DRAFT');
     await expect(readWorkflowRuns(tripRequest.ID)).resolves.toHaveLength(0);
+  });
+
+  it('rejects startPlanning for a DRAFT without creating planning persistence', async () => {
+    const created = await POST('/trip-planner/TripRequests', referenceTripRequestODataPayload);
+    const tripRequest = created.data as CreatedTripRequest;
+
+    await expect(POST(startPlanningActionUrl(tripRequest.ID), {})).rejects.toMatchObject({
+      status: 409,
+      response: { data: { error: { code: 'TRIP_REQUEST_NOT_CONFIRMED' } } },
+    });
+    await expect(
+      readPlanningCollection<PlanningRunResponse>('PlanningRuns', 'tripRequest_ID', tripRequest.ID),
+    ).resolves.toHaveLength(0);
+  });
+
+  it('rejects startPlanning for a missing TripRequest', async () => {
+    await expect(POST(startPlanningActionUrl(randomUUID()), {})).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('runs the confirmed reference workflow in the required order and persists three roles', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const planningRun = await startReferencePlanning(tripRequest.ID);
+    const workflowRuns = await readWorkflowRuns(tripRequest.ID);
+    const transitions = await readPlanningCollection<WorkflowTransitionResponse>(
+      'WorkflowTransitions',
+      'planningRun_ID',
+      planningRun.ID,
+      'sequence',
+    );
+    const options = await readPlanningCollection<RankedOptionResponse>(
+      'RankedOptions',
+      'planningRun_ID',
+      planningRun.ID,
+      'rank',
+    );
+
+    expect(planningRun).toMatchObject({
+      status: 'SUCCEEDED',
+      tripRequest_ID: tripRequest.ID,
+      workflowRun_ID: workflowRuns[0]?.ID,
+      providerFixtureVersion: MOCK_FIXTURE_VERSION,
+      engineVersion: 'candidate-engine-v1',
+      scoringVersion: 'candidate-score-v1:candidate-engine-v1',
+      builtCandidateCount: 28,
+      validCandidateCount: 6,
+      rejectedCandidateCount: 22,
+      selectedOptionCount: 3,
+      errorCode: null,
+    });
+    expect(workflowRuns).toHaveLength(1);
+    expect(workflowRuns[0]?.state).toBe('OPTIONS_READY');
+    expect(
+      transitions.map(({ sequence, fromState, toState }) => ({ sequence, fromState, toState })),
+    ).toStrictEqual([
+      { sequence: 1, fromState: 'CONSTRAINTS_CONFIRMED', toState: 'SEARCHING' },
+      { sequence: 2, fromState: 'SEARCHING', toState: 'CANDIDATES_VALIDATED' },
+      { sequence: 3, fromState: 'CANDIDATES_VALIDATED', toState: 'OPTIONS_READY' },
+    ]);
+    expect(options).toHaveLength(3);
+    expect(
+      options.map(({ rank, role, destinationCode }) => ({ rank, role, destinationCode })),
+    ).toStrictEqual([
+      { rank: 1, role: 'BEST_OVERALL', destinationCode: 'PRG' },
+      { rank: 2, role: 'MOST_CONVENIENT', destinationCode: 'VIE' },
+      { rank: 3, role: 'BEST_VALUE', destinationCode: 'BUD' },
+    ]);
+    expect(
+      options.every(
+        (option) =>
+          option.tripRequest_ID === tripRequest.ID &&
+          option.workflowRun_ID === workflowRuns[0]?.ID &&
+          option.planningRun_ID === planningRun.ID &&
+          option.providerFixtureVersion === MOCK_FIXTURE_VERSION &&
+          option.scoringVersion === planningRun.scoringVersion,
+      ),
+    ).toBe(true);
+  });
+
+  it('persists rejection details and a grouped summary for the reference run', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const planningRun = await startReferencePlanning(tripRequest.ID);
+    const reasons = await readPlanningCollection<RejectionReasonResponse>(
+      'RejectionReasons',
+      'planningRun_ID',
+      planningRun.ID,
+    );
+    const summaries = await readPlanningCollection<RejectionSummaryResponse>(
+      'RejectionSummaries',
+      'planningRun_ID',
+      planningRun.ID,
+      'code',
+    );
+
+    expect(new Set(reasons.map((reason) => reason.candidateId)).size).toBe(22);
+    expect(reasons.every((reason) => reason.message.length > 0)).toBe(true);
+    expect(summaries).toHaveLength(13);
+    expect(new Set(summaries.map((summary) => summary.code))).toEqual(
+      new Set([
+        'BUDGET_EXCEEDED',
+        'DEPARTURE_TOO_EARLY',
+        'RETURN_TOO_LATE',
+        'TOO_MANY_CONNECTIONS',
+        'TRANSPORT_MODE_NOT_ALLOWED',
+        'TRAVEL_TIME_EXCEEDED',
+        'REQUIRED_PRICE_UNKNOWN',
+        'SOURCE_MISSING',
+        'CURRENCY_MISMATCH',
+        'DUPLICATE_CANDIDATE',
+        'INSUFFICIENT_TIME_AT_DESTINATION',
+        'INVALID_DATES',
+        'INCOMPLETE_DATA',
+      ]),
+    );
+    expect(
+      summaries.every(
+        (summary) =>
+          summary.candidateCount >= 1 && summary.occurrenceCount >= summary.candidateCount,
+      ),
+    ).toBe(true);
+  });
+
+  it('links normalized SourceSnapshots and seven BudgetItems to every final option', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const planningRun = await startReferencePlanning(tripRequest.ID);
+    const workflowRun = (await readWorkflowRuns(tripRequest.ID))[0];
+    const options = await readPlanningCollection<RankedOptionResponse>(
+      'RankedOptions',
+      'planningRun_ID',
+      planningRun.ID,
+    );
+    const sources = await readPlanningCollection<SourceSnapshotResponse>(
+      'SourceSnapshots',
+      'planningRun_ID',
+      planningRun.ID,
+    );
+    const budgetItems = await readPlanningCollection<BudgetItemResponse>(
+      'BudgetItems',
+      'planningRun_ID',
+      planningRun.ID,
+    );
+    const budgetBreakdowns = await readPlanningCollection<RankedOptionResponse>(
+      'BudgetBreakdowns',
+      'planningRun_ID',
+      planningRun.ID,
+    );
+
+    expect(sources.length).toBeGreaterThan(0);
+    expect(
+      sources.every(
+        (source) =>
+          source.tripRequest_ID === tripRequest.ID &&
+          source.workflowRun_ID === workflowRun?.ID &&
+          source.planningRun_ID === planningRun.ID &&
+          source.providerFixtureVersion === MOCK_FIXTURE_VERSION &&
+          source.scoringVersion === planningRun.scoringVersion,
+      ),
+    ).toBe(true);
+    expect(
+      sources.some(
+        (source) =>
+          source.provider === 'MockTransportProvider' &&
+          source.sourceUrl === 'INTERNAL_FIXTURE' &&
+          source.demonstrationData,
+      ),
+    ).toBe(true);
+    expect(budgetItems).toHaveLength(21);
+    expect(budgetBreakdowns).toHaveLength(3);
+
+    for (const option of options) {
+      const items = budgetItems.filter((item) => item.rankedOption_ID === option.ID);
+      expect(items.map((item) => item.category).sort()).toEqual(
+        [
+          'TRANSPORT',
+          'ACCOMMODATION',
+          'LOCAL_TRANSPORT',
+          'FOOD',
+          'ATTRACTIONS',
+          'ADDITIONAL_FEES',
+          'BUFFER',
+        ].sort(),
+      );
+      expect(items.every((item) => item.sourceSnapshot_ID)).toBe(true);
+      expect(items.every((item) => item.amountMinor !== null)).toBe(true);
+      const confirmed = items
+        .filter((item) => item.classification === 'CONFIRMED')
+        .reduce((sum, item) => sum + Number(item.amountMinor), 0);
+      const estimated = items
+        .filter((item) => item.classification === 'ESTIMATED')
+        .reduce((sum, item) => sum + Number(item.amountMinor), 0);
+      expect(confirmed).toBe(Number(option.confirmedAmountMinor));
+      expect(estimated).toBe(Number(option.estimatedAmountMinor));
+      expect(confirmed + estimated).toBe(Number(option.totalAmountMinor));
+      expect(option.unknownCategoryCount).toBe(0);
+    }
+  });
+
+  it('returns the same successful PlanningRun without duplicate final records', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const first = await startReferencePlanning(tripRequest.ID);
+    const repeat = await startReferencePlanning(tripRequest.ID);
+
+    expect(repeat.ID).toBe(first.ID);
+    await expect(
+      readPlanningCollection<PlanningRunResponse>('PlanningRuns', 'tripRequest_ID', tripRequest.ID),
+    ).resolves.toHaveLength(1);
+    await expect(
+      readPlanningCollection<RankedOptionResponse>('RankedOptions', 'planningRun_ID', first.ID),
+    ).resolves.toHaveLength(3);
+    await expect(
+      readPlanningCollection<WorkflowTransitionResponse>(
+        'WorkflowTransitions',
+        'planningRun_ID',
+        first.ID,
+      ),
+    ).resolves.toHaveLength(3);
+  });
+
+  it('persists a controlled shortage with reasons and no partial final options', async () => {
+    const created = await POST('/trip-planner/TripRequests', {
+      ...referenceTripRequestODataPayload,
+      hardConstraints_maxTravelMinutes: 1,
+    });
+    const tripRequest = created.data as CreatedTripRequest;
+    await POST(actionUrl(tripRequest.ID), {});
+
+    const first = await startReferencePlanning(tripRequest.ID);
+    const repeat = await startReferencePlanning(tripRequest.ID);
+    const workflowRun = (await readWorkflowRuns(tripRequest.ID))[0];
+    const reasons = await readPlanningCollection<RejectionReasonResponse>(
+      'RejectionReasons',
+      'planningRun_ID',
+      first.ID,
+    );
+
+    expect(first).toMatchObject({
+      status: 'INSUFFICIENT_OPTIONS',
+      selectedOptionCount: 0,
+      errorCode: 'INSUFFICIENT_VALID_CANDIDATES',
+    });
+    expect(first.errorMessage).toContain('ograniczenia nie zostały poluzowane');
+    expect(repeat.ID).toBe(first.ID);
+    expect(workflowRun?.state).toBe('CONSTRAINTS_CONFIRMED');
+    expect(reasons.length).toBeGreaterThan(0);
+    await expect(
+      readPlanningCollection<RankedOptionResponse>('RankedOptions', 'planningRun_ID', first.ID),
+    ).resolves.toHaveLength(0);
+    await expect(
+      readPlanningCollection<PlanningRunResponse>('PlanningRuns', 'tripRequest_ID', tripRequest.ID),
+    ).resolves.toHaveLength(1);
+  });
+
+  it('rolls back every planning write after a provider error and returns a controlled code', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviders(): CandidateEngineProviders;
+    };
+    const originalFactory = service.createPlanningProviders;
+    const workingProviders = originalFactory.call(service);
+    service.createPlanningProviders = () => ({
+      ...workingProviders,
+      transport: {
+        search: async () => Promise.reject(new Error('provider stack must not leak')),
+      },
+    });
+
+    try {
+      await expect(POST(startPlanningActionUrl(tripRequest.ID), {})).rejects.toMatchObject({
+        status: 502,
+        response: { data: { error: { code: 'PROVIDER_SEARCH_FAILED' } } },
+      });
+    } finally {
+      service.createPlanningProviders = originalFactory;
+    }
+
+    const workflowRuns = await readWorkflowRuns(tripRequest.ID);
+    expect(workflowRuns[0]?.state).toBe('CONSTRAINTS_CONFIRMED');
+    await expect(
+      readPlanningCollection<PlanningRunResponse>('PlanningRuns', 'tripRequest_ID', tripRequest.ID),
+    ).resolves.toHaveLength(0);
+    await expect(
+      readPlanningCollection<RankedOptionResponse>(
+        'RankedOptions',
+        'tripRequest_ID',
+        tripRequest.ID,
+      ),
+    ).resolves.toHaveLength(0);
+    await expect(
+      readPlanningCollection<RejectionReasonResponse>(
+        'RejectionReasons',
+        'tripRequest_ID',
+        tripRequest.ID,
+      ),
+    ).resolves.toHaveLength(0);
   });
 });

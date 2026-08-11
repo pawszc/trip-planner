@@ -57,6 +57,61 @@ type WorkflowState : String(32) enum {
   REVISING;
 }
 
+// Stan pojedynczego, wersjonowanego uruchomienia planowania. Niedobór opcji jest
+// kontrolowanym wynikiem biznesowym, a nie częściowym sukcesem.
+type PlanningRunStatus : String(32) enum {
+  SUCCEEDED;
+  INSUFFICIENT_OPTIONS;
+}
+
+type SelectionRole : String(32) enum {
+  BEST_OVERALL;
+  MOST_CONVENIENT;
+  BEST_VALUE;
+}
+
+type TransportMode : String(16) enum {
+  FLIGHT;
+  TRAIN;
+  BUS;
+}
+
+type BudgetCategory : String(32) enum {
+  TRANSPORT;
+  ACCOMMODATION;
+  LOCAL_TRANSPORT;
+  FOOD;
+  ATTRACTIONS;
+  ADDITIONAL_FEES;
+  BUFFER;
+}
+
+type PriceType : String(24) enum {
+  LIVE_PRICE;
+  FIXED_PRICE;
+  ESTIMATE;
+  UNKNOWN;
+}
+
+type MoneyClassification : String(16) enum {
+  CONFIRMED;
+  ESTIMATED;
+  UNKNOWN;
+}
+
+type FreshnessType : String(24) enum {
+  LIVE;
+  CACHED;
+  FIXTURE;
+  INTERNAL_RULE;
+}
+
+type OptionNoteKind : String(16) enum {
+  ADVANTAGE;
+  TRADEOFF;
+  RISK;
+}
+
 // Trwały zapis twardych ograniczeń i podstawowej preferencji tempa podróży.
 entity TripRequests : cuid, managed {
   originCity : String(120) not null;
@@ -79,4 +134,165 @@ entity WorkflowRuns : cuid, managed {
   state : WorkflowState not null;
   errorCode : String(80);
   errorMessage : String(500);
+}
+
+// PlanningRun jest niezmiennym wynikiem konkretnego wejścia i wersji silnika.
+// Fingerprint zapewnia idempotencję ponownego wywołania dla potwierdzonego briefu.
+@assert.unique.planningFingerprint: [tripRequest, requestFingerprint]
+entity PlanningRuns : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  requestFingerprint : String(64) not null;
+  status : PlanningRunStatus not null;
+  providerFixtureVersion : String(80) not null;
+  engineVersion : String(80) not null;
+  scoringVersion : String(120) not null;
+  startedAt : Timestamp not null;
+  completedAt : Timestamp not null;
+  destinationCount : Integer not null;
+  transportOptionCount : Integer not null;
+  stayOptionCount : Integer not null;
+  builtCandidateCount : Integer not null;
+  validCandidateCount : Integer not null;
+  rejectedCandidateCount : Integer not null;
+  selectedOptionCount : Integer not null;
+  errorCode : String(80);
+  errorMessage : String(500);
+}
+
+// Audit kolejności przejść wykonywanych atomowo przez udany startPlanning.
+@assert.unique.transitionSequence: [planningRun, sequence]
+entity WorkflowTransitions : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  sequence : Integer not null;
+  fromState : WorkflowState not null;
+  toState : WorkflowState not null;
+}
+
+// Publiczny model opcji zawiera wyłącznie jawnie wybrane, znormalizowane fakty domenowe.
+@assert.unique.optionRank: [planningRun, rank]
+@assert.unique.optionRole: [planningRun, role]
+entity RankedOptions : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  providerFixtureVersion : String(80) not null;
+  scoringVersion : String(120) not null;
+  rank : Integer not null;
+  role : SelectionRole not null;
+  candidateId : String(500) not null;
+  destinationCode : String(12) not null;
+  destinationCity : String(120) not null;
+  destinationCountryCode : String(3) not null;
+  transportId : String(200) not null;
+  transportMode : TransportMode not null;
+  outboundDepartureAt : Timestamp not null;
+  outboundArrivalAt : Timestamp not null;
+  returnDepartureAt : Timestamp not null;
+  returnArrivalAt : Timestamp not null;
+  outboundTravelMinutes : Integer not null;
+  returnTravelMinutes : Integer not null;
+  maximumConnections : Integer not null;
+  effectiveTimeAtDestinationMinutes : Integer not null;
+  stayId : String(200) not null;
+  stayName : String(200) not null;
+  checkInDate : Date not null;
+  checkOutDate : Date not null;
+  nights : Integer not null;
+  accommodationCentralityScore : Decimal(5, 2) not null;
+  currency : String(3) not null;
+  budgetLimitMinor : Integer64 not null;
+  confirmedAmountMinor : Integer64 not null;
+  estimatedAmountMinor : Integer64 not null;
+  unknownCategoryCount : Integer not null;
+  totalAmountMinor : Integer64 not null;
+  costPerPersonMinor : Integer64 not null;
+  remainingBudgetMinor : Integer64 not null;
+  totalScore : Decimal(5, 2) not null;
+  budgetFitScore : Decimal(5, 2) not null;
+  travelTimeScore : Decimal(5, 2) not null;
+  effectiveTimeScore : Decimal(5, 2) not null;
+  accommodationLocationScore : Decimal(5, 2) not null;
+  dataCompletenessScore : Decimal(5, 2) not null;
+  priceConfidenceScore : Decimal(5, 2) not null;
+  preferenceFitScore : Decimal(5, 2) not null;
+}
+
+// Snapshoty są kontrolowanym, znormalizowanym kontraktem pochodzenia danych.
+// Żaden surowy payload providera nie trafia do modelu publicznego.
+@assert.unique.optionSource: [rankedOption, sourceKey]
+entity SourceSnapshots : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  rankedOption : Association to one RankedOptions not null;
+  providerFixtureVersion : String(80) not null;
+  scoringVersion : String(120) not null;
+  sourceKey : String(500) not null;
+  provider : String(120) not null;
+  externalItemId : String(250) not null;
+  fetchedAt : Timestamp not null;
+  sourceUrl : String(500) not null;
+  freshnessType : FreshnessType not null;
+  currency : String(3) not null;
+  fixtureVersion : String(80) not null;
+  contexts : String(1000) not null;
+  demonstrationData : Boolean not null;
+}
+
+@assert.unique.optionBudgetCategory: [rankedOption, category]
+entity BudgetItems : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  rankedOption : Association to one RankedOptions not null;
+  sourceSnapshot : Association to one SourceSnapshots;
+  providerFixtureVersion : String(80) not null;
+  scoringVersion : String(120) not null;
+  category : BudgetCategory not null;
+  priceType : PriceType not null;
+  classification : MoneyClassification not null;
+  currency : String(3) not null;
+  amountMinor : Integer64;
+}
+
+@assert.unique.optionNote: [rankedOption, kind, sequence]
+entity OptionNotes : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  rankedOption : Association to one RankedOptions not null;
+  kind : OptionNoteKind not null;
+  sequence : Integer not null;
+  code : String(80) not null;
+  text : String(500) not null;
+}
+
+@assert.unique.candidateRejectionCode: [planningRun, candidateId, code]
+entity RejectionReasons : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  providerFixtureVersion : String(80) not null;
+  scoringVersion : String(120) not null;
+  candidateId : String(500) not null;
+  code : String(80) not null;
+  message : String(500) not null;
+  expectedValue : String(2000) not null;
+  actualValue : String(2000) not null;
+  detailsJson : String(4000) not null;
+}
+
+@assert.unique.rejectionSummaryCode: [planningRun, code]
+entity RejectionSummaries : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  providerFixtureVersion : String(80) not null;
+  scoringVersion : String(120) not null;
+  code : String(80) not null;
+  candidateCount : Integer not null;
+  occurrenceCount : Integer not null;
 }

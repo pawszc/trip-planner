@@ -57,8 +57,11 @@ export function validateTripRequest(input: NormalizedTripRequestValidationInput)
     throw new DomainError('INVALID_TOTAL_BUDGET', 'Całkowity budżet musi być większy od zera.');
   }
 
-  if (!input.currency.trim()) {
-    throw new DomainError('CURRENCY_REQUIRED', 'Waluta jest wymagana.');
+  if (!/^[A-Z]{3}$/.test(input.currency)) {
+    throw new DomainError(
+      'INVALID_CURRENCY',
+      'Waluta musi być trzyliterowym kodem zapisanym wielkimi literami.',
+    );
   }
 
   // Tempo musi pochodzić z zamkniętego zbioru współdzielonego przez domenę i API.

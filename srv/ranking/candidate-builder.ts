@@ -5,9 +5,9 @@ import type {
   StayOption,
   TransportOption,
   TripCandidate,
-} from '../domain/candidate.js';
-import { calculateBudgetBreakdown, estimateLocalCosts } from './budget.js';
-import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.js';
+} from '../domain/candidate.ts';
+import { calculateBudgetBreakdown, estimateLocalCosts } from './budget.ts';
+import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.ts';
 
 export interface CandidateBuilderInput {
   context: PlanningContext;

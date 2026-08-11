@@ -4,7 +4,7 @@ import type {
   LocalCostEstimates,
   PlanningContext,
   TripCandidate,
-} from '../domain/candidate.js';
+} from '../domain/candidate.ts';
 import {
   addMinorUnits,
   createMoney,
@@ -14,7 +14,7 @@ import {
   type KnownPriceType,
   type Money,
   type SourceSnapshot,
-} from '../domain/money.js';
+} from '../domain/money.ts';
 
 export const INTERNAL_COST_FIXTURE_VERSION = 'internal-cost-estimates-v1';
 

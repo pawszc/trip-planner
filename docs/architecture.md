@@ -1,6 +1,6 @@
 # Architektura
 
-Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Frontend jest osobnym workspace React/Vite z UI5 Web Components for React. Vite przekazuje `/trip-planner` i `/health` do CAP.
+Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Frontend jest osobnym workspace React/Vite z semantycznymi, dostępnymi kontrolkami HTML. Vite przekazuje `/trip-planner` i `/health` do CAP.
 
 ## Warstwy backendu
 
@@ -9,6 +9,7 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 - `orchestration/` — ograniczony pipeline pobierania danych i budowania kandydatów;
 - `providers/` — typowane kontrakty providerów oraz stabilne adaptery fixture;
 - `ranking/` — budżet, twarde filtrowanie, scoring i wybór zróżnicowanych wariantów;
+- `persistence/` — kontrolowane mapowanie wyników domenowych na znormalizowane rekordy;
 - serwis CAP — transport OData, trwałość, transakcje i kontrolowane błędy.
 
 ## Model briefu i workflow
@@ -16,6 +17,11 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 `TripRequest` przechowuje podstawowy brief oraz status jego potwierdzenia. Pola strukturalne `hardConstraints` i `softPreferences` używają jawnych typów CDS `HardConstraintProfile` i `SoftPreferenceProfile`. Hard constraints nie są swobodnym tekstem: budżet, okna czasowe, limity podróży i dozwolone środki transportu mają typowany kontrakt walidowany przez kod. Soft preferences przechowują wagi całkowite od 1 do 5, natomiast `pace` pozostaje osobnym polem briefu. Wartości domyślne profili pozwalają dotychczasowym klientom nadal tworzyć brief bez przesyłania nowych pól. CAP 10 publikuje te struktury w domyślnym kontrakcie OData jako jawne pola z prefiksami `hardConstraints_*` i `softPreferences_*`; osobny mapper serwisu składa je do zagnieżdżonych typów domenowych i materializuje z powrotem bez zmiany dotychczasowych pól API.
 
 Status `TripRequest` opisuje lifecycle briefu: `DRAFT` oznacza wersję roboczą, a `CONSTRAINTS_CONFIRMED` potwierdzony zestaw ograniczeń. Postęp planowania przechowuje osobna encja `WorkflowRuns`, powiązana jeden-do-jednego z `TripRequest`. Rekord workflow zawiera bieżący stan, kontrolowane informacje o błędzie i znaczniki czasu. Projekcja OData workflow jest tylko do odczytu; klient nie może ominąć maszyny stanów przez bezpośredni zapis. Dzięki temu etap wykonania nie zmienia znaczenia statusu briefu ani zasad jego edycji.
+
+Każde deterministyczne wykonanie ma osobny `PlanningRun`, powiązany z `TripRequest` i
+`WorkflowRun`. Run zapisuje fingerprint pełnego wejścia, wersję fixture providerów, wersję
+silnika i scoringu, liczniki kandydatów oraz kontrolowany status. Unikalność fingerprintu
+zapewnia idempotencję dla nieedytowalnego, potwierdzonego briefu.
 
 ## Maszyna stanów
 
@@ -27,9 +33,15 @@ Dozwolone przejścia są zapisane w czystej funkcji domenowej, niezależnej od C
 - `OPTIONS_READY` → `OPTION_SELECTED` → `ITINERARY_GENERATED` → `VALIDATED` → `READY`;
 - `READY` → `REVISING` → `ITINERARY_GENERATED`.
 
-Niedozwolone przejście zgłasza `DomainError` z kodem, stanem źródłowym, stanem docelowym i czytelnym komunikatem. Funkcja zwraca nowy stan dopiero po sprawdzeniu reguły, dlatego błąd nie powoduje częściowej zmiany. W Fazie 2A stany od `SEARCHING` dalej są wyłącznie kontraktem domenowym i przedmiotem testów; wykonywanie tych etapów nie jest jeszcze zaimplementowane.
+Niedozwolone przejście zgłasza `DomainError` z kodem, stanem źródłowym, stanem docelowym i czytelnym komunikatem. Funkcja zwraca nowy stan dopiero po sprawdzeniu reguły, dlatego błąd nie powoduje częściowej zmiany. `startPlanning` wykonuje pierwsze trzy przejścia planowania w jednej transakcji i utrwala ich kolejność w `WorkflowTransitions`.
 
 Akcja `confirmConstraints` waliduje podstawowy brief i oba profile, wymaga statusu `DRAFT`, a następnie w jednej transakcji ustawia status briefu oraz tworzy albo aktualizuje powiązany `WorkflowRun` do `CONSTRAINTS_CONFIRMED`. Błąd w dowolnym kroku wycofuje całą operację. Ponowne potwierdzenie pozostaje niedozwolone.
+
+Akcja `startPlanning` ponownie waliduje cały brief i profile, tworzy kontekst w integer
+minor units, wywołuje providery przez interfejsy 2B i uruchamia pipeline. Providerzy są
+wywoływani przed pierwszym zapisem. Udany wynik zapisuje atomowo run, przejścia, dokładnie
+trzy opcje, budżety, źródła, notatki i odrzucenia. Awaria providera zwraca kontrolowane
+`PROVIDER_SEARCH_FAILED` i pozostawia workflow w `CONSTRAINTS_CONFIRMED` bez wyników.
 
 ## Deterministyczny silnik kandydatów
 
@@ -106,8 +118,28 @@ miejsc. Dla referencyjnego briefu daje 28 kandydatów: 6 poprawnych i 22 jawnie
 odrzucone. Stabilny wybór to Praga jako `BEST_OVERALL`, Wiedeń jako
 `MOST_CONVENIENT` i Budapeszt jako `BEST_VALUE`.
 
-W Fazie 2B pipeline jest czystym modułem aplikacyjnym uruchamianym w testach. Nie ma
-jeszcze endpointu CAP uruchamiającego wyszukiwanie, zapisu wyników ani ekranu wariantów.
+Faza 2C integruje ten sam czysty pipeline z CAP i UI bez zmiany zasad rankingu. Surowe
+payloady providerów nie są zapisywane. `RankedOptions` zawierają wyłącznie wybrane fakty
+domenowe i komponenty score; `BudgetItems` zachowują kategorię, price type i klasyfikację;
+`SourceSnapshots` przechowują kontrolowany kontrakt pochodzenia. `OptionNotes` powstają z
+deterministycznych szablonów.
+
+Przy mniej niż trzech poprawnych wariantach zapisuje się `PlanningRun` ze statusem
+`INSUFFICIENT_OPTIONS`, diagnostyki `RejectionReasons` i `RejectionSummaries`, ale zero
+`RankedOptions`. `WorkflowRun` pozostaje w `CONSTRAINTS_CONFIRMED`. Ponowne wywołanie dla
+tego samego fingerprintu zwraca ten sam run i nie tworzy duplikatów.
+
+## Publiczny kontrakt CAP
+
+Bound actions na `TripRequests`:
+
+- `confirmConstraints()` — zatwierdza brief;
+- `startPlanning()` — zwraca wersjonowany `PlanningRun`.
+
+Projekcje tylko do odczytu: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions`,
+`RankedOptions`, `BudgetBreakdowns`, `BudgetItems`, `SourceSnapshots`, `OptionNotes`,
+`RejectionReasons` i `RejectionSummaries`. Klient pobiera zbiory filtrem po
+`tripRequest_ID` albo `planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników.
 
 ## Deterministyczny rdzeń i AI
 

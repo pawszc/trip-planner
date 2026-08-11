@@ -1,11 +1,11 @@
-import type { PlanningContext, ScoreBreakdown, TripCandidate } from '../domain/candidate.js';
-import { SOFT_PREFERENCE_KEYS, type SoftPreferences } from '../domain/trip-request.js';
+import type { PlanningContext, ScoreBreakdown, TripCandidate } from '../domain/candidate.ts';
+import { SOFT_PREFERENCE_KEYS, type SoftPreferences } from '../domain/trip-request.ts';
 import {
   mergeCandidateEngineConfig,
   type CandidateEngineConfig,
   type CandidateEngineConfigOverride,
-} from './config.js';
-import { candidateSemanticSignature } from './candidate-filter.js';
+} from './config.ts';
+import { candidateSemanticSignature } from './candidate-filter.ts';
 
 export const SCORE_VERSION = 'candidate-score-v1';
 

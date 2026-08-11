@@ -195,4 +195,21 @@ describe('candidate engine orchestration', () => {
     });
     expect(result.shortage).toMatchObject({ required: 3, missing: 3 });
   });
+
+  it('maps a provider failure to a controlled domain error without leaking its message', async () => {
+    await expect(
+      runCandidateEngine({
+        context: candidateContext,
+        destinations: [candidateDestination],
+        providers: {
+          transport: { search: async () => Promise.reject(new Error('secret provider trace')) },
+          accommodation: { search: async () => [] },
+          places: { search: async () => [] },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_SEARCH_FAILED',
+      message: 'Nie udało się pobrać danych demonstracyjnych do planowania.',
+    });
+  });
 });

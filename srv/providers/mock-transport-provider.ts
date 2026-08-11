@@ -1,6 +1,6 @@
-import type { TransportOption } from '../domain/candidate.js';
-import type { TransportProvider, TransportSearchRequest } from './contracts.js';
-import { buildReferenceTransportOptions } from './fixtures/europe-reference-fixtures.js';
+import type { TransportOption } from '../domain/candidate.ts';
+import type { TransportProvider, TransportSearchRequest } from './contracts.ts';
+import { buildReferenceTransportOptions } from './fixtures/europe-reference-fixtures.ts';
 
 /** Offline provider backed solely by versioned request-relative fixture definitions. */
 export class MockTransportProvider implements TransportProvider {

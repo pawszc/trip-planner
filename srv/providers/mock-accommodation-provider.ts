@@ -1,6 +1,6 @@
-import type { StayOption } from '../domain/candidate.js';
-import type { AccommodationProvider, AccommodationSearchRequest } from './contracts.js';
-import { buildReferenceStayOptions } from './fixtures/europe-reference-fixtures.js';
+import type { StayOption } from '../domain/candidate.ts';
+import type { AccommodationProvider, AccommodationSearchRequest } from './contracts.ts';
+import { buildReferenceStayOptions } from './fixtures/europe-reference-fixtures.ts';
 
 /** Offline provider backed solely by versioned request-relative fixture definitions. */
 export class MockAccommodationProvider implements AccommodationProvider {

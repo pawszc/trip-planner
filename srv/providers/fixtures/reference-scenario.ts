@@ -1,4 +1,4 @@
-import type { PlanningContext } from '../../domain/candidate.js';
+import type { PlanningContext } from '../../domain/candidate.ts';
 
 /**
  * Stabilny brief integrujący wszystkie fixture providery z candidate engine.

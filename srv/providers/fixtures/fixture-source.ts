@@ -1,6 +1,6 @@
-import type { SourceSnapshot } from '../../domain/money.js';
-import type { ProviderTripRequest } from '../contracts.js';
-import { fixtureFetchedAt } from './fixture-date.js';
+import type { SourceSnapshot } from '../../domain/money.ts';
+import type { ProviderTripRequest } from '../contracts.ts';
+import { fixtureFetchedAt } from './fixture-date.ts';
 
 export const MOCK_FIXTURE_VERSION = 'europe-reference-v1';
 

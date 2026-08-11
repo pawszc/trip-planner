@@ -1,10 +1,10 @@
-import type { Destination } from '../domain/candidate.js';
+import type { Destination } from '../domain/candidate.ts';
 import type {
   AccommodationSearchRequest,
   PlacesSearchRequest,
   ProviderTripRequest,
   TransportSearchRequest,
-} from './contracts.js';
+} from './contracts.ts';
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 

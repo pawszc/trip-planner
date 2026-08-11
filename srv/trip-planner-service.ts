@@ -10,6 +10,22 @@ import {
   type MutableTripRequest,
   type PersistedTripRequest,
 } from './mapping/trip-request-mapper.ts';
+import {
+  runCandidateEngine,
+  type CandidateEngineProviders,
+} from './orchestration/candidate-engine.ts';
+import {
+  createPlanningContext,
+  createPlanningFingerprint,
+} from './orchestration/planning-request.ts';
+import { buildPlanningPersistenceBundle } from './persistence/planning-result-records.ts';
+import { REFERENCE_DESTINATIONS } from './providers/fixtures/europe-reference-fixtures.ts';
+import { MOCK_FIXTURE_VERSION } from './providers/fixtures/fixture-source.ts';
+import { MockAccommodationProvider } from './providers/mock-accommodation-provider.ts';
+import { MockPlacesProvider } from './providers/mock-places-provider.ts';
+import { MockTransportProvider } from './providers/mock-transport-provider.ts';
+import { SCORE_VERSION } from './ranking/candidate-scoring.ts';
+import { DEFAULT_CANDIDATE_ENGINE_CONFIG } from './ranking/config.ts';
 import { validateTripRequest } from './validation/trip-request-validation.ts';
 
 interface PersistedWorkflowRun {
@@ -20,22 +36,74 @@ interface PersistedWorkflowRun {
   errorMessage: string | null;
 }
 
+interface PersistedPlanningRun {
+  ID: string;
+  tripRequest_ID: string;
+  workflowRun_ID: string;
+  requestFingerprint: string;
+  status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
+  selectedOptionCount: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
 /** Tłumaczy błąd domenowy na kontrolowaną odpowiedź HTTP 400 bez gubienia jego kodu. */
 function rejectDomainError(request: Request, error: unknown): never {
   if (error instanceof DomainError) {
-    return request.reject({ status: 400, code: error.code, message: error.message });
+    const status =
+      error.code === 'PROVIDER_SEARCH_FAILED'
+        ? 502
+        : [
+              'TRIP_REQUEST_NOT_CONFIRMED',
+              'WORKFLOW_RUN_NOT_FOUND',
+              'PLANNING_ALREADY_IN_PROGRESS',
+              'PLANNING_STATE_INCONSISTENT',
+            ].includes(error.code)
+          ? 409
+          : 400;
+    return request.reject({ status, code: error.code, message: error.message });
   }
 
   throw error;
 }
 
 export default class TripPlannerService extends cds.ApplicationService {
+  /** Jawny seam zależności pozwala testować awarię providera bez flag w publicznym API. */
+  public createPlanningProviders(): CandidateEngineProviders {
+    return {
+      transport: new MockTransportProvider(),
+      accommodation: new MockAccommodationProvider(),
+      places: new MockPlacesProvider(),
+    };
+  }
+
   override async init(): Promise<void> {
     const { TripRequests } = this.entities;
-    const { WorkflowRuns: PersistedWorkflowRuns } = cds.entities('trip.planner');
+    const {
+      BudgetItems: PersistedBudgetItems,
+      OptionNotes: PersistedOptionNotes,
+      PlanningRuns: PersistedPlanningRuns,
+      RankedOptions: PersistedRankedOptions,
+      RejectionReasons: PersistedRejectionReasons,
+      RejectionSummaries: PersistedRejectionSummaries,
+      SourceSnapshots: PersistedSourceSnapshots,
+      WorkflowRuns: PersistedWorkflowRuns,
+      WorkflowTransitions: PersistedWorkflowTransitions,
+    } = cds.entities('trip.planner');
     const { DELETE, INSERT, SELECT, UPDATE } = cds.ql;
-    if (!TripRequests || !PersistedWorkflowRuns) {
-      throw new Error('Brak wymaganych encji TripRequests lub WorkflowRuns w modelu.');
+    if (
+      !TripRequests ||
+      !PersistedWorkflowRuns ||
+      !PersistedPlanningRuns ||
+      !PersistedWorkflowTransitions ||
+      !PersistedRankedOptions ||
+      !PersistedBudgetItems ||
+      !PersistedSourceSnapshots ||
+      !PersistedOptionNotes ||
+      !PersistedRejectionReasons ||
+      !PersistedRejectionSummaries
+    ) {
+      throw new Error('Brak wymaganych encji planowania w modelu persistence.');
     }
 
     // Obecny formularz nie wysyła jeszcze profili, dlatego backend materializuje ich defaults.
@@ -151,6 +219,157 @@ export default class TripPlannerService extends cds.ApplicationService {
         if (error instanceof DomainError && error.code === 'TRIP_REQUEST_ALREADY_CONFIRMED') {
           return request.reject({ status: 409, code: error.code, message: error.message });
         }
+        return rejectDomainError(request, error);
+      }
+    });
+
+    // Pipeline działa na niezmiennym, potwierdzonym briefie. Providerzy są wywoływani
+    // przed pierwszym zapisem, a cały trwały wynik powstaje w jednej transakcji requestu.
+    this.on('startPlanning', async (request: Request) => {
+      const ID = String(request.params[0]?.ID ?? '');
+      const transaction = cds.tx(request);
+
+      try {
+        const current = (await transaction.run(SELECT.one.from(TripRequests).where({ ID }))) as
+          PersistedTripRequest | undefined;
+        if (!current) {
+          return request.reject(404, 'Nie znaleziono briefu podróży.');
+        }
+        if (current.status !== 'CONSTRAINTS_CONFIRMED') {
+          throw new DomainError(
+            'TRIP_REQUEST_NOT_CONFIRMED',
+            'Planowanie można uruchomić dopiero po potwierdzeniu ograniczeń.',
+          );
+        }
+
+        const normalized = normalizeTripRequest(current);
+        validateTripRequest(normalized);
+        const workflowRun = (await transaction.run(
+          SELECT.one.from(PersistedWorkflowRuns).where({ tripRequest_ID: ID }),
+        )) as PersistedWorkflowRun | undefined;
+        if (!workflowRun) {
+          throw new DomainError(
+            'WORKFLOW_RUN_NOT_FOUND',
+            'Potwierdzony brief nie ma powiązanego WorkflowRun.',
+          );
+        }
+
+        const context = createPlanningContext(current);
+        const versions = {
+          providerFixtureVersion: MOCK_FIXTURE_VERSION,
+          engineVersion: DEFAULT_CANDIDATE_ENGINE_CONFIG.version,
+          scoringVersion: SCORE_VERSION,
+        };
+        const requestFingerprint = createPlanningFingerprint(context, versions);
+        const existingRun = (await transaction.run(
+          SELECT.one.from(PersistedPlanningRuns).where({
+            tripRequest_ID: ID,
+            requestFingerprint,
+          }),
+        )) as PersistedPlanningRun | undefined;
+
+        // Potwierdzony brief jest nieedytowalny, dlatego identyczny fingerprint oznacza
+        // identyczny wynik. Zwracamy istniejący run zamiast duplikować opcje i diagnostyki.
+        if (existingRun) {
+          if (existingRun.status === 'SUCCEEDED') {
+            const existingOptions = (await transaction.run(
+              SELECT.from(PersistedRankedOptions).where({ planningRun_ID: existingRun.ID }),
+            )) as unknown[];
+            if (workflowRun.state !== 'OPTIONS_READY' || existingOptions.length !== 3) {
+              throw new DomainError(
+                'PLANNING_STATE_INCONSISTENT',
+                'Zapisany wynik planowania nie zawiera dokładnie trzech spójnych opcji.',
+              );
+            }
+          }
+          return transaction.run(
+            SELECT.one.from(PersistedPlanningRuns).where({ ID: existingRun.ID }),
+          );
+        }
+
+        if (workflowRun.state !== 'CONSTRAINTS_CONFIRMED') {
+          throw new DomainError(
+            workflowRun.state === 'SEARCHING'
+              ? 'PLANNING_ALREADY_IN_PROGRESS'
+              : 'PLANNING_STATE_INCONSISTENT',
+            `Planowania nie można rozpocząć ze stanu ${workflowRun.state}.`,
+          );
+        }
+
+        const startedAt = new Date().toISOString();
+        const result = await runCandidateEngine({
+          context,
+          destinations: REFERENCE_DESTINATIONS,
+          providers: this.createPlanningProviders(),
+        });
+        const bundle = buildPlanningPersistenceBundle({
+          tripRequestId: ID,
+          workflowRunId: workflowRun.ID,
+          requestFingerprint,
+          providerFixtureVersion: MOCK_FIXTURE_VERSION,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          context,
+          result,
+        });
+
+        await transaction.run(INSERT.into(PersistedPlanningRuns).entries(bundle.planningRun));
+        if (bundle.rejectionReasons.length > 0) {
+          await transaction.run(
+            INSERT.into(PersistedRejectionReasons).entries(...bundle.rejectionReasons),
+          );
+        }
+        if (bundle.rejectionSummaries.length > 0) {
+          await transaction.run(
+            INSERT.into(PersistedRejectionSummaries).entries(...bundle.rejectionSummaries),
+          );
+        }
+
+        // Niedobór jest trwałym, kontrolowanym wynikiem. Nie zapisujemy nawet dwóch
+        // częściowych kart i pozostawiamy WorkflowRun gotowy do świadomej zmiany briefu.
+        if (bundle.planningRun.status === 'INSUFFICIENT_OPTIONS') {
+          return transaction.run(
+            SELECT.one.from(PersistedPlanningRuns).where({ ID: bundle.planningRun.ID }),
+          );
+        }
+
+        if (bundle.rankedOptions.length !== 3 || bundle.workflowTransitions.length !== 3) {
+          throw new DomainError(
+            'INVALID_PLANNING_RESULT',
+            'Udany wynik musi zawierać dokładnie trzy opcje i trzy przejścia workflow.',
+          );
+        }
+
+        let workflowState = workflowRun.state;
+        for (const targetState of ['SEARCHING', 'CANDIDATES_VALIDATED', 'OPTIONS_READY'] as const) {
+          const nextState = transitionWorkflowState(workflowState, targetState);
+          const updatedRows = (await transaction.run(
+            UPDATE.entity(PersistedWorkflowRuns)
+              .set({ state: nextState, errorCode: null, errorMessage: null })
+              .where({ ID: workflowRun.ID, state: workflowState }),
+          )) as number;
+          if (updatedRows !== 1) {
+            throw new DomainError(
+              'PLANNING_STATE_INCONSISTENT',
+              'WorkflowRun zmienił się podczas atomowego zapisu planowania.',
+            );
+          }
+          workflowState = nextState;
+        }
+        await transaction.run(
+          INSERT.into(PersistedWorkflowTransitions).entries(...bundle.workflowTransitions),
+        );
+        await transaction.run(INSERT.into(PersistedRankedOptions).entries(...bundle.rankedOptions));
+        await transaction.run(
+          INSERT.into(PersistedSourceSnapshots).entries(...bundle.sourceSnapshots),
+        );
+        await transaction.run(INSERT.into(PersistedBudgetItems).entries(...bundle.budgetItems));
+        await transaction.run(INSERT.into(PersistedOptionNotes).entries(...bundle.optionNotes));
+
+        return transaction.run(
+          SELECT.one.from(PersistedPlanningRuns).where({ ID: bundle.planningRun.ID }),
+        );
+      } catch (error) {
         return rejectDomainError(request, error);
       }
     });

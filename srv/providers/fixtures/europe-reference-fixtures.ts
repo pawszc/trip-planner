@@ -5,21 +5,21 @@ import type {
   TransportLeg,
   TransportMode,
   TransportOption,
-} from '../../domain/candidate.js';
-import { createMoney, type KnownPriceType, unknownMoney } from '../../domain/money.js';
-import type { SoftPreferences } from '../../domain/trip-request.js';
+} from '../../domain/candidate.ts';
+import { createMoney, type KnownPriceType, unknownMoney } from '../../domain/money.ts';
+import type { SoftPreferences } from '../../domain/trip-request.ts';
 import type {
   AccommodationSearchRequest,
   PlacesSearchRequest,
   TransportSearchRequest,
-} from '../contracts.js';
+} from '../contracts.ts';
 import {
   validateAccommodationSearchRequest,
   validatePlacesSearchRequest,
   validateTransportSearchRequest,
-} from '../provider-request-validation.js';
-import { addFixtureDays, fixtureInstant, fixtureNights } from './fixture-date.js';
-import { createFixtureSource, MOCK_PROVIDER_NAMES } from './fixture-source.js';
+} from '../provider-request-validation.ts';
+import { addFixtureDays, fixtureInstant, fixtureNights } from './fixture-date.ts';
+import { createFixtureSource, MOCK_PROVIDER_NAMES } from './fixture-source.ts';
 
 /** Finite destination catalogue for the Wrocław offline reference scenario. */
 export const REFERENCE_DESTINATIONS = Object.freeze([

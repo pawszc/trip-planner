@@ -4,7 +4,7 @@ import {
   type RejectionCode,
   type RejectionReason,
   type RejectionSubject,
-} from '../domain/candidate.js';
+} from '../domain/candidate.ts';
 
 export const REJECTION_CODES = REJECTION_CODE_VALUES;
 

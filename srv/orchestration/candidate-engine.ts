@@ -4,24 +4,24 @@ import type {
   RankedOption,
   RejectionReason,
   TripCandidate,
-} from '../domain/candidate.js';
-import { DomainError } from '../domain/domain-error.js';
-import { PACE_VALUES } from '../domain/trip-request.js';
+} from '../domain/candidate.ts';
+import { DomainError } from '../domain/domain-error.ts';
+import { PACE_VALUES } from '../domain/trip-request.ts';
 import type {
   AccommodationProvider,
   PlacesProvider,
   TransportProvider,
-} from '../providers/contracts.js';
-import { buildCandidates, type CandidateBuilderResult } from '../ranking/candidate-builder.js';
-import { filterCandidates, type CandidateValidationResult } from '../ranking/candidate-filter.js';
-import { rankCandidates, type ScoredCandidate } from '../ranking/candidate-scoring.js';
-import { selectDiverseOptions, type CandidateShortage } from '../ranking/candidate-selection.js';
+} from '../providers/contracts.ts';
+import { buildCandidates, type CandidateBuilderResult } from '../ranking/candidate-builder.ts';
+import { filterCandidates, type CandidateValidationResult } from '../ranking/candidate-filter.ts';
+import { rankCandidates, type ScoredCandidate } from '../ranking/candidate-scoring.ts';
+import { selectDiverseOptions, type CandidateShortage } from '../ranking/candidate-selection.ts';
 import {
   mergeCandidateEngineConfig,
   type CandidateEngineConfigOverride,
-} from '../ranking/config.js';
-import { validateHardConstraints } from '../validation/hard-constraints-validation.js';
-import { validateSoftPreferences } from '../validation/soft-preferences-validation.js';
+} from '../ranking/config.ts';
+import { validateHardConstraints } from '../validation/hard-constraints-validation.ts';
+import { validateSoftPreferences } from '../validation/soft-preferences-validation.ts';
 
 export interface CandidateEngineProviders {
   transport: TransportProvider;
@@ -142,11 +142,25 @@ export async function runCandidateEngine(
   const placePromises = destinations.map((destination) =>
     input.providers.places.search({ ...providerRequest, destination }),
   );
-  const [transportOptions, stayGroups, placeGroups] = await Promise.all([
-    transportPromise,
-    Promise.all(stayPromises),
-    Promise.all(placePromises),
-  ]);
+  let providerResults: readonly [
+    Awaited<typeof transportPromise>,
+    Awaited<(typeof stayPromises)[number]>[],
+    Awaited<(typeof placePromises)[number]>[],
+  ];
+  try {
+    providerResults = await Promise.all([
+      transportPromise,
+      Promise.all(stayPromises),
+      Promise.all(placePromises),
+    ]);
+  } catch {
+    // Adapter nie może przepuścić stack trace'u ani zależnego od providera payloadu do API.
+    throw new DomainError(
+      'PROVIDER_SEARCH_FAILED',
+      'Nie udało się pobrać danych demonstracyjnych do planowania.',
+    );
+  }
+  const [transportOptions, stayGroups, placeGroups] = providerResults;
   const builder: CandidateBuilderResult = buildCandidates({
     context: input.context,
     destinations,

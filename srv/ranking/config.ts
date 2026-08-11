@@ -1,4 +1,4 @@
-import { DomainError } from '../domain/domain-error.js';
+import { DomainError } from '../domain/domain-error.ts';
 
 export interface CandidateBuilderLimits {
   maxDestinations: number;

@@ -3,45 +3,47 @@
 ## P0
 
 - europejski city break rozpoczynający się w mieście użytkownika;
-- zebranie i potwierdzenie podstawowego briefu;
-- przyszłe adaptery danych transportu i noclegów;
-- deterministyczne filtry wykonalności i kalkulacja kosztów;
-- trzy zróżnicowane warianty z kompromisami i źródłami;
+- zebranie i potwierdzenie strukturalnego briefu;
+- adaptery providerów oddzielone od domeny;
+- deterministyczne filtry wykonalności, budżet i scoring;
+- trzy zróżnicowane warianty z kompromisami, ryzykami i źródłami;
 - szczegółowy plan dopiero po wyborze wariantu.
 
 ## Stan realizacji
 
-Faza 2A — Domain and Workflow Core — jest zakończona. Obejmuje:
+Faza 2 — od domeny do Planning API and Options UI — jest zakończona.
 
-- zachowanie CRUD `TripRequest`, obecnego formularza i akcji `confirmConstraints`;
-- jawne, strukturalne profile hard constraints i soft preferences z wartościami domyślnymi;
-- deterministyczną walidację briefu, ograniczeń i wag preferencji;
-- osobny `WorkflowRun` oraz rozdzielenie statusu briefu od stanu workflow;
-- czystą maszynę stanów i walidację dozwolonych przejść;
-- transakcyjne potwierdzenie constraints i synchronizację statusu briefu ze stanem workflow.
+### Faza 2A — Domain and Workflow Core
 
-Ukończenie Fazy 2A nie oznacza ukończenia całej Fazy 2. Stany późniejszych etapów są obecnie wyłącznie kontraktem domenowym; aplikacja ich jeszcze nie wykonuje.
+- jawne profile hard constraints i soft preferences;
+- walidacja briefu i profili w kodzie;
+- osobny `WorkflowRun` i domenowa maszyna stanów;
+- transakcyjne `confirmConstraints`.
 
-Faza 2B — Mock Providers and Deterministic Candidate Engine — dodaje:
+### Faza 2B — Mock Providers and Deterministic Candidate Engine
 
-- typowane kontrakty transportu, noclegów i miejsc niezależne od zewnętrznych API;
-- wersjonowane, stabilne fixture providery działające bez internetu;
-- `Money` w minor units, jawne typy cen i źródła `SourceSnapshot`;
-- ograniczony candidate builder, pełny budżet i deterministyczne filtry wykonalności;
-- wersjonowany scoring w kodzie oraz wybór ról `BEST_OVERALL`, `MOST_CONVENIENT` i
-  `BEST_VALUE` bez automatycznego luzowania constraints.
+- typowane kontrakty transportu, noclegów i miejsc;
+- wersjonowane fixture providery bez internetu i zegara systemowego;
+- `Money` w minor units, budżet, pełny katalog odrzuceń i `SourceSnapshot`;
+- wersjonowany scoring i deterministyczny wybór trzech ról.
 
-Ukończenie Fazy 2B nadal nie oznacza ukończenia całej Fazy 2. Silnik nie jest jeszcze
-wywoływany z UI ani endpointu CAP i nie utrwala wynikowych wariantów.
+### Faza 2C — Planning API and Options UI
 
-## Poza zakresem Faz 2A–2B
+- bound action `TripRequests.startPlanning`;
+- trwałe, wersjonowane `PlanningRuns`, trzy `RankedOptions`, `BudgetItems`,
+  `SourceSnapshots`, `OptionNotes`, `RejectionReasons` i ich podsumowania;
+- atomowe przejścia `CONSTRAINTS_CONFIRMED` → `SEARCHING` →
+  `CANDIDATES_VALIDATED` → `OPTIONS_READY` z audytem kolejności;
+- idempotentne ponowne wywołanie bez duplikatów;
+- kontrolowany niedobór bez poluzowania constraints i bez częściowych kart;
+- responsywny, dostępny formularz oraz dokładnie trzy pełne karty wariantów;
+- pełny scenariusz Playwright, obejmujący źródła, budżet i odrzucenia.
 
-- endpoint uruchamiający planowanie oraz persystencja kandydatów;
-- prawdziwi providerzy, live search i API podróżne;
-- ekran wariantów;
-- modele LLM, prompty produkcyjne i generowanie przez AI;
-- szczegółowy plan dzień po dniu.
+## Poza zakresem obecnego MVP
 
-## Poza MVP
-
-Podróże wieloetapowe, loty międzykontynentalne, rezerwacje, płatności, współdzielenie planów, uwierzytelnianie, aplikacje mobilne i automatyczne zmiany ograniczeń pozostają poza zakresem.
+- LLM, prompty produkcyjne i konwersacyjne pytania;
+- prawdziwi providerzy, live search, kursy walut i aktualna dostępność;
+- itinerary dzień po dniu i wybór wariantu;
+- rezerwacje, płatności oraz uwierzytelnianie;
+- podróże wieloetapowe i międzykontynentalne;
+- aplikacje mobilne natywne, współdzielenie planów i automatyczne zmiany ograniczeń.

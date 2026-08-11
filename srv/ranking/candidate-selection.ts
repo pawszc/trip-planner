@@ -2,10 +2,10 @@ import {
   SELECTION_ROLE_VALUES,
   type RankedOption,
   type SelectionRole,
-} from '../domain/candidate.js';
-import { candidateSemanticSignature } from './candidate-filter.js';
-import type { ScoredCandidate } from './candidate-scoring.js';
-import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.js';
+} from '../domain/candidate.ts';
+import { candidateSemanticSignature } from './candidate-filter.ts';
+import type { ScoredCandidate } from './candidate-scoring.ts';
+import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.ts';
 
 export interface CandidateShortage {
   code: 'INSUFFICIENT_VALID_CANDIDATES';

@@ -48,6 +48,12 @@ describe('TripRequest domain validation', () => {
     );
   });
 
+  it.each(['pln', 'PL', 'PLNN'])('rejects an invalid currency code (%s)', (currency) => {
+    expect(() => validateTripRequest({ ...validFullTripRequest, currency })).toThrowError(
+      /trzyliterowym kodem/,
+    );
+  });
+
   it('rejects an unsupported pace', () => {
     expect(() => validateTripRequest({ ...validFullTripRequest, pace: 'EXTREME' })).toThrowError(
       /tempo podróży jest niedozwolone/,

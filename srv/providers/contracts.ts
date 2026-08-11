@@ -1,4 +1,4 @@
-import type { Destination, Place, StayOption, TransportOption } from '../domain/candidate.js';
+import type { Destination, Place, StayOption, TransportOption } from '../domain/candidate.ts';
 
 /**
  * Common, explicit trip context shared by every provider request.
