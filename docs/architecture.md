@@ -16,12 +16,22 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 
 `TripRequest` przechowuje podstawowy brief oraz status jego potwierdzenia. Pola strukturalne `hardConstraints` i `softPreferences` używają jawnych typów CDS `HardConstraintProfile` i `SoftPreferenceProfile`. Hard constraints nie są swobodnym tekstem: budżet, okna czasowe, limity podróży i dozwolone środki transportu mają typowany kontrakt walidowany przez kod. Soft preferences przechowują wagi całkowite od 1 do 5, natomiast `pace` pozostaje osobnym polem briefu. Wartości domyślne profili pozwalają dotychczasowym klientom nadal tworzyć brief bez przesyłania nowych pól. CAP 10 publikuje te struktury w domyślnym kontrakcie OData jako jawne pola z prefiksami `hardConstraints_*` i `softPreferences_*`; osobny mapper serwisu składa je do zagnieżdżonych typów domenowych i materializuje z powrotem bez zmiany dotychczasowych pól API.
 
+Daty briefu przechodzą przez jedną funkcję `parseStrictIsoDate`, która wymaga dokładnego
+formatu `YYYY-MM-DD` i istniejącego dnia kalendarzowego. Ten sam walidator jest wykonywany
+przy CREATE, UPDATE, `confirmConstraints` i `startPlanning`; round-trip UTC odrzuca między
+innymi 29 lutego w roku nieprzestępnym oraz nieistniejące dni miesiąca.
+
 Status `TripRequest` opisuje lifecycle briefu: `DRAFT` oznacza wersję roboczą, a `CONSTRAINTS_CONFIRMED` potwierdzony zestaw ograniczeń. Postęp planowania przechowuje osobna encja `WorkflowRuns`, powiązana jeden-do-jednego z `TripRequest`. Rekord workflow zawiera bieżący stan, kontrolowane informacje o błędzie i znaczniki czasu. Projekcja OData workflow jest tylko do odczytu; klient nie może ominąć maszyny stanów przez bezpośredni zapis. Dzięki temu etap wykonania nie zmienia znaczenia statusu briefu ani zasad jego edycji.
 
 Każde deterministyczne wykonanie ma osobny `PlanningRun`, powiązany z `TripRequest` i
 `WorkflowRun`. Run zapisuje fingerprint pełnego wejścia, wersję fixture providerów, wersję
 silnika i scoringu, liczniki kandydatów oraz kontrolowany status. Unikalność fingerprintu
 zapewnia idempotencję dla nieedytowalnego, potwierdzonego briefu.
+
+Równoległe wywołania `startPlanning` dla tego samego briefu są koaleskowane przez serwis do
+jednego aktywnego wykonania. Pierwszy request jest właścicielem transakcji, a kolejne czekają
+na jego commit i otrzymują ten sam wynik. Wpis single-flight jest usuwany dopiero w fazie
+`done` requestu; unikalność fingerprintu w bazie nadal chroni trwały zapis przed duplikatami.
 
 ## Maszyna stanów
 
@@ -128,6 +138,12 @@ Przy mniej niż trzech poprawnych wariantach zapisuje się `PlanningRun` ze stat
 `INSUFFICIENT_OPTIONS`, diagnostyki `RejectionReasons` i `RejectionSummaries`, ale zero
 `RankedOptions`. `WorkflowRun` pozostaje w `CONSTRAINTS_CONFIRMED`. Ponowne wywołanie dla
 tego samego fingerprintu zwraca ten sam run i nie tworzy duplikatów.
+
+UI pozwala poprawić zapisany `DRAFT` przez PATCH przed potwierdzeniem. Po kontrolowanym
+niedoborze użytkownik może utworzyć nowy, edytowalny brief skopiowany z obecnych danych;
+potwierdzony brief i jego diagnostyka pozostają niezmienne. Widok jawnie opisuje fixture
+Fazy 2 jako demonstracyjny scenariusz rozpoczynający się we Wrocławiu, bez aktualnych ofert
+ani potwierdzonej dostępności.
 
 ## Publiczny kontrakt CAP
 

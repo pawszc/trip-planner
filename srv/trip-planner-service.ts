@@ -68,6 +68,8 @@ function rejectDomainError(request: Request, error: unknown): never {
 }
 
 export default class TripPlannerService extends cds.ApplicationService {
+  private readonly activePlanningRequests = new Map<string, Promise<unknown>>();
+
   /** Jawny seam zależności pozwala testować awarię providera bez flag w publicznym API. */
   public createPlanningProviders(): CandidateEngineProviders {
     return {
@@ -75,6 +77,54 @@ export default class TripPlannerService extends cds.ApplicationService {
       accommodation: new MockAccommodationProvider(),
       places: new MockPlacesProvider(),
     };
+  }
+
+  /**
+   * Równoległe requesty tego samego nieedytowalnego briefu współdzielą jedno wykonanie.
+   * Obserwatorzy otrzymują wynik dopiero po commicie requestu-właściciela.
+   */
+  private runPlanningOnce(
+    tripRequestId: string,
+    request: Request,
+    execute: () => Promise<unknown>,
+  ): Promise<unknown> {
+    const active = this.activePlanningRequests.get(tripRequestId);
+    if (active) return active;
+
+    let committedResult: unknown;
+    let executionError: unknown;
+    let resolveCommitted!: (value: unknown) => void;
+    let rejectCommitted!: (reason: unknown) => void;
+    const committed = new Promise<unknown>((resolve, reject) => {
+      resolveCommitted = resolve;
+      rejectCommitted = reject;
+    });
+
+    // Właściciel requestu zwraca własny błąd HTTP. Ten handler zapobiega nieobsłużonemu
+    // rejection odroczonego Promise, gdy nie było żadnego równoległego obserwatora.
+    void committed.catch(() => undefined);
+    this.activePlanningRequests.set(tripRequestId, committed);
+
+    request.on('succeeded', () => resolveCommitted(committedResult));
+    request.on('failed', () =>
+      rejectCommitted(executionError ?? new Error('Nie udało się zatwierdzić wyniku planowania.')),
+    );
+    request.on('done', () => {
+      if (this.activePlanningRequests.get(tripRequestId) === committed) {
+        this.activePlanningRequests.delete(tripRequestId);
+      }
+    });
+
+    return execute().then(
+      (result) => {
+        committedResult = result;
+        return result;
+      },
+      (error: unknown) => {
+        executionError = error;
+        throw error;
+      },
+    );
   }
 
   override async init(): Promise<void> {
@@ -225,8 +275,7 @@ export default class TripPlannerService extends cds.ApplicationService {
 
     // Pipeline działa na niezmiennym, potwierdzonym briefie. Providerzy są wywoływani
     // przed pierwszym zapisem, a cały trwały wynik powstaje w jednej transakcji requestu.
-    this.on('startPlanning', async (request: Request) => {
-      const ID = String(request.params[0]?.ID ?? '');
+    const executeStartPlanning = async (request: Request, ID: string): Promise<unknown> => {
       const transaction = cds.tx(request);
 
       try {
@@ -372,6 +421,11 @@ export default class TripPlannerService extends cds.ApplicationService {
       } catch (error) {
         return rejectDomainError(request, error);
       }
+    };
+
+    this.on('startPlanning', (request: Request) => {
+      const ID = String(request.params[0]?.ID ?? '');
+      return this.runPlanningOnce(ID, request, () => executeStartPlanning(request, ID));
     });
 
     await super.init();

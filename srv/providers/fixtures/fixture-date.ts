@@ -1,17 +1,13 @@
-const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+import { parseStrictIsoDate } from '../../validation/strict-iso-date.ts';
+
 const MINUTES_PER_DAY = 24 * 60;
 
 function parseIsoDate(date: string): Date {
-  if (!ISO_DATE_PATTERN.test(date)) {
-    throw new RangeError(`Expected an ISO calendar date, received: ${date}`);
-  }
-
-  const parsed = new Date(`${date}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+  const timestamp = parseStrictIsoDate(date);
+  if (timestamp === null) {
     throw new RangeError(`Expected an existing ISO calendar date, received: ${date}`);
   }
-
-  return parsed;
+  return new Date(timestamp);
 }
 
 /** Adds UTC calendar days without consulting the host timezone or current clock. */

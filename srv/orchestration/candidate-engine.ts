@@ -22,6 +22,7 @@ import {
 } from '../ranking/config.ts';
 import { validateHardConstraints } from '../validation/hard-constraints-validation.ts';
 import { validateSoftPreferences } from '../validation/soft-preferences-validation.ts';
+import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 
 export interface CandidateEngineProviders {
   transport: TransportProvider;
@@ -57,18 +58,10 @@ export interface CandidateEngineResult {
   shortage: CandidateShortage | null;
 }
 
-function strictDate(value: string): number | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const parsed = Date.parse(`${value}T00:00:00.000Z`);
-  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value
-    ? parsed
-    : null;
-}
-
 /** Providerzy nie są wywoływani dla niepoprawnego briefu wykonawczego. */
 export function assertPlanningContext(context: PlanningContext): void {
-  const start = strictDate(context.startDate);
-  const end = strictDate(context.endDate);
+  const start = parseStrictIsoDate(context.startDate);
+  const end = parseStrictIsoDate(context.endDate);
   const valid =
     context.tripRequestId.trim().length > 0 &&
     context.originCity.trim().length > 0 &&

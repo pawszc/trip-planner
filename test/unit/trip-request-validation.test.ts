@@ -36,6 +36,22 @@ describe('TripRequest domain validation', () => {
     );
   });
 
+  it.each(['2026-02-29', '2026-04-31'])('rejects a non-existing travel date (%s)', (startDate) => {
+    expect(() => validateTripRequest({ ...validFullTripRequest, startDate })).toThrowError(
+      new DomainError('INVALID_TRAVEL_DATES', 'Daty podróży muszą być poprawne.'),
+    );
+  });
+
+  it('accepts a valid leap-day range', () => {
+    expect(() =>
+      validateTripRequest({
+        ...validFullTripRequest,
+        startDate: '2028-02-29',
+        endDate: '2028-03-01',
+      }),
+    ).not.toThrow();
+  });
+
   it('rejects zero adults', () => {
     expect(() => validateTripRequest({ ...validFullTripRequest, adults: 0 })).toThrowError(
       /Liczba dorosłych/,

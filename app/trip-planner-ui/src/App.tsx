@@ -4,6 +4,7 @@ import {
   createTripRequest,
   readPlanningView,
   startPlanning,
+  updateTripRequest,
   type BudgetItem,
   type HardConstraints,
   type OptionNote,
@@ -45,6 +46,20 @@ const initialDraft: TripRequestDraft = {
     priceSensitivity: 4,
   },
 };
+
+function draftFromTripRequest(tripRequest: TripRequest): TripRequestDraft {
+  return {
+    originCity: tripRequest.originCity,
+    startDate: tripRequest.startDate,
+    endDate: tripRequest.endDate,
+    adults: tripRequest.adults,
+    totalBudget: tripRequest.totalBudget,
+    currency: tripRequest.currency,
+    pace: tripRequest.pace,
+    hardConstraints: { ...tripRequest.hardConstraints },
+    softPreferences: { ...tripRequest.softPreferences },
+  };
+}
 
 const paceLabels: Record<Pace, string> = {
   RELAXED: 'Spokojne',
@@ -487,6 +502,7 @@ export default function App() {
   const [operation, setOperation] = useState<Operation>(null);
   const [error, setError] = useState<string | null>(null);
   const [formErrors, setFormErrors] = useState<FormErrors>({});
+  const [editingSavedDraft, setEditingSavedDraft] = useState(false);
 
   const update = <K extends keyof TripRequestDraft>(key: K, value: TripRequestDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -523,12 +539,43 @@ export default function App() {
     setOperation('saving');
     setError(null);
     try {
-      setSaved(await createTripRequest(draft));
+      const persisted =
+        saved?.status === 'DRAFT'
+          ? await updateTripRequest(saved.ID, draft)
+          : await createTripRequest(draft);
+      setSaved(persisted);
+      setEditingSavedDraft(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Nie udało się zapisać briefu.');
     } finally {
       setOperation(null);
     }
+  };
+
+  const editSavedDraft = () => {
+    if (!saved || saved.status !== 'DRAFT') return;
+    setDraft(draftFromTripRequest(saved));
+    setEditingSavedDraft(true);
+    setFormErrors({});
+    setError(null);
+  };
+
+  const cancelDraftEdit = () => {
+    if (!saved) return;
+    setDraft(draftFromTripRequest(saved));
+    setEditingSavedDraft(false);
+    setFormErrors({});
+    setError(null);
+  };
+
+  const createNewBriefFromCurrent = () => {
+    if (!saved) return;
+    setDraft(draftFromTripRequest(saved));
+    setSaved(null);
+    setPlanning(null);
+    setEditingSavedDraft(false);
+    setFormErrors({});
+    setError(null);
   };
 
   const confirmBrief = async () => {
@@ -575,6 +622,11 @@ export default function App() {
         </p>
       </header>
 
+      <aside className="fixture-notice" data-testid="phase-2-fixture-notice">
+        <strong>Fixture Fazy 2 obsługuje scenariusz demonstracyjny z Wrocławia.</strong>
+        <span> Dane nie przedstawiają aktualnych ofert ani potwierdzonej dostępności.</span>
+      </aside>
+
       <section className="content-card" aria-labelledby="brief-title" aria-busy={busy}>
         <div className="section-heading">
           <div>
@@ -601,7 +653,7 @@ export default function App() {
           </p>
         )}
 
-        {!saved ? (
+        {!saved || editingSavedDraft ? (
           <form className="brief-form" onSubmit={saveBrief} noValidate>
             <fieldset className="form-section form-grid">
               <legend>Podstawowy brief</legend>
@@ -858,13 +910,24 @@ export default function App() {
             </fieldset>
 
             <div className="actions">
+              {saved && (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={cancelDraftEdit}
+                  disabled={busy}
+                  data-testid="cancel-draft-edit"
+                >
+                  Anuluj edycję
+                </button>
+              )}
               <button
                 className="primary-button"
                 type="submit"
                 disabled={busy}
                 data-testid="save-brief"
               >
-                {operation === 'saving' ? 'Zapisywanie…' : 'Zapisz brief'}
+                {operation === 'saving' ? 'Zapisywanie…' : saved ? 'Zapisz zmiany' : 'Zapisz brief'}
               </button>
             </div>
           </form>
@@ -902,14 +965,24 @@ export default function App() {
             </div>
             <div className="actions">
               {saved.status === 'DRAFT' ? (
-                <button
-                  className="primary-button"
-                  onClick={confirmBrief}
-                  disabled={busy}
-                  data-testid="confirm-constraints"
-                >
-                  {operation === 'confirming' ? 'Potwierdzanie…' : 'Potwierdź ograniczenia'}
-                </button>
+                <>
+                  <button
+                    className="secondary-button"
+                    onClick={editSavedDraft}
+                    disabled={busy}
+                    data-testid="edit-draft"
+                  >
+                    Edytuj zapisany DRAFT
+                  </button>
+                  <button
+                    className="primary-button"
+                    onClick={confirmBrief}
+                    disabled={busy}
+                    data-testid="confirm-constraints"
+                  >
+                    {operation === 'confirming' ? 'Potwierdzanie…' : 'Potwierdź ograniczenia'}
+                  </button>
+                </>
               ) : !planning ? (
                 <button
                   className="primary-button"
@@ -952,9 +1025,22 @@ export default function App() {
       )}
 
       {planning?.planningRun.status === 'INSUFFICIENT_OPTIONS' && (
-        <section className="results-section" aria-labelledby="shortage-title">
+        <section
+          className="results-section"
+          aria-labelledby="shortage-title"
+          data-testid="shortage-results"
+        >
           <h2 id="shortage-title">Brak trzech poprawnych wariantów</h2>
           <p>Constraints nie zostały poluzowane, a częściowe karty nie zostały zapisane.</p>
+          <div className="actions shortage-actions">
+            <button
+              className="primary-button"
+              onClick={createNewBriefFromCurrent}
+              data-testid="new-brief-from-current"
+            >
+              Utwórz nowy brief z obecnych danych
+            </button>
+          </div>
           <RejectionDiagnostics planning={planning} />
         </section>
       )}

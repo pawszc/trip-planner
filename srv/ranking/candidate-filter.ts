@@ -6,6 +6,7 @@ import {
 } from '../domain/candidate.ts';
 import { FRESHNESS_TYPE_VALUES, type Money, type SourceSnapshot } from '../domain/money.ts';
 import { SOFT_PREFERENCE_KEYS } from '../domain/trip-request.ts';
+import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.ts';
 import { createRejectionReason } from './rejection-reasons.ts';
 
@@ -29,19 +30,12 @@ function normalizedName(value: string): string {
   return value.trim().toLocaleLowerCase('en').replace(/\s+/g, ' ');
 }
 
-function strictDate(value: string): number | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const parsed = Date.parse(`${value}T00:00:00.000Z`);
-  if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed).toISOString().slice(0, 10) === value ? parsed : null;
-}
-
 function strictInstant(value: string): number | null {
   const match =
     /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
   if (
     match === null ||
-    strictDate(match[1] ?? '') === null ||
+    parseStrictIsoDate(match[1] ?? '') === null ||
     Number(match[2]) > 23 ||
     Number(match[3]) > 59 ||
     Number(match[4]) > 59
@@ -128,8 +122,9 @@ function invalidDates(candidate: TripCandidate, context: PlanningContext): reado
   const outboundArrival = strictInstant(candidate.transport.outbound.arrivalAt);
   const returnDeparture = strictInstant(candidate.transport.return.departureAt);
   const returnArrival = strictInstant(candidate.transport.return.arrivalAt);
-  const tripStart = Date.parse(`${context.startDate}T00:00:00.000Z`);
-  const tripEnd = Date.parse(`${context.endDate}T23:59:59.999Z`);
+  const tripStart = parseStrictIsoDate(context.startDate) ?? Number.NaN;
+  const tripEndStart = parseStrictIsoDate(context.endDate);
+  const tripEnd = tripEndStart === null ? Number.NaN : tripEndStart + 86_400_000 - 1;
   if (
     outboundDeparture === null ||
     outboundArrival === null ||
@@ -155,8 +150,8 @@ function invalidDates(candidate: TripCandidate, context: PlanningContext): reado
       issues.push('return-duration');
   }
 
-  const stayStart = strictDate(candidate.stay.checkInDate);
-  const stayEnd = strictDate(candidate.stay.checkOutDate);
+  const stayStart = parseStrictIsoDate(candidate.stay.checkInDate);
+  const stayEnd = parseStrictIsoDate(candidate.stay.checkOutDate);
   const expectedNights =
     stayStart !== null && stayEnd !== null
       ? Math.floor((stayEnd - stayStart) / 86_400_000)

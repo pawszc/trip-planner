@@ -7,6 +7,7 @@ import type {
 } from '../domain/trip-request.ts';
 import { validateHardConstraints } from './hard-constraints-validation.ts';
 import { validateSoftPreferences } from './soft-preferences-validation.ts';
+import { parseStrictIsoDate } from './strict-iso-date.ts';
 
 // Na granicy systemu `pace` może być dowolnym tekstem; walidator dopiero zawęża go do Pace.
 export interface TripRequestValidationInput extends Omit<
@@ -22,11 +23,6 @@ export interface NormalizedTripRequestValidationInput extends TripRequestValidat
   softPreferences: SoftPreferences;
 }
 
-/** Sprawdza format kalendarzowy YYYY-MM-DD bez zależności od lokalnej strefy czasowej. */
-function isIsoDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
-}
-
 /**
  * Centralny walidator podstawowego briefu oraz jego jawnych profili.
  * Zgłasza pierwszy DomainError, aby każda reguła miała jednoznaczny kod i komunikat.
@@ -37,7 +33,7 @@ export function validateTripRequest(input: NormalizedTripRequestValidationInput)
     throw new DomainError('ORIGIN_CITY_REQUIRED', 'Miasto rozpoczęcia jest wymagane.');
   }
 
-  if (!isIsoDate(input.startDate) || !isIsoDate(input.endDate)) {
+  if (parseStrictIsoDate(input.startDate) === null || parseStrictIsoDate(input.endDate) === null) {
     throw new DomainError('INVALID_TRAVEL_DATES', 'Daty podróży muszą być poprawne.');
   }
 

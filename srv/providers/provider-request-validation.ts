@@ -5,8 +5,7 @@ import type {
   ProviderTripRequest,
   TransportSearchRequest,
 } from './contracts.ts';
-
-const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 
 export const PROVIDER_REQUEST_ERROR_CODE_VALUES = [
   'INVALID_START_DATE',
@@ -38,23 +37,15 @@ function parseIsoCalendarDate(
   field: 'startDate' | 'endDate',
   code: 'INVALID_START_DATE' | 'INVALID_END_DATE',
 ): number {
-  if (!ISO_DATE_PATTERN.test(value)) {
-    throw new ProviderRequestValidationError(
-      code,
-      field,
-      `${field} must be an ISO calendar date (YYYY-MM-DD); received: ${value}`,
-    );
-  }
-
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+  const parsed = parseStrictIsoDate(value);
+  if (parsed === null) {
     throw new ProviderRequestValidationError(
       code,
       field,
       `${field} must identify an existing ISO calendar date; received: ${value}`,
     );
   }
-  return parsed.getTime();
+  return parsed;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

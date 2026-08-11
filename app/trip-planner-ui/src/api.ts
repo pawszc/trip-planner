@@ -43,7 +43,11 @@ export interface TripRequest extends TripRequestDraft {
   modifiedAt: string;
 }
 
-interface TripRequestWire extends Omit<TripRequest, 'hardConstraints' | 'softPreferences'> {
+interface TripRequestWire extends Omit<
+  TripRequest,
+  'hardConstraints' | 'softPreferences' | 'totalBudget'
+> {
+  totalBudget: number | string;
   hardConstraints_hardBudgetLimit: boolean;
   hardConstraints_earliestDepartureTime: string | null;
   hardConstraints_latestReturnTime: string | null;
@@ -245,6 +249,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(message, response.status, body.error?.code ?? null);
   }
 
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
@@ -255,7 +260,7 @@ function normalizeTripRequest(wire: TripRequestWire): TripRequest {
     startDate: wire.startDate,
     endDate: wire.endDate,
     adults: wire.adults,
-    totalBudget: wire.totalBudget,
+    totalBudget: Number(wire.totalBudget),
     currency: wire.currency,
     pace: wire.pace,
     status: wire.status,
@@ -318,6 +323,15 @@ export async function createTripRequest(draft: TripRequestDraft): Promise<TripRe
     body: JSON.stringify(tripRequestPayload(draft)),
   });
   return normalizeTripRequest(wire);
+}
+
+export async function updateTripRequest(ID: string, draft: TripRequestDraft): Promise<TripRequest> {
+  const path = `/TripRequests(${encodeURIComponent(ID)})`;
+  await request<void>(path, {
+    method: 'PATCH',
+    body: JSON.stringify(tripRequestPayload(draft)),
+  });
+  return normalizeTripRequest(await request<TripRequestWire>(path));
 }
 
 export async function confirmConstraints(ID: string): Promise<TripRequest> {

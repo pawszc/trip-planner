@@ -90,6 +90,16 @@ input[type='checkbox'] {
   line-height: 1.65;
 }
 
+.fixture-notice {
+  margin: 0 0 1.25rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #d6b86d;
+  border-radius: 0.8rem;
+  color: #624609;
+  background: #fff8e7;
+  line-height: 1.5;
+}
+
 .content-card,
 .results-section {
   border: 1px solid rgb(31 83 91 / 12%);
@@ -307,28 +317,48 @@ input[type='checkbox'] {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.75rem;
   margin-top: 1.5rem;
 }
 
-.primary-button {
+.primary-button,
+.secondary-button {
   min-height: 3rem;
   padding: 0.7rem 1.25rem;
-  border: 0;
   border-radius: 0.65rem;
+  font-weight: 800;
+}
+
+.primary-button {
+  border: 0;
   color: white;
   background: var(--teal);
   box-shadow: 0 0.5rem 1.4rem rgb(8 107 102 / 22%);
-  font-weight: 800;
+}
+
+.secondary-button {
+  border: 1px solid #6f9295;
+  color: var(--teal-dark);
+  background: white;
 }
 
 .primary-button:hover:not(:disabled) {
   background: var(--teal-dark);
 }
 
-.primary-button:disabled {
+.secondary-button:hover:not(:disabled) {
+  background: var(--teal-soft);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.shortage-actions {
+  justify-content: flex-start;
 }
 
 .summary {
@@ -814,7 +844,8 @@ summary {
   }
 
   .actions,
-  .primary-button {
+  .primary-button,
+  .secondary-button {
     width: 100%;
   }
 }

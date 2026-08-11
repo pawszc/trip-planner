@@ -7,6 +7,7 @@
 Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 
 - walidację briefu, hard constraints i każdej wagi soft preferences;
+- ścisłe daty kalendarzowe, w tym daty nieistniejące i poprawne lata przestępne;
 - wszystkie dozwolone przejścia workflow i reprezentatywne przejścia niedozwolone;
 - `Money`, wszystkie `PriceType`, UNKNOWN, waluty i bezpieczne minor units;
 - 13 kodów odrzucenia, wiele powodów, deduplikację i granice buildera;
@@ -33,16 +34,19 @@ sprawdza między innymi:
 - znormalizowane `SourceSnapshots`, `BudgetBreakdowns` i 7 `BudgetItems` na opcję;
 - zgodność sum confirmed/estimated/unknown z agregatem karty;
 - idempotentne ponowne wywołanie bez duplikatów;
+- dwa równoległe wywołania `startPlanning` koaleskowane do jednego pipeline'u i runu;
 - kontrolowany niedobór z diagnostyką i zerem częściowych opcji;
 - rollback wszystkich zapisów po awarii providera.
 
 ### Playwright
 
-Jeden stabilny scenariusz Chromium przechodzi pełny przepływ: formularz, wszystkie ważne
-constraints i preferences, zapis, potwierdzenie, planowanie, dokładnie trzy karty, role,
-koszt, transport, źródła fixture, budżet i diagnostykę odrzuceń. Używa etykiet i stabilnych
-`data-testid`, ustawia suwaki klawiaturą, sprawdza brak błędów konsoli oraz widok 390×844
-bez poziomego overflow.
+Dwa stabilne scenariusze Chromium przechodzą oba wyniki planowania. Pierwszy obejmuje
+formularz, edycję zapisanego `DRAFT`, wszystkie ważne constraints i preferences,
+potwierdzenie, planowanie, dokładnie trzy karty, role, koszt, transport, źródła fixture,
+budżet i diagnostykę odrzuceń. Drugi wymusza `INSUFFICIENT_OPTIONS`, sprawdza brak
+częściowych kart oraz utworzenie nowego briefu z obecnych danych. Testy używają etykiet i
+stabilnych `data-testid`, ustawiają suwaki klawiaturą, sprawdzają brak błędów konsoli, a
+scenariusz referencyjny także widok 390×844 bez poziomego overflow.
 
 Test nie kontaktuje się z internetem, nie korzysta z zegara systemowego i używa stałych dat
 `2026-10-10`–`2026-10-13`. Przy błędzie zachowuje screenshot, trace i raport HTML.

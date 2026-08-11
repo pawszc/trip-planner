@@ -15,6 +15,7 @@ import {
   type Money,
   type SourceSnapshot,
 } from '../domain/money.ts';
+import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 
 export const INTERNAL_COST_FIXTURE_VERSION = 'internal-cost-estimates-v1';
 
@@ -41,9 +42,9 @@ function fixtureSource(category: string, currency: string): SourceSnapshot {
 }
 
 function wholeDaysInclusive(startDate: string, endDate: string): number | null {
-  const start = Date.parse(`${startDate}T00:00:00.000Z`);
-  const end = Date.parse(`${endDate}T00:00:00.000Z`);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+  const start = parseStrictIsoDate(startDate);
+  const end = parseStrictIsoDate(endDate);
+  if (start === null || end === null || end < start) {
     return null;
   }
   return Math.floor((end - start) / 86_400_000) + 1;
