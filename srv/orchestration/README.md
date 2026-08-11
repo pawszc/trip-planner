@@ -1,3 +1,5 @@
 # Orchestration
 
-Ta warstwa będzie koordynować deterministyczne filtrowanie, pobieranie danych przez adaptery i późniejsze wywołania AI. Nie zawiera jeszcze logiki MVP.
+Ta warstwa koordynuje typowane fixture providery, ograniczony candidate builder,
+filtrowanie, scoring i diversity selection. Faza 2B nie wystawia jeszcze pipeline'u jako
+akcji CAP i nie wywołuje modeli AI.

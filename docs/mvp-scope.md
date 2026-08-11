@@ -22,12 +22,22 @@ Faza 2A — Domain and Workflow Core — jest zakończona. Obejmuje:
 
 Ukończenie Fazy 2A nie oznacza ukończenia całej Fazy 2. Stany późniejszych etapów są obecnie wyłącznie kontraktem domenowym; aplikacja ich jeszcze nie wykonuje.
 
-## Poza zakresem Fazy 2A
+Faza 2B — Mock Providers and Deterministic Candidate Engine — dodaje:
 
-- mock providerzy oraz prawdziwi providerzy i API podróżne;
-- wyszukiwanie transportu i noclegów;
-- candidate builder i walidacja kandydatur pochodzących z wyszukiwania;
-- ranking i wybór trzech wariantów;
+- typowane kontrakty transportu, noclegów i miejsc niezależne od zewnętrznych API;
+- wersjonowane, stabilne fixture providery działające bez internetu;
+- `Money` w minor units, jawne typy cen i źródła `SourceSnapshot`;
+- ograniczony candidate builder, pełny budżet i deterministyczne filtry wykonalności;
+- wersjonowany scoring w kodzie oraz wybór ról `BEST_OVERALL`, `MOST_CONVENIENT` i
+  `BEST_VALUE` bez automatycznego luzowania constraints.
+
+Ukończenie Fazy 2B nadal nie oznacza ukończenia całej Fazy 2. Silnik nie jest jeszcze
+wywoływany z UI ani endpointu CAP i nie utrwala wynikowych wariantów.
+
+## Poza zakresem Faz 2A–2B
+
+- endpoint uruchamiający planowanie oraz persystencja kandydatów;
+- prawdziwi providerzy, live search i API podróżne;
 - ekran wariantów;
 - modele LLM, prompty produkcyjne i generowanie przez AI;
 - szczegółowy plan dzień po dniu.
