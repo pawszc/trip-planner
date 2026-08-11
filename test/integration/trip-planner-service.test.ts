@@ -21,6 +21,8 @@ const { DELETE: DELETE_REQUEST, GET, PATCH, POST } = test;
 interface CreatedTripRequest {
   ID: string;
   originCity: string;
+  startDate: string;
+  endDate: string;
   status: string;
   hardConstraints_hardBudgetLimit: boolean;
   hardConstraints_earliestDepartureTime: string | null;
@@ -158,6 +160,8 @@ const defaultSoftPreferences: SoftPreferences = {
 };
 
 const forceRollbackHeader = 'x-test-force-confirm-rollback';
+const observeConcurrentPlanningHeader = 'x-test-observe-concurrent-planning';
+let concurrentPlanningRequestObserver: (() => void) | null = null;
 
 function actionUrl(ID: string): string {
   return `/trip-planner/TripRequests(${ID})/TripPlannerService.confirmConstraints`;
@@ -235,6 +239,11 @@ beforeAll(async () => {
       throw new Error('Wymuszony błąd testowy przed commitem.');
     }
   });
+  service.before('startPlanning', (request: Request) => {
+    if (request.headers[observeConcurrentPlanningHeader] === 'true') {
+      concurrentPlanningRequestObserver?.();
+    }
+  });
 });
 
 // Każdy test dostaje pustą bazę, więc przypadki nie zależą od kolejności wykonania.
@@ -308,6 +317,61 @@ describe('TripPlannerService', () => {
     await expect(
       POST('/trip-planner/TripRequests', { ...validTripRequest, adults: 0 }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it.each(['2026-02-29', '2026-04-31'])(
+    'rejects a non-existing date on CREATE (%s)',
+    async (startDate) => {
+      await expect(
+        POST('/trip-planner/TripRequests', { ...validTripRequest, startDate }),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { data: { error: { code: 'INVALID_TRAVEL_DATES' } } },
+      });
+    },
+  );
+
+  it('accepts a leap day on CREATE', async () => {
+    const created = await POST('/trip-planner/TripRequests', {
+      ...validTripRequest,
+      startDate: '2028-02-29',
+      endDate: '2028-03-01',
+    });
+
+    expect(created.data).toMatchObject({ startDate: '2028-02-29', endDate: '2028-03-01' });
+  });
+
+  it('rejects a non-existing date on UPDATE and preserves the saved DRAFT', async () => {
+    const created = await POST('/trip-planner/TripRequests', validTripRequest);
+    const tripRequest = created.data as CreatedTripRequest;
+    const entityUrl = `/trip-planner/TripRequests(${tripRequest.ID})`;
+
+    await expect(PATCH(entityUrl, { endDate: '2026-02-29' })).rejects.toMatchObject({
+      status: 400,
+      response: { data: { error: { code: 'INVALID_TRAVEL_DATES' } } },
+    });
+    const persisted = await GET(entityUrl);
+    expect(persisted.data).toMatchObject({
+      startDate: validTripRequest.startDate,
+      endDate: validTripRequest.endDate,
+      status: 'DRAFT',
+    });
+  });
+
+  it('strictly revalidates persisted dates in confirmConstraints', async () => {
+    const created = await POST('/trip-planner/TripRequests', validTripRequest);
+    const tripRequest = created.data as CreatedTripRequest;
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.TripRequests')
+        .set({ startDate: '2026-02-29' })
+        .where({ ID: tripRequest.ID }),
+    );
+
+    await expect(POST(actionUrl(tripRequest.ID), {})).rejects.toMatchObject({
+      status: 400,
+      response: { data: { error: { code: 'INVALID_TRAVEL_DATES' } } },
+    });
+    await expect(readWorkflowRuns(tripRequest.ID)).resolves.toHaveLength(0);
   });
 
   it('rejects a profile without any allowed transport mode', async () => {
@@ -491,6 +555,23 @@ describe('TripPlannerService', () => {
     await expect(POST(startPlanningActionUrl(randomUUID()), {})).rejects.toMatchObject({
       status: 404,
     });
+  });
+
+  it('strictly revalidates persisted dates in startPlanning', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.TripRequests')
+        .set({ endDate: '2026-04-31' })
+        .where({ ID: tripRequest.ID }),
+    );
+
+    await expect(POST(startPlanningActionUrl(tripRequest.ID), {})).rejects.toMatchObject({
+      status: 400,
+      response: { data: { error: { code: 'INVALID_TRAVEL_DATES' } } },
+    });
+    await expect(
+      readPlanningCollection<PlanningRunResponse>('PlanningRuns', 'tripRequest_ID', tripRequest.ID),
+    ).resolves.toHaveLength(0);
   });
 
   it('runs the confirmed reference workflow in the required order and persists three roles', async () => {
@@ -689,6 +770,82 @@ describe('TripPlannerService', () => {
         first.ID,
       ),
     ).resolves.toHaveLength(3);
+  });
+
+  it('coalesces concurrent startPlanning calls into one planning execution', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviders(): CandidateEngineProviders;
+    };
+    const originalFactory = service.createPlanningProviders;
+    const workingProviders = originalFactory.call(service);
+    let planningExecutionCount = 0;
+    let arrivedRequestCount = 0;
+    let releaseProvider: () => void = () => undefined;
+    let signalProviderStarted: () => void = () => undefined;
+    let signalBothRequestsArrived: () => void = () => undefined;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const providerStarted = new Promise<void>((resolve) => {
+      signalProviderStarted = resolve;
+    });
+    const bothRequestsArrived = new Promise<void>((resolve) => {
+      signalBothRequestsArrived = resolve;
+    });
+    concurrentPlanningRequestObserver = () => {
+      arrivedRequestCount += 1;
+      if (arrivedRequestCount === 2) signalBothRequestsArrived();
+    };
+    service.createPlanningProviders = () => {
+      planningExecutionCount += 1;
+      return {
+        ...workingProviders,
+        transport: {
+          search: async (providerRequest) => {
+            signalProviderStarted();
+            await providerGate;
+            return workingProviders.transport.search(providerRequest);
+          },
+        },
+      };
+    };
+
+    const startObservedPlanning = async (): Promise<PlanningRunResponse> => {
+      const response = await POST(
+        startPlanningActionUrl(tripRequest.ID),
+        {},
+        { headers: { [observeConcurrentPlanningHeader]: 'true' } },
+      );
+      return response.data as PlanningRunResponse;
+    };
+
+    try {
+      const firstPromise = startObservedPlanning();
+      await providerStarted;
+      const secondPromise = startObservedPlanning();
+      await bothRequestsArrived;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      releaseProvider();
+
+      const [first, second] = await Promise.all([firstPromise, secondPromise]);
+      expect(planningExecutionCount).toBe(1);
+      expect(second.ID).toBe(first.ID);
+      await expect(
+        readPlanningCollection<PlanningRunResponse>(
+          'PlanningRuns',
+          'tripRequest_ID',
+          tripRequest.ID,
+        ),
+      ).resolves.toHaveLength(1);
+      await expect(
+        readPlanningCollection<RankedOptionResponse>('RankedOptions', 'planningRun_ID', first.ID),
+      ).resolves.toHaveLength(3);
+    } finally {
+      releaseProvider();
+      concurrentPlanningRequestObserver = null;
+      service.createPlanningProviders = originalFactory;
+    }
   });
 
   it('persists a controlled shortage with reasons and no partial final options', async () => {

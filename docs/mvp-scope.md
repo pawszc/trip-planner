@@ -39,6 +39,14 @@ Faza 2 — od domeny do Planning API and Options UI — jest zakończona.
 - responsywny, dostępny formularz oraz dokładnie trzy pełne karty wariantów;
 - pełny scenariusz Playwright, obejmujący źródła, budżet i odrzucenia.
 
+### Faza 2D — Hardening
+
+- jedna ścisła walidacja istniejących dat ISO na wszystkich granicach zapisu i planowania;
+- koaleskowanie równoległych `startPlanning` bez podwójnego pipeline'u i duplikatów;
+- edycja zapisanego `DRAFT` oraz nowy brief z obecnych danych po niedoborze opcji;
+- jawne oznaczenie w UI, że fixture Fazy 2 jest demonstracyjnym scenariuszem z Wrocławia;
+- drugi scenariusz Playwright dla `INSUFFICIENT_OPTIONS`, zerowych kart i nowego briefu.
+
 ## Poza zakresem obecnego MVP
 
 - LLM, prompty produkcyjne i konwersacyjne pytania;

@@ -1,5 +1,6 @@
 import type { PlanningContext, ScoreBreakdown, TripCandidate } from '../domain/candidate.ts';
 import { SOFT_PREFERENCE_KEYS, type SoftPreferences } from '../domain/trip-request.ts';
+import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 import {
   mergeCandidateEngineConfig,
   type CandidateEngineConfig,
@@ -24,11 +25,10 @@ function rounded(value: number): number {
 }
 
 function requestedMinutes(context: PlanningContext): number {
-  const start = Date.parse(`${context.startDate}T00:00:00.000Z`);
-  const end = Date.parse(`${context.endDate}T23:59:59.999Z`);
-  return Number.isFinite(start) && Number.isFinite(end) && end >= start
-    ? Math.floor((end - start + 1) / 60_000)
-    : 0;
+  const start = parseStrictIsoDate(context.startDate);
+  const endStart = parseStrictIsoDate(context.endDate);
+  const end = endStart === null ? null : endStart + 86_400_000;
+  return start !== null && end !== null && end > start ? Math.floor((end - start) / 60_000) : 0;
 }
 
 function budgetFit(candidate: TripCandidate, context: PlanningContext): number {

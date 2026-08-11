@@ -25,6 +25,10 @@ poluzowania constraints ani zapisania częściowych kart.
 Fixture `INTERNAL_FIXTURE` jest zawsze opisane jako dane demonstracyjne. Produkt nie
 sugeruje, że jest to aktualna oferta lub potwierdzona dostępność.
 
+Fixture Fazy 2 jest w interfejsie jawnie ograniczone do demonstracyjnego scenariusza
+rozpoczynającego się we Wrocławiu. Zapisany `DRAFT` można poprawić przed potwierdzeniem, a
+po `INSUFFICIENT_OPTIONS` rozpocząć nowy brief z kopią obecnych danych bez zmiany starego.
+
 ## Różnica wobec chatbota
 
 Model językowy nie poluzuje ograniczeń, nie wymyśli brakującej ceny i nie wykona

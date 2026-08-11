@@ -9,15 +9,16 @@ async function setPreference(page: Page, key: string, value: number): Promise<vo
   }
 }
 
-test('completes planning and presents exactly three grounded options', async ({ page }) => {
-  const frontendErrors: string[] = [];
+function trackFrontendErrors(page: Page): string[] {
+  const errors: string[] = [];
   page.on('console', (message) => {
-    if (message.type() === 'error') frontendErrors.push(message.text());
+    if (message.type() === 'error') errors.push(message.text());
   });
-  page.on('pageerror', (error) => frontendErrors.push(error.message));
+  page.on('pageerror', (error) => errors.push(error.message));
+  return errors;
+}
 
-  await page.goto('/');
-
+async function fillReferenceBrief(page: Page, maxTravelMinutes = 480): Promise<void> {
   await page.getByLabel('Miasto rozpoczęcia').fill('Wrocław');
   await page.getByLabel('Data rozpoczęcia').fill('2026-10-10');
   await page.getByLabel('Data zakończenia').fill('2026-10-13');
@@ -29,7 +30,7 @@ test('completes planning and presents exactly three grounded options', async ({ 
   await page.getByLabel('Najwcześniejszy wyjazd').fill('07:00');
   await page.getByLabel('Najpóźniejszy powrót').fill('22:00');
   await page.getByLabel('Maks. liczba przesiadek').fill('1');
-  await page.getByLabel('Maks. czas jednego odcinka (min)').fill('480');
+  await page.getByLabel('Maks. czas jednego odcinka (min)').fill(String(maxTravelMinutes));
   await page.getByLabel('Budżet jest twardym limitem').check();
   await page.getByLabel('Samolot').uncheck();
   await page.getByLabel('Pociąg').check();
@@ -43,12 +44,31 @@ test('completes planning and presents exactly three grounded options', async ({ 
   await setPreference(page, 'centralAccommodation', 4);
   await setPreference(page, 'travelComfort', 4);
   await setPreference(page, 'priceSensitivity', 4);
+}
+
+test('completes planning and presents exactly three grounded options', async ({ page }) => {
+  const frontendErrors = trackFrontendErrors(page);
+
+  await page.goto('/');
+  await expect(page.getByTestId('phase-2-fixture-notice')).toContainText(
+    'scenariusz demonstracyjny z Wrocławia',
+  );
+  await fillReferenceBrief(page);
 
   await page.getByTestId('save-brief').click();
   await expect(page.getByTestId('brief-summary')).toContainText('Wrocław');
   await expect(page.getByTestId('hard-constraints-summary')).toContainText('maks. 480 min');
   await expect(page.getByTestId('soft-preferences-summary')).toContainText('Jedzenie');
   await expect(page.getByTestId('status')).toHaveText('DRAFT');
+
+  await page.getByTestId('edit-draft').click();
+  await page.getByLabel('Maks. liczba przesiadek').fill('2');
+  await page.getByTestId('save-brief').click();
+  await expect(page.getByTestId('hard-constraints-summary')).toContainText('maks. 2');
+  await page.getByTestId('edit-draft').click();
+  await page.getByLabel('Maks. liczba przesiadek').fill('1');
+  await page.getByTestId('save-brief').click();
+  await expect(page.getByTestId('hard-constraints-summary')).toContainText('maks. 1');
 
   await page.getByTestId('confirm-constraints').click();
   await expect(page.getByTestId('status')).toHaveText('CONSTRAINTS_CONFIRMED');
@@ -120,5 +140,37 @@ test('completes planning and presents exactly three grounded options', async ({ 
     horizontalLayout.scrollWidth,
     `Elementy poza mobilnym viewportem: ${JSON.stringify(horizontalLayout.overflowingElements)}`,
   ).toBeLessThanOrEqual(horizontalLayout.clientWidth);
+  expect(frontendErrors).toEqual([]);
+});
+
+test('shows an atomic option shortage and starts a new brief from current data', async ({
+  page,
+}) => {
+  const frontendErrors = trackFrontendErrors(page);
+
+  await page.goto('/');
+  await fillReferenceBrief(page, 1);
+  await page.getByTestId('save-brief').click();
+  await page.getByTestId('confirm-constraints').click();
+  await page.getByTestId('start-planning').click();
+
+  await expect(page.getByTestId('shortage-results')).toBeVisible();
+  await expect(page.getByTestId('shortage-results')).toContainText(
+    'częściowe karty nie zostały zapisane',
+  );
+  await expect(page.getByTestId('option-card')).toHaveCount(0);
+  await expect(page.getByTestId('options-grid')).toHaveCount(0);
+  await expect(page.getByTestId('workflow-status')).toHaveText('Workflow: CONSTRAINTS_CONFIRMED');
+
+  await page.getByTestId('new-brief-from-current').click();
+  await expect(page.getByTestId('origin-city')).toHaveValue('Wrocław');
+  await expect(page.getByTestId('start-date')).toHaveValue('2026-10-10');
+  await expect(page.getByTestId('max-travel-minutes')).toHaveValue('1');
+  await expect(page.getByTestId('shortage-results')).toHaveCount(0);
+
+  await page.getByTestId('max-travel-minutes').fill('480');
+  await page.getByTestId('save-brief').click();
+  await expect(page.getByTestId('brief-summary')).toContainText('Wrocław');
+  await expect(page.getByTestId('status')).toHaveText('DRAFT');
   expect(frontendErrors).toEqual([]);
 });
