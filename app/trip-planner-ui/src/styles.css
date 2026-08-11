@@ -629,6 +629,7 @@ input[type='checkbox'] {
 }
 
 details {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 0.65rem;
   background: white;
@@ -638,6 +639,7 @@ summary {
   padding: 0.8rem;
   color: var(--navy);
   font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .budget-list,
@@ -652,12 +654,19 @@ summary {
 .budget-list li,
 .source-list li {
   display: grid;
+  min-width: 0;
   grid-template-columns: 1fr auto;
   gap: 0.18rem 0.5rem;
   padding: 0.55rem;
   border-radius: 0.45rem;
   background: #f4f7f6;
   font-size: 0.76rem;
+}
+
+.budget-list li > *,
+.source-list li > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .budget-list small,
@@ -687,22 +696,26 @@ summary {
 
 .rejection-groups {
   display: grid;
+  min-width: 0;
   gap: 0.5rem;
   padding: 0 0.8rem 0.8rem;
 }
 
 .rejection-groups details {
+  min-width: 0;
   background: white;
 }
 
 .rejection-groups ul {
   display: grid;
+  min-width: 0;
   gap: 0.45rem;
   margin: 0;
   padding: 0 1rem 0.8rem 2rem;
 }
 
 .rejection-groups li {
+  min-width: 0;
   color: var(--muted);
   font-size: 0.82rem;
 }
@@ -710,6 +723,7 @@ summary {
 .rejection-groups li strong,
 .rejection-groups li span {
   display: block;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1000px) {

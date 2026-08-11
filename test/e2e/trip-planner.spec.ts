@@ -90,10 +90,35 @@ test('completes planning and presents exactly three grounded options', async ({ 
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByTestId('option-card')).toHaveCount(3);
+  const horizontalLayout = await page.evaluate(() => {
+    const documentElement = document.documentElement;
+    const overflowingElements = [...document.querySelectorAll<HTMLElement>('body *')]
+      .map((element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          element: `${element.tagName.toLowerCase()}${element.className ? `.${String(element.className).replaceAll(' ', '.')}` : ''}`,
+          testId: element.dataset.testid ?? null,
+          text: element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 100) ?? '',
+          left: Math.round(bounds.left),
+          right: Math.round(bounds.right),
+          width: Math.round(bounds.width),
+        };
+      })
+      .filter(
+        ({ left, right, width }) =>
+          width > 0 && (left < -1 || right > documentElement.clientWidth + 1),
+      )
+      .slice(0, 10);
+
+    return {
+      clientWidth: documentElement.clientWidth,
+      scrollWidth: documentElement.scrollWidth,
+      overflowingElements,
+    };
+  });
   expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-    ),
-  ).toBe(true);
+    horizontalLayout.scrollWidth,
+    `Elementy poza mobilnym viewportem: ${JSON.stringify(horizontalLayout.overflowingElements)}`,
+  ).toBeLessThanOrEqual(horizontalLayout.clientWidth);
   expect(frontendErrors).toEqual([]);
 });
