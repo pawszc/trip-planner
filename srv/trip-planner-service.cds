@@ -6,5 +6,55 @@ service TripPlannerService {
   entity TripRequests as projection on db.TripRequests actions {
     // Akcja związana z konkretnym briefem wymusza kontrolowaną zmianę statusu.
     action confirmConstraints() returns TripRequests;
+    // Planowanie używa wyłącznie potwierdzonego briefu i wersjonowanych providerów fixture.
+    action startPlanning() returns PlanningRuns;
   };
+
+  // Stan workflow jest publicznie widoczny, ale nie może omijać domenowej maszyny stanów.
+  @readonly
+  entity WorkflowRuns as projection on db.WorkflowRuns;
+
+  @readonly
+  entity PlanningRuns as projection on db.PlanningRuns;
+
+  @readonly
+  entity WorkflowTransitions as projection on db.WorkflowTransitions;
+
+  @readonly
+  @cds.redirection.target
+  entity RankedOptions as projection on db.RankedOptions;
+
+  @readonly
+  entity BudgetItems as projection on db.BudgetItems;
+
+  // Agregat budżetu jest czytelny bez pobierania pozostałych pól karty wariantu.
+  @readonly
+  entity BudgetBreakdowns as projection on db.RankedOptions {
+    key ID,
+    tripRequest,
+    workflowRun,
+    planningRun,
+    providerFixtureVersion,
+    scoringVersion,
+    currency,
+    budgetLimitMinor,
+    confirmedAmountMinor,
+    estimatedAmountMinor,
+    unknownCategoryCount,
+    totalAmountMinor,
+    costPerPersonMinor,
+    remainingBudgetMinor
+  };
+
+  @readonly
+  entity SourceSnapshots as projection on db.SourceSnapshots;
+
+  @readonly
+  entity OptionNotes as projection on db.OptionNotes;
+
+  @readonly
+  entity RejectionReasons as projection on db.RejectionReasons;
+
+  @readonly
+  entity RejectionSummaries as projection on db.RejectionSummaries;
 }

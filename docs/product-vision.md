@@ -2,12 +2,32 @@
 
 ## Problem użytkownika
 
-Planowanie krótkiej podróży wymaga pogodzenia terminów, budżetu, liczby osób i preferowanego tempa z aktualną dostępnością. Zwykły chatbot tworzy przekonujący tekst, ale nie gwarantuje wykonalności, poprawnych kosztów ani pochodzenia faktów.
+Planowanie krótkiej podróży wymaga pogodzenia terminów, budżetu, liczby osób,
+ograniczeń transportu i preferencji z dostępnymi opcjami. Zwykły chatbot może stworzyć
+przekonujący tekst, ale nie gwarantuje wykonalności, poprawnych kosztów ani pochodzenia
+faktów.
 
 ## Wartość
 
-Trip Planner zbiera twarde ograniczenia i miękkie preferencje, odrzuca niewykonalne oferty kodem, deterministycznie liczy koszty i dopiero potem używa AI do oceny dopasowania. Użytkownik ma otrzymać trzy rzeczywiście różne warianty wraz z kompromisami, ryzykami i źródłami.
+Trip Planner zbiera twarde ograniczenia i miękkie preferencje, odrzuca niewykonalne
+kandydatury stabilnym kodem, deterministycznie liczy koszty i przedstawia dokładnie trzy
+różne role: `BEST_OVERALL`, `MOST_CONVENIENT` i `BEST_VALUE`. Użytkownik widzi całkowity
+koszt i koszt na osobę, klasyfikację confirmed/estimated/unknown, komponenty score,
+kompromisy, ryzyka, źródła oraz diagnostykę odrzuceń.
+
+## Stan po Fazie 2
+
+Kompletny przepływ brief → potwierdzenie constraints → planowanie → opcje działa lokalnie
+na wersjonowanych fixture'ach. Wynik jest trwały, powiązany z briefem i konkretnym runem,
+ma wersję providerów oraz scoringu i jest idempotentny. Brak trzech wariantów nie powoduje
+poluzowania constraints ani zapisania częściowych kart.
+
+Fixture `INTERNAL_FIXTURE` jest zawsze opisane jako dane demonstracyjne. Produkt nie
+sugeruje, że jest to aktualna oferta lub potwierdzona dostępność.
 
 ## Różnica wobec chatbota
 
-Model nie poluzowuje ograniczeń, nie wymyśla brakujących cen i nie wykonuje arytmetyki finansowej. Szczegółowy plan powstanie dopiero po świadomym wyborze wariantu przez użytkownika. Każdy przyszły fakt zewnętrzny zostanie powiązany z `SourceSnapshot`.
+Model językowy nie poluzuje ograniczeń, nie wymyśli brakującej ceny i nie wykona
+arytmetyki finansowej. W Fazie 2 LLM nie jest używany w ogóle. Przyszła warstwa AI może
+pracować dopiero na wynikach kodu i źródłach, a szczegółowy plan dzień po dniu powstanie
+dopiero po świadomym wyborze wariantu przez użytkownika.
