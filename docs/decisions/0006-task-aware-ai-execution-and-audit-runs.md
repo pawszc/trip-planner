@@ -40,6 +40,11 @@ Adapter przechowuje wyłącznie tożsamość providera. Profil jest przekazywany
 adapter sprawdza zgodność `profile.provider` ze swoim providerem. Credentiale, timeout i
 retry pozostają ustawieniami provider/runtime, nie profilu zadania.
 
+Jawna zmiana `AI_<TASK>_PROVIDER` względem domyślnego providera zadania wymaga jednocześnie
+jawnego, niepustego `AI_<TASK>_MODEL`. Loader odrzuca brak modelu przed requestem sieciowym
+jako `INVALID_AI_CONFIGURATION` ze wskazaniem pola modelu. Nie dobiera modelu dla nowego
+providera i nie pozwala, aby alias legacy poprzedniego providera spełnił to wymaganie.
+
 ### Configured model i response model
 
 Wynik wykonania oraz telemetria rozdzielają:
@@ -68,6 +73,12 @@ Polityka jest fail-closed i nie ma flagi fail-open:
 - błąd zapisu `FAILED` zastępuje pierwotny błąd bezpiecznym `AI_AUDIT_FAILED`; details mogą
   zachować jedynie pierwotny `errorCode`.
 
+`AiGateway` wymaga recordera w konstruktorze. `NoopAiRunRecorder` pozostaje wyłącznie jawną
+kompozycją testową/operator-only; normalny gateway nie ma cichego fallbacku. Funkcja
+`createPersistentAiGateway` jest jedynym jawnym composition rootem produkcyjnym i składa
+gateway, oba adaptery SDK, `PersistentAiRunRecorder` oraz `CapAiRunStore` z retencją profilu.
+Samo utworzenie factory nie czyta środowiska, nie łączy się z bazą i nie wykonuje requestu.
+
 ### Wewnętrzne AiRuns i retencja
 
 `AiRuns` jest encją wewnętrzną, nieprojektowaną w `TripPlannerService`. ID encji jest tym
@@ -84,9 +95,27 @@ Domyślna retencja wynosi 30 dni, walidowany zakres to 1–365 dni, a `expiresAt
 `expiresAt < now`. Faza 3B1 świadomie nie dodaje schedulera; cleanup musi zostać podłączony
 przez deployment lub kolejną fazę operacyjną.
 
-Każdy INSERT/UPDATE/DELETE store działa w krótkiej, jawnej transakcji CAP niezależnej od
-transakcji requestu produktu. Żadna transakcja bazodanowa nie pozostaje otwarta podczas
-requestu do modelu.
+Każdy INSERT/UPDATE/DELETE store działa w krótkiej, jawnej transakcji CAP. Realny test
+kompozycji CAP request handler + SQLite in-memory wykazał jednak, że poprzednie założenie o
+możliwości rozpoczęcia takiej transakcji z aktywnej transakcji bazodanowej requestu było
+błędne: SQLite używa domyślnie jednego połączenia, więc store czekał na połączenie trzymane
+przez outer request, a outer request czekał na store. Powstawał circular wait i test musiał
+zostać zatrzymany po twardym timeout.
+
+`CapAiRunStore` wykrywa teraz rozpoczętą transakcję DB w bieżącym kontekście CAP i odrzuca
+operację fail-closed przed próbą zdobycia drugiego połączenia. Produktowy use case AI musi
+stosować fazową granicę wykonania:
+
+1. krótka, jawna transakcja odczytu produktu kończy się przed gatewayem;
+2. niezależny `STARTED` zostaje utrwalony;
+3. adapter działa bez otwartej transakcji DB;
+4. niezależny `SUCCEEDED` albo `FAILED` zostaje utrwalony;
+5. dopiero potem osobna krótka transakcja zapisuje wynik produktowy.
+
+Test-only CAP service potwierdza tę granicę na SQLite: niezależny odczyt w momencie wejścia
+do mock adaptera widzi już committed `STARTED`, po powrocie istnieje dokładnie jeden
+`SUCCEEDED`, a celowy rollback późniejszego product write nie usuwa terminalnego `AiRuns`.
+Żadna transakcja bazodanowa nie pozostaje otwarta podczas requestu do modelu.
 
 ## Migracja konfiguracji 3A
 
@@ -95,6 +124,9 @@ loader akceptuje wyłącznie dwa ograniczone zestawy deprecated aliases:
 
 - `OPENAI_DECIDE_MODEL` i `OPENAI_REASONING_EFFORT` tylko gdy `DECIDE` używa OpenAI;
 - `ANTHROPIC_GENERATE_MODEL` i `ANTHROPIC_EFFORT` tylko gdy `GENERATE` używa Anthropic.
+
+Alias modelu obowiązuje tylko dla odpowiadającego mu domyślnego providera. Jeśli provider
+zadania został jawnie zmieniony, wyłącznie nowe `AI_<TASK>_MODEL` może dostarczyć model.
 
 Stary globalny `AI_MAX_OUTPUT_TOKENS` nie jest używany. Deprecated aliases zostaną usunięte
 po zakończeniu Fazy 3B.
@@ -106,6 +138,11 @@ dostępność, ale zapobiega wykonaniom lub użyciu wyników bez trwałego ślad
 modelu zwiększają czytelność diagnostyki. Osobne transakcje tworzą dodatkowe krótkie operacje
 bazodanowe, ale nie obejmują latency providera.
 
+Persistent gateway nie może zostać wywołany po rozpoczęciu requestowej transakcji DB.
+Próba kończy się kontrolowanym `AI_AUDIT_FAILED`, zanim adapter zostanie wywołany. Faza 3B2
+musi użyć opisanej granicy fazowej; nie może po prostu dołączyć gatewaya do istniejącej
+transakcji `startPlanning`.
+
 Faza 3B1 nadal nie podłącza gatewaya do `startPlanning`, żadnej akcji CAP ani UI. Nie ma
 wywołań LLM przez produkt, produkcyjnych promptów ani utrwalania payloadów.
 
@@ -115,6 +152,7 @@ wywołań LLM przez produkt, produkcyjnych promptów ani utrwalania payloadów.
   produktowe wykonanie `GENERATE`, bezpieczne powiązanie z `PlanningRun` oraz zachowanie
   przy kontrolowanej niedostępności narracji.
 - Faza 3B3: wykonywanie `JUDGE`, safety pipeline, rubryki i datasety evali, polityka
-  publikacji/odrzucenia narracji oraz płatne evale uruchamiane wyłącznie świadomie.
+  publikacji/odrzucenia narracji, rozważenie audytu `effort` oraz configured/effective
+  max output tokens, a także płatne evale uruchamiane wyłącznie świadomie.
 - Operacje: scheduler lub job wywołujący `deleteExpired(now)`, monitoring backlogu oraz
   ewentualna polityka fail-open wymagają osobnego ADR.

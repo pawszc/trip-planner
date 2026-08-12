@@ -163,11 +163,21 @@ function createTaskProfile(
   defaults: AiExecutionProfile,
 ): AiExecutionProfile {
   const prefix = `AI_${taskType}`;
-  const provider = parseProvider(
-    env[`${prefix}_PROVIDER`],
-    defaults.provider,
-    `${prefix}_PROVIDER`,
-  );
+  const providerField = `${prefix}_PROVIDER`;
+  const modelField = `${prefix}_MODEL`;
+  const provider = parseProvider(env[providerField], defaults.provider, providerField);
+
+  // A provider switch is a deliberate routing change. Reusing the old provider's
+  // default (or one of its legacy aliases) would create an invalid provider/model pair.
+  if (env[providerField] !== undefined && provider !== defaults.provider) {
+    const explicitlyConfiguredModel = env[modelField];
+    if (explicitlyConfiguredModel === undefined || explicitlyConfiguredModel.trim().length === 0) {
+      invalidConfiguration(
+        modelField,
+        `${modelField} must be explicitly configured when ${providerField} changes provider.`,
+      );
+    }
+  }
 
   const modelSelection =
     taskType === AiTaskType.DECIDE && provider === AiProvider.OPENAI
@@ -184,7 +194,7 @@ function createTaskProfile(
             env.ANTHROPIC_GENERATE_MODEL,
             'ANTHROPIC_GENERATE_MODEL',
           )
-        : selectEnvironmentValue(env[`${prefix}_MODEL`], `${prefix}_MODEL`);
+        : selectEnvironmentValue(env[modelField], modelField);
 
   const effortSelection =
     taskType === AiTaskType.DECIDE && provider === AiProvider.OPENAI

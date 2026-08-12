@@ -18,12 +18,42 @@ export interface AiRunTransactionalDatabase {
 }
 
 type DatabaseProvider = () => AiRunTransactionalDatabase;
+type ActiveDatabaseTransactionDetector = () => boolean;
+
+interface CapTransactionState {
+  ready?: unknown;
+  _done?: 'committed' | 'rolled back';
+}
+
+interface CapContextWithTransactions {
+  context?: CapContextWithTransactions;
+  transactions?: Map<unknown, CapTransactionState>;
+}
 
 function defaultDatabaseProvider(): AiRunTransactionalDatabase {
   if (!cds.db) {
     throw new AiError('AI_AUDIT_FAILED', 'The AI audit database is not connected.');
   }
   return cds.db as unknown as AiRunTransactionalDatabase;
+}
+
+function hasActiveCapDatabaseTransaction(): boolean {
+  if (!cds.db || !cds.context) return false;
+  const current = cds.context as unknown as CapContextWithTransactions;
+  const root = current.context ?? current;
+  const transaction = root.transactions?.get(cds.db);
+  if (transaction === undefined) return false;
+
+  // A CAP database transaction owns a pooled connection only after its first query starts.
+  // SQLite has a single connection by default, so waiting for another root transaction from
+  // inside that request would create a circular wait until the outer request can finish.
+  return (
+    transaction.ready !== undefined &&
+    transaction.ready !== 'committed' &&
+    transaction.ready !== 'rolled back' &&
+    transaction._done !== 'committed' &&
+    transaction._done !== 'rolled back'
+  );
 }
 
 function auditStoreFailure(operation: string, cause: unknown): AiError {
@@ -66,10 +96,14 @@ function completionColumns(update: AiRunSucceededUpdate | AiRunFailedUpdate) {
 }
 
 export class CapAiRunStore implements AiRunStore {
-  constructor(private readonly databaseProvider: DatabaseProvider = defaultDatabaseProvider) {}
+  constructor(
+    private readonly databaseProvider: DatabaseProvider = defaultDatabaseProvider,
+    private readonly activeDatabaseTransactionDetector: ActiveDatabaseTransactionDetector = hasActiveCapDatabaseTransaction,
+  ) {}
 
   async insertStarted(record: AiRunStartedRecord): Promise<void> {
     try {
+      this.assertIndependentTransactionBoundary('insertStarted');
       const database = this.databaseProvider();
       await database.tx(async (transaction) => {
         await transaction.run(
@@ -104,6 +138,7 @@ export class CapAiRunStore implements AiRunStore {
 
   async deleteExpired(now: string): Promise<number> {
     try {
+      this.assertIndependentTransactionBoundary('deleteExpired');
       const database = this.databaseProvider();
       return await database.tx(async (transaction) => {
         const deleted = await transaction.run(
@@ -125,6 +160,7 @@ export class CapAiRunStore implements AiRunStore {
     update: AiRunSucceededUpdate | AiRunFailedUpdate,
   ): Promise<void> {
     try {
+      this.assertIndependentTransactionBoundary(operation);
       const database = this.databaseProvider();
       await database.tx(async (transaction) => {
         const updatedRows = await transaction.run(
@@ -143,5 +179,19 @@ export class CapAiRunStore implements AiRunStore {
     } catch (cause) {
       throw auditStoreFailure(operation, cause);
     }
+  }
+
+  private assertIndependentTransactionBoundary(operation: string): void {
+    if (!this.activeDatabaseTransactionDetector()) return;
+    throw new AiError(
+      'AI_AUDIT_FAILED',
+      'Persistent AI execution must run outside an active CAP database transaction.',
+      {
+        details: {
+          operation,
+          transactionBoundary: 'ACTIVE_CAP_DATABASE_TRANSACTION',
+        },
+      },
+    );
   }
 }

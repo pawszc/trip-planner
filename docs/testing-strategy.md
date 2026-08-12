@@ -16,7 +16,8 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - dokładną konwersję major → minor units bez arytmetyki floating point;
 - mapowanie awarii providera na kontrolowany kod bez ujawnienia jego komunikatu.
 - task-aware profile `DECIDE`/`GENERATE`/`JUDGE`, migrację aliasów, walidację effort,
-  task-specific limity i blokadę `AI_DISABLED` przed fingerprintem;
+  task-specific limity, obowiązkowy model po zmianie providera i blokadę `AI_DISABLED`
+  przed fingerprintem;
 - routing bez per-request provider override, przekazanie profilu per call, UUID runu,
   walidację każdego pola metadanych oraz `configuredModel`/`responseModel`;
 - asynchroniczny lifecycle recordera, wszystkie trzy przypadki fail-closed i brak payloadów
@@ -53,6 +54,11 @@ sprawdza między innymi:
 - pełne bezpieczne metadata runu, opcjonalne powiązanie `PlanningRun` i brak raw payloadów;
 - odrzucenie brakującego lub ponownie kończonego runu oraz cleanup wyłącznie przeterminowanych;
 - brak publicznego endpointu `/trip-planner/AiRuns`.
+- pełną offline composition `AiGateway` + mock adapter + persistent recorder + real store;
+- test-only handler CAP z SQLite, aktywną transakcją requestu i timeoutem pięciu sekund,
+  który potwierdza fail-closed zamiast circular wait;
+- fazową granicę wykonania, committed `STARTED` widoczny w niezależnym odczycie adaptera
+  oraz przetrwanie `SUCCEEDED` po rollbacku późniejszego product write.
 
 ### Playwright
 
@@ -93,5 +99,7 @@ używać do omijania testów offline. Evale LLM nie zastąpią testów twardych 
 persistence ani arytmetyki kodu.
 
 Testy `AiRuns` uruchamiają prawdziwy CAP 10 i SQLite in-memory. Store wykonuje krótkie,
-niezależne transakcje i nie utrzymuje transakcji podczas call providera. Kontrakt cleanup
-jest testowany, ale testy nie uruchamiają schedulera, bo nie istnieje on w Fazie 3B1.
+niezależne transakcje i nie utrzymuje transakcji podczas call providera. Aktywna transakcja
+DB requestu jest jawnie niedozwolona i testowana, ponieważ przy pojedynczym połączeniu
+SQLite prowadziłaby do circular wait. Kontrakt cleanup jest testowany, ale testy nie
+uruchamiają schedulera, bo nie istnieje on w Fazie 3B1.

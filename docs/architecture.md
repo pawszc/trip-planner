@@ -170,6 +170,9 @@ provider override i może jedynie obniżyć task-specific limit tokenów. Brak a
 wyłączony gateway lub błąd dostawcy kończą się kontrolowanym błędem; nie ma cichego
 fallbacku między providerami ani modelami.
 
+Zmiana `AI_<TASK>_PROVIDER` względem defaultu wymaga jawnego `AI_<TASK>_MODEL`; default ani
+legacy alias innego providera nie może utworzyć przypadkowej pary provider/model.
+
 Adapter OpenAI używa Responses API oraz structured outputs. Adapter Anthropic używa
 Messages API i structured outputs. Oba korzystają z oficjalnych SDK, ale typy SDK nie
 przechodzą poza warstwę adaptera. Wynik jest ponownie walidowany lokalnie przez Zod, nawet
@@ -184,6 +187,14 @@ Asynchroniczny recorder działa fail-closed. Trwały `STARTED` powstaje przed re
 providera, a `SUCCEEDED` lub `FAILED` aktualizuje dokładnie ten sam UUID w krótkiej,
 niezależnej transakcji CAP. Brak zapisu blokuje wykonanie albo zwrot wyniku i kończy się
 `AI_AUDIT_FAILED`.
+
+Recorder jest obowiązkową zależnością `AiGateway`; jawna factory persistent składa oba
+adaptery, `PersistentAiRunRecorder` i `CapAiRunStore`. Test CAP + SQLite wykazał circular
+wait, gdy niezależny audit był uruchamiany po rozpoczęciu requestowej transakcji DB.
+Store odrzuca taki układ przed adapterem. Przyszły use case 3B2 musi zakończyć krótki odczyt,
+wykonać `STARTED → adapter → terminalny audit` bez otwartej transakcji DB, a dopiero potem
+otworzyć osobny krótki zapis produktu. Test potwierdza committed `STARTED` przed adapterem
+oraz przetrwanie terminalnego audytu po rollbacku późniejszego zapisu produktu.
 
 Wewnętrzne `AiRuns` przechowuje provider/task, oba modele, wersje, fingerprint, timestamps,
 usage, latency, attempts, refusal i kontrolowany błąd. Nie zapisuje promptów, wejść, wyjść,

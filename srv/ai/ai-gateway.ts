@@ -11,7 +11,6 @@ import type {
 } from './contracts.ts';
 import { AiError } from './errors.ts';
 import type { AiRunRecorder, AiRunTelemetryEvent } from './telemetry.ts';
-import { NoopAiRunRecorder } from './telemetry.ts';
 
 function auditFailure(
   stage: 'STARTED' | 'SUCCEEDED' | 'FAILED',
@@ -19,10 +18,20 @@ function auditFailure(
   cause: unknown,
   originalErrorCode?: string,
 ): AiError {
+  const transactionBoundary =
+    cause instanceof AiError && typeof cause.details.transactionBoundary === 'string'
+      ? cause.details.transactionBoundary
+      : undefined;
   return new AiError('AI_AUDIT_FAILED', 'The AI audit record could not be persisted safely.', {
     provider: profile.provider,
     model: profile.model,
-    details: originalErrorCode === undefined ? { stage } : { originalErrorCode },
+    details:
+      originalErrorCode === undefined
+        ? { stage, ...(transactionBoundary === undefined ? {} : { transactionBoundary }) }
+        : {
+            originalErrorCode,
+            ...(transactionBoundary === undefined ? {} : { transactionBoundary }),
+          },
     cause,
   });
 }
@@ -83,7 +92,7 @@ export class AiGateway {
   constructor(
     private readonly config: AiConfig,
     adapters: readonly StructuredAiAdapter[],
-    private readonly recorder: AiRunRecorder = new NoopAiRunRecorder(),
+    private readonly recorder: AiRunRecorder,
     private readonly generateAiRunId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
   ) {

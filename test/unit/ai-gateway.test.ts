@@ -11,6 +11,7 @@ import type {
   StructuredAiRequest,
 } from '../../srv/ai/contracts.js';
 import { AiError } from '../../srv/ai/errors.js';
+import { NoopAiRunRecorder } from '../../srv/ai/telemetry.js';
 import type { AiRunRecorder, AiRunTelemetryEvent } from '../../srv/ai/telemetry.js';
 
 const outputSchema = z.object({ decision: z.literal('ok') }).strict();
@@ -222,6 +223,22 @@ describe('task-aware AI gateway', () => {
       providerRequestId: 'OPENAI-request',
       refusal: { refused: false },
     });
+  });
+
+  it('allows a deliberately non-persistent test composition only with an explicit no-op recorder', async () => {
+    const openai = new FakeAdapter(AiProvider.OPENAI);
+    const subject = new AiGateway(
+      enabledConfig(),
+      [openai],
+      new NoopAiRunRecorder(),
+      () => fixedRunIds[0]!,
+    );
+
+    await expect(subject.call(request(AiTaskType.DECIDE))).resolves.toMatchObject({
+      aiRunId: fixedRunIds[0],
+      configuredModel: 'gpt-5.6-luna',
+    });
+    expect(openai.calls).toBe(1);
   });
 
   it('records FAILED after an adapter error and does not fall back', async () => {

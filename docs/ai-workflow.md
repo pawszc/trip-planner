@@ -25,6 +25,11 @@ override w requestcie produktu.
 9. Po błędzie adaptera recorder aktualizuje ten sam rekord do `FAILED`; dopiero wtedy wraca
    znormalizowany błąd.
 
+Na SQLite ten lifecycle nie może zaczynać się wewnątrz rozpoczętej transakcji DB requestu,
+bo niezależny audit czekałby na jedyne połączenie trzymane przez outer request. Store
+odrzuca taki układ fail-closed. Produktowy handler 3B2 musi użyć faz:
+`krótki read i commit → audit/provider/audit → osobny krótki product write`.
+
 Recorder jest fail-closed. Błąd dowolnego wymaganego zapisu kończy się
 `AI_AUDIT_FAILED`. Brak trwałego `STARTED` bezwzględnie blokuje request do providera, a brak
 trwałego `SUCCEEDED` blokuje użycie poprawnego outputu.
@@ -35,13 +40,15 @@ OData. Cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze s
 
 ## Docelowy przepływ produktu
 
-1. Kod waliduje constraints i usuwa niewykonalne kandydatury.
-2. Grounding wiąże fakty z `SourceSnapshot` i jawnie zachowuje braki.
-3. `DECIDE` klasyfikuje wyłącznie dane o ustalonym schemacie.
-4. `GENERATE` opisuje wybrane przez kod warianty i kompromisy bez liczenia kosztów.
-5. `JUDGE` kontroluje zgodność, ryzyka i zakazane poluzowanie ograniczeń.
-6. Output może zostać użyty tylko po lokalnej walidacji, audycie i safety checks.
-7. Plan dzień po dniu powstaje dopiero po wyborze wariantu.
+1. Krótka transakcja odczytu kończy się i uwalnia połączenie przed AI.
+2. Kod waliduje constraints i usuwa niewykonalne kandydatury.
+3. Grounding wiąże fakty z `SourceSnapshot` i jawnie zachowuje braki.
+4. `DECIDE` klasyfikuje wyłącznie dane o ustalonym schemacie.
+5. `GENERATE` opisuje wybrane przez kod warianty i kompromisy bez liczenia kosztów.
+6. `JUDGE` kontroluje zgodność, ryzyka i zakazane poluzowanie ograniczeń.
+7. Output może zostać użyty tylko po lokalnej walidacji i terminalnym audycie.
+8. Osobna krótka transakcja zapisuje wynik produktowy; jej rollback nie usuwa audytu.
+9. Plan dzień po dniu powstaje dopiero po wyborze wariantu.
 
 Faza 3B2 doda grounded option context, wersjonowane prompty i narracje do wybranych opcji.
 Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline oraz offline/płatne opt-in evale. Żaden z

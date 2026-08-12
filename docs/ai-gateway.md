@@ -93,6 +93,11 @@ Nowa zmienna ma pierwszeństwo. Alias innego providera jest ignorowany. Stary gl
 `AI_MAX_OUTPUT_TOKENS` nie jest używany. `.env.example` dokumentuje wyłącznie nowe nazwy i
 puste credentiale. Aliasy zostaną usunięte po Fazie 3B.
 
+Jawne `AI_<TASK>_PROVIDER`, które różni się od defaultu zadania, wymaga jawnego i niepustego
+`AI_<TASK>_MODEL`. Brak modelu kończy się `INVALID_AI_CONFIGURATION` z
+`details.field = AI_<TASK>_MODEL`. Loader nie dobiera modelu nowego providera i nie używa
+legacy aliasu poprzedniego providera do spełnienia tego wymagania.
+
 ## Adapter per call
 
 ```ts
@@ -136,9 +141,12 @@ Niezgodny wynik nie trafia do wywołującego.
 
 ## Recorder fail-closed
 
-`AiRunRecorder.record(event)` zwraca `Promise<void>`. `NoopAiRunRecorder` jest
-asynchroniczny i zawsze kończy się sukcesem. Produkcyjna granica persistence używa
-`PersistentAiRunRecorder` i `CapAiRunStore`.
+`AiRunRecorder.record(event)` zwraca `Promise<void>`. Konstruktor `AiGateway` wymaga jawnego
+recordera. `NoopAiRunRecorder` jest asynchroniczny i zawsze kończy się sukcesem, ale może być
+użyty tylko przez świadomą kompozycję testową/operator-only. Produkcyjny composition root
+`createPersistentAiGateway(config, dependencies?)` zawsze składa `PersistentAiRunRecorder`
+i `CapAiRunStore`, przekazuje `config.runRetentionDays` oraz domyślnie tworzy oba adaptery
+SDK. Factory nie czyta `.env`, nie zapisuje do bazy i nie wykonuje requestu przy tworzeniu.
 
 Lifecycle jednego UUID:
 
@@ -172,13 +180,22 @@ samym ID i statusie `STARTED`. Inna liczba rekordów kończy się `AI_AUDIT_FAIL
 rekordu terminalnego nie można zakończyć ponownie. Każda operacja ma krótką, niezależną
 transakcję CAP; request do providera nie trzyma transakcji bazy.
 
+Na SQLite persistent gateway nie może działać po rozpoczęciu transakcji DB requestu. Próba
+stworzyłaby circular wait na jedynym połączeniu puli, dlatego `CapAiRunStore` wykrywa taki
+stan i kończy się fail-closed przed adapterem. Właściwa granica use case to: zakończona
+krótka transakcja odczytu → `STARTED` → adapter → terminalny audit → osobna krótka
+transakcja zapisu produktu. Realny test-only handler CAP potwierdza widoczność committed
+`STARTED` w adapterze i zachowanie `SUCCEEDED` po rollbacku późniejszego product write.
+
 `expiresAt` używa `AI_RUN_RETENTION_DAYS` (default 30). `deleteExpired(now)` usuwa wyłącznie
 `expiresAt < now`. Kontrakt cleanup jest zaimplementowany i testowany, ale 3B1 nie dodaje
 schedulera. Deployment lub kolejna faza operacyjna musi podłączyć jego wywołanie.
 
 ## Offline testy i ręczny smoke
 
-Standardowe testy używają transportów HTTP in-memory i SQLite in-memory. Nie wymagają
+Standardowe testy używają transportów HTTP in-memory i SQLite in-memory. Obejmują pełną
+kompozycję gateway + mock adapter + persistent recorder + real store, a także test-only
+request handler z twardym timeoutem pięciu sekund i kontrolą rollback independence. Nie wymagają
 credentiali i nie wykonują sieci. Ręczne komendy pozostają dostępne, ale nie należą do CI,
 `verify` ani `verify:full`:
 

@@ -258,6 +258,37 @@ describe('persistent AI run recorder', () => {
 });
 
 describe('CAP AI run store boundary', () => {
+  it('rejects an active CAP database transaction before acquiring another connection', async () => {
+    const database = new FakeTransactionalDatabase();
+    const store = new CapAiRunStore(
+      () => database,
+      () => true,
+    );
+
+    await expect(
+      store.insertStarted({
+        ID: '00000000-0000-4000-8000-000000000029',
+        status: 'STARTED',
+        taskType: AiTaskType.DECIDE,
+        provider: AiProvider.OPENAI,
+        configuredModel: 'gpt-5.6-luna',
+        promptVersion: 'prompt-v1',
+        schemaVersion: 'schema-v1',
+        inputFingerprint: fingerprint,
+        startedAt: '2026-08-12T10:00:00.000Z',
+        expiresAt: '2026-09-11T10:00:00.000Z',
+        refusal: false,
+      }),
+    ).rejects.toMatchObject({
+      code: 'AI_AUDIT_FAILED',
+      details: {
+        operation: 'insertStarted',
+        transactionBoundary: 'ACTIVE_CAP_DATABASE_TRANSACTION',
+      },
+    });
+    expect(database.transactionCount).toBe(0);
+  });
+
   it('maps STARTED to one short transaction without raw payload columns', async () => {
     const database = new FakeTransactionalDatabase();
     const store = new CapAiRunStore(() => database);

@@ -1,4 +1,6 @@
 export { AiGateway } from './ai-gateway.ts';
+export { createPersistentAiGateway } from './create-persistent-ai-gateway.ts';
+export type { PersistentAiGatewayDependencies } from './create-persistent-ai-gateway.ts';
 export {
   AI_CONFIG_DEFAULTS,
   getSafeAiConfigSummary,

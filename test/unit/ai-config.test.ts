@@ -157,14 +157,76 @@ describe('task-aware AI configuration', () => {
   });
 
   it.each([
-    ['AI_DECIDE_PROVIDER', 'AI_DECIDE_EFFORT'],
-    ['AI_GENERATE_PROVIDER', 'AI_GENERATE_EFFORT'],
-    ['AI_JUDGE_PROVIDER', 'AI_JUDGE_EFFORT'],
-  ])('rejects none effort for an Anthropic profile', (providerField, effortField) => {
-    expect(() =>
-      loadAiConfig({ [providerField]: 'anthropic', [effortField]: 'none' }),
-    ).toThrowError(expect.objectContaining({ code: 'INVALID_AI_CONFIGURATION' }));
+    {
+      AI_DECIDE_PROVIDER: 'anthropic',
+      AI_DECIDE_MODEL: 'claude-decide',
+      AI_DECIDE_EFFORT: 'none',
+    },
+    { AI_GENERATE_EFFORT: 'none' },
+    {
+      AI_JUDGE_PROVIDER: 'anthropic',
+      AI_JUDGE_MODEL: 'claude-judge',
+      AI_JUDGE_EFFORT: 'none',
+    },
+  ])('rejects none effort for an Anthropic profile', (environment) => {
+    expect(() => loadAiConfig(environment)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_AI_CONFIGURATION' }),
+    );
   });
+
+  it.each([
+    ['AI_GENERATE_PROVIDER', 'AI_GENERATE_MODEL', 'openai'],
+    ['AI_JUDGE_PROVIDER', 'AI_JUDGE_MODEL', 'anthropic'],
+    ['AI_DECIDE_PROVIDER', 'AI_DECIDE_MODEL', 'anthropic'],
+  ] as const)(
+    'requires %s provider changes to include an explicit model in %s',
+    (providerField, modelField, provider) => {
+      expect(() => loadAiConfig({ [providerField]: provider })).toThrowError(
+        expect.objectContaining({
+          code: 'INVALID_AI_CONFIGURATION',
+          details: { field: modelField },
+        }),
+      );
+    },
+  );
+
+  it.each([
+    {
+      environment: {
+        AI_DECIDE_PROVIDER: 'anthropic',
+        AI_DECIDE_MODEL: 'claude-custom',
+        AI_DECIDE_EFFORT: 'low',
+      },
+      taskType: AiTaskType.DECIDE,
+      provider: AiProvider.ANTHROPIC,
+      model: 'claude-custom',
+    },
+    {
+      environment: {
+        AI_GENERATE_PROVIDER: 'openai',
+        AI_GENERATE_MODEL: 'gpt-custom',
+        AI_GENERATE_EFFORT: 'low',
+      },
+      taskType: AiTaskType.GENERATE,
+      provider: AiProvider.OPENAI,
+      model: 'gpt-custom',
+    },
+    {
+      environment: {
+        AI_JUDGE_PROVIDER: 'anthropic',
+        AI_JUDGE_MODEL: 'claude-judge',
+        AI_JUDGE_EFFORT: 'high',
+      },
+      taskType: AiTaskType.JUDGE,
+      provider: AiProvider.ANTHROPIC,
+      model: 'claude-judge',
+    },
+  ] as const)(
+    'accepts an explicit provider, model and valid effort for $taskType',
+    ({ environment, taskType, provider, model }) => {
+      expect(loadAiConfig(environment).taskProfiles[taskType]).toMatchObject({ provider, model });
+    },
+  );
 
   it('uses new DECIDE and GENERATE variables before deprecated aliases', () => {
     const config = loadAiConfig({
@@ -197,20 +259,47 @@ describe('task-aware AI configuration', () => {
       model: 'legacy-anthropic',
       effort: 'medium',
     });
+  });
 
-    const mismatched = loadAiConfig({
-      AI_DECIDE_PROVIDER: 'anthropic',
-      AI_DECIDE_EFFORT: 'low',
-      OPENAI_DECIDE_MODEL: 'must-be-ignored',
-      AI_GENERATE_PROVIDER: 'openai',
-      ANTHROPIC_GENERATE_MODEL: 'must-also-be-ignored',
-      ANTHROPIC_EFFORT: 'max',
+  it.each([
+    {
+      environment: {
+        AI_DECIDE_PROVIDER: 'anthropic',
+        AI_DECIDE_EFFORT: 'low',
+        OPENAI_DECIDE_MODEL: 'must-be-ignored',
+      },
+      modelField: 'AI_DECIDE_MODEL',
+    },
+    {
+      environment: {
+        AI_GENERATE_PROVIDER: 'openai',
+        ANTHROPIC_GENERATE_MODEL: 'must-also-be-ignored',
+        ANTHROPIC_EFFORT: 'max',
+      },
+      modelField: 'AI_GENERATE_MODEL',
+    },
+  ] as const)(
+    'does not let a legacy alias satisfy a changed provider model requirement',
+    ({ environment, modelField }) => {
+      expect(() => loadAiConfig(environment)).toThrowError(
+        expect.objectContaining({
+          code: 'INVALID_AI_CONFIGURATION',
+          details: { field: modelField },
+        }),
+      );
+    },
+  );
+
+  it('keeps safe defaults when the provider remains unchanged and no model variable is set', () => {
+    const config = loadAiConfig({
+      AI_DECIDE_PROVIDER: 'openai',
+      AI_GENERATE_PROVIDER: 'anthropic',
+      AI_JUDGE_PROVIDER: 'openai',
     });
-    expect(mismatched.taskProfiles.DECIDE.model).toBe('gpt-5.6-luna');
-    expect(mismatched.taskProfiles.GENERATE).toMatchObject({
-      model: 'claude-sonnet-5',
-      effort: 'low',
-    });
+
+    expect(config.taskProfiles.DECIDE.model).toBe('gpt-5.6-luna');
+    expect(config.taskProfiles.GENERATE.model).toBe('claude-sonnet-5');
+    expect(config.taskProfiles.JUDGE.model).toBe('gpt-5.6-terra');
   });
 
   it('does not use the removed global token limit as a profile fallback', () => {

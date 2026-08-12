@@ -49,12 +49,18 @@ Gateway udostępnia jeden kontrakt strukturalnych wywołań i osobny profil
 `provider + model + effort + max output tokens` dla `DECIDE`, `GENERATE` i `JUDGE`.
 Domyślnie są to OpenAI Luna (`DECIDE`), Anthropic Sonnet (`GENERATE`) i OpenAI Terra
 (`JUDGE`). Request produktu nie ma provider override; opcjonalny limit może tylko obniżyć
-limit profilu. Nazwy modeli są jawne i nigdy nie są cicho zmieniane.
+limit profilu. Zmiana providera wymaga jawnego modelu. Nazwy modeli są jawne i nigdy nie są
+cicho zmieniane.
 
 Adaptery otrzymują profil per call i rozróżniają `configuredModel` od `responseModel`.
 Każde wykonanie ma UUID i asynchroniczny lifecycle `STARTED` → `SUCCEEDED`/`FAILED`.
 Recorder jest fail-closed: brak trwałego `STARTED` blokuje provider, a brak trwałego
 `SUCCEEDED` blokuje zwrot outputu.
+
+`AiGateway` wymaga jawnego recordera, a persistent factory składa realny recorder i store.
+Na SQLite gateway działa poza aktywną transakcją DB: krótki odczyt kończy się przed AI, a
+krótki zapis produktu zaczyna dopiero po terminalnym audycie. Próba z aktywnej transakcji
+jest odrzucana przed adapterem, zamiast wejść w circular wait.
 
 Wewnętrzne `AiRuns` nie jest publikowane przez OData. Przechowuje wyłącznie bezpieczne
 metadane i domyślny `expiresAt` po 30 dniach — bez promptów, wejść, wyjść i surowych błędów.

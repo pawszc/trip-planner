@@ -1,6 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { AiProvider, AiTaskType } from '../../srv/ai/contracts.js';
+import { z } from 'zod';
+import type { Request } from '@sap/cds';
+import { loadAiConfig } from '../../srv/ai/config.js';
+import { createPersistentAiGateway } from '../../srv/ai/create-persistent-ai-gateway.js';
+import { AiProvider, AiTaskType, createInputFingerprint } from '../../srv/ai/contracts.js';
+import type {
+  AiCallResult,
+  AiExecutionProfile,
+  StructuredAiAdapter,
+  StructuredAiRequest,
+} from '../../srv/ai/contracts.js';
+import { AiError } from '../../srv/ai/errors.js';
 import { CapAiRunStore } from '../../srv/ai/persistence/cap-ai-run-store.js';
 import { PersistentAiRunRecorder } from '../../srv/ai/persistence/persistent-ai-run-recorder.js';
 import type { AiRunTelemetryEvent } from '../../srv/ai/telemetry.js';
@@ -8,12 +19,33 @@ import { referenceTripRequestODataPayload } from '../fixtures/trip-request.js';
 
 process.env.CDS_TYPESCRIPT = 'true';
 const { default: cds } = await import('@sap/cds');
-const test = cds.test('serve', 'all', '--in-memory').in(process.cwd());
+// Make a pool-starvation regression fail deterministically instead of leaving the test process hung.
+const sqliteTestDatabase = cds.env.requires.db as {
+  pool?: Readonly<Record<string, unknown>> & { acquireTimeoutMillis?: number };
+};
+sqliteTestDatabase.pool = {
+  ...sqliteTestDatabase.pool,
+  acquireTimeoutMillis: 1_000,
+};
+const test = cds
+  .test('serve', 'all', '--from', 'db,srv,test/fixtures/ai-transaction-service.cds', '--in-memory')
+  .in(process.cwd());
 const { GET, POST } = test;
 
 const fingerprint = 'b'.repeat(64);
 const store = new CapAiRunStore();
 const recorder = new PersistentAiRunRecorder(store, 30);
+const gatewayOutputSchema = z.object({ decision: z.literal('ok') }).strict();
+const TRANSACTION_PROBE_ENTITY = 'trip.planner.test.TransactionProbeWrites';
+
+interface TransactionObservation {
+  adapterCalls: number;
+  startedSeenByAdapter?: PersistedAiRun;
+  errorCode?: string;
+  transactionBoundary?: string;
+}
+
+const transactionObservations = new Map<string, TransactionObservation>();
 
 interface PersistedAiRun {
   ID: string;
@@ -71,6 +103,153 @@ async function readAllAiRuns(): Promise<PersistedAiRun[]> {
   return (await cds.db.run(cds.ql.SELECT.from('trip.planner.AiRuns'))) as PersistedAiRun[];
 }
 
+async function readAiRunInIndependentTransaction(ID: string): Promise<PersistedAiRun | undefined> {
+  return cds.db.tx(async (transaction) =>
+    transaction.run(cds.ql.SELECT.one.from('trip.planner.AiRuns').where({ ID })),
+  ) as Promise<PersistedAiRun | undefined>;
+}
+
+async function readTransactionProbe(marker: string): Promise<unknown | undefined> {
+  return cds.db.run(cds.ql.SELECT.one.from(TRANSACTION_PROBE_ENTITY).where({ marker }));
+}
+
+class SqliteVisibilityAdapter implements StructuredAiAdapter {
+  readonly provider = AiProvider.OPENAI;
+
+  constructor(private readonly observation: TransactionObservation) {}
+
+  async call<TOutput>(
+    request: StructuredAiRequest<TOutput>,
+    profile: AiExecutionProfile,
+  ): Promise<AiCallResult<TOutput>> {
+    this.observation.adapterCalls += 1;
+    this.observation.startedSeenByAdapter = await readAiRunInIndependentTransaction(
+      request.aiRunId!,
+    );
+
+    return {
+      aiRunId: request.aiRunId!,
+      output: request.outputSchema.parse({ decision: 'ok' }),
+      provider: this.provider,
+      configuredModel: profile.model,
+      responseModel: 'gpt-5.6-luna-sqlite-snapshot',
+      taskType: request.taskType,
+      promptVersion: request.promptVersion,
+      schemaVersion: request.schemaVersion,
+      inputFingerprint: createInputFingerprint(request.input),
+      usage: {
+        inputTokens: 21,
+        outputTokens: 8,
+        totalTokens: 29,
+        cacheReadTokens: 3,
+        reasoningTokens: 2,
+      },
+      latencyMs: 19,
+      attempts: 1,
+      providerRequestId: 'offline-sqlite-adapter-request',
+      refusal: { refused: false },
+    };
+  }
+}
+
+function gatewayRequest(): StructuredAiRequest<{ decision: 'ok' }> {
+  return {
+    taskType: AiTaskType.DECIDE,
+    promptVersion: 'sqlite-composition-prompt-v1',
+    schemaVersion: 'sqlite-composition-schema-v1',
+    schemaName: 'sqlite_composition_result',
+    instructions: 'Return only the grounded test decision.',
+    input: { fixture: 'offline-cap-sqlite' },
+    outputSchema: gatewayOutputSchema,
+  };
+}
+
+function createSqliteGateway(aiRunId: string, observation: TransactionObservation) {
+  return createPersistentAiGateway(loadAiConfig({ AI_ENABLED: 'true' }), {
+    adapters: [new SqliteVisibilityAdapter(observation)],
+    generateAiRunId: () => aiRunId,
+    now: (() => {
+      const times = [new Date('2026-08-12T11:00:00.000Z'), new Date('2026-08-12T11:00:01.000Z')];
+      return () => times.shift() ?? new Date('2026-08-12T11:00:02.000Z');
+    })(),
+  });
+}
+
+async function executeGatewayInTestHandler(request: Request): Promise<string> {
+  const aiRunId = String(request.data.aiRunId ?? '');
+  const mode = String(request.data.mode ?? '');
+  const observation: TransactionObservation = { adapterCalls: 0 };
+  transactionObservations.set(aiRunId, observation);
+  const gateway = createSqliteGateway(aiRunId, observation);
+
+  if (mode === 'ACTIVE_REQUEST_TRANSACTION') {
+    const transaction = cds.tx(request);
+    await transaction.run(cds.ql.SELECT.from(TRANSACTION_PROBE_ENTITY));
+    await transaction.run(
+      cds.ql.INSERT.into(TRANSACTION_PROBE_ENTITY).entries({
+        ID: randomUUID(),
+        marker: aiRunId,
+      }),
+    );
+    try {
+      const result = await gateway.call(gatewayRequest());
+      return result.output.decision;
+    } catch (error) {
+      if (error instanceof AiError) {
+        observation.errorCode = error.code;
+        const transactionBoundary = error.details.transactionBoundary;
+        if (typeof transactionBoundary === 'string') {
+          observation.transactionBoundary = transactionBoundary;
+        }
+      }
+      throw error;
+    }
+  }
+
+  if (mode === 'SAFE_BOUNDARY' || mode === 'SAFE_BOUNDARY_ROLLBACK') {
+    // The read phase is an explicit short root transaction and releases SQLite's sole
+    // connection before audit STARTED and the adapter are allowed to run.
+    await cds.db.tx(async (transaction) =>
+      transaction.run(cds.ql.SELECT.from(TRANSACTION_PROBE_ENTITY)),
+    );
+    const result = await gateway.call(gatewayRequest());
+
+    // Product persistence starts only after the terminal audit has committed.
+    const transaction = cds.tx(request);
+    await transaction.run(
+      cds.ql.INSERT.into(TRANSACTION_PROBE_ENTITY).entries({
+        ID: randomUUID(),
+        marker: aiRunId,
+      }),
+    );
+    if (mode === 'SAFE_BOUNDARY_ROLLBACK') {
+      return request.reject({
+        status: 500,
+        code: 'INTENTIONAL_PRODUCT_ROLLBACK',
+        message: 'Intentional rollback after a completed offline AI execution.',
+      });
+    }
+    return result.output.decision;
+  }
+
+  return request.reject(400, 'Unknown test transaction mode.');
+}
+
+async function withHardTimeout<T>(operation: Promise<T>, timeoutMs = 5_000): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error(`CAP/SQLite transaction test exceeded ${timeoutMs} ms.`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 async function createPlanningRun(): Promise<string> {
   const created = await POST('/trip-planner/TripRequests', referenceTripRequestODataPayload);
   const tripRequestId = String(created.data.ID);
@@ -87,9 +266,17 @@ async function createPlanningRun(): Promise<string> {
 
 beforeAll(async () => {
   await test;
+  const transactionService = cds.services['trip.planner.test.AiTransactionTestService'];
+  if (!transactionService) {
+    throw new Error('The test-only AI transaction service was not loaded.');
+  }
+  transactionService.on('executeGateway', executeGatewayInTestHandler);
 });
 
-beforeEach(test.data.reset);
+beforeEach(async () => {
+  await test.data.reset();
+  transactionObservations.clear();
+});
 
 describe('internal CAP AiRuns persistence', () => {
   it('STARTED inserts exactly one internal AiRuns record', async () => {
@@ -312,5 +499,152 @@ describe('internal CAP AiRuns persistence', () => {
 
   it('does not expose AiRuns through the public TripPlannerService OData endpoint', async () => {
     await expect(GET('/trip-planner/AiRuns')).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('full offline gateway persistence composition', () => {
+  it('commits STARTED before the adapter and completes exactly one SUCCEEDED AiRun', async () => {
+    const aiRunId = '00000000-0000-4000-8000-000000000120';
+    const observation: TransactionObservation = { adapterCalls: 0 };
+    const gateway = createSqliteGateway(aiRunId, observation);
+
+    const result = await gateway.call(gatewayRequest());
+
+    expect(observation.adapterCalls).toBe(1);
+    expect(observation.startedSeenByAdapter).toMatchObject({
+      ID: aiRunId,
+      status: 'STARTED',
+      configuredModel: 'gpt-5.6-luna',
+      responseModel: null,
+    });
+    expect(result).toMatchObject({
+      aiRunId,
+      configuredModel: 'gpt-5.6-luna',
+      responseModel: 'gpt-5.6-luna-sqlite-snapshot',
+      usage: {
+        inputTokens: 21,
+        outputTokens: 8,
+        totalTokens: 29,
+        cacheReadTokens: 3,
+        reasoningTokens: 2,
+      },
+    });
+
+    const records = await readAllAiRuns();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      ID: aiRunId,
+      status: 'SUCCEEDED',
+      taskType: 'DECIDE',
+      provider: 'OPENAI',
+      configuredModel: 'gpt-5.6-luna',
+      responseModel: 'gpt-5.6-luna-sqlite-snapshot',
+      promptVersion: 'sqlite-composition-prompt-v1',
+      schemaVersion: 'sqlite-composition-schema-v1',
+      latencyMs: 19,
+      attempts: 1,
+      providerRequestId: 'offline-sqlite-adapter-request',
+      refusal: false,
+      retryable: false,
+    });
+    expect(Number(records[0]?.inputTokens)).toBe(21);
+    expect(Number(records[0]?.outputTokens)).toBe(8);
+    expect(Number(records[0]?.totalTokens)).toBe(29);
+    expect(Number(records[0]?.cacheReadTokens)).toBe(3);
+    expect(Number(records[0]?.reasoningTokens)).toBe(2);
+    expect(records[0]).not.toHaveProperty('input');
+    expect(records[0]).not.toHaveProperty('instructions');
+    expect(records[0]).not.toHaveProperty('prompt');
+    expect(records[0]).not.toHaveProperty('output');
+    expect(records[0]).not.toHaveProperty('rawError');
+  });
+
+  it('fails closed before the adapter on a real SQLite persistence conflict', async () => {
+    const aiRunId = '00000000-0000-4000-8000-000000000121';
+    await recorder.record(startedEvent(aiRunId));
+    const observation: TransactionObservation = { adapterCalls: 0 };
+    const gateway = createSqliteGateway(aiRunId, observation);
+
+    await expect(gateway.call(gatewayRequest())).rejects.toMatchObject({
+      code: 'AI_AUDIT_FAILED',
+      details: { stage: 'STARTED' },
+    });
+    expect(observation.adapterCalls).toBe(0);
+    await expect(readAllAiRuns()).resolves.toHaveLength(1);
+    await expect(readAiRun(aiRunId)).resolves.toMatchObject({ status: 'STARTED' });
+  });
+});
+
+describe('CAP request and SQLite transaction composition', () => {
+  it('fails closed within five seconds instead of entering the gateway with an active request DB transaction', async () => {
+    const aiRunId = '00000000-0000-4000-8000-000000000130';
+
+    await expect(
+      withHardTimeout(
+        POST('/test-ai-transaction/executeGateway', {
+          aiRunId,
+          mode: 'ACTIVE_REQUEST_TRANSACTION',
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 500 });
+
+    expect(transactionObservations.get(aiRunId)).toMatchObject({
+      adapterCalls: 0,
+      errorCode: 'AI_AUDIT_FAILED',
+      transactionBoundary: 'ACTIVE_CAP_DATABASE_TRANSACTION',
+    });
+    expect(await readTransactionProbe(aiRunId)).toBeUndefined();
+    expect(await readAiRun(aiRunId)).toBeUndefined();
+  });
+
+  it('uses a phased boundary and exposes committed STARTED to the adapter before product writes', async () => {
+    const aiRunId = '00000000-0000-4000-8000-000000000131';
+
+    const response = await withHardTimeout(
+      POST('/test-ai-transaction/executeGateway', {
+        aiRunId,
+        mode: 'SAFE_BOUNDARY',
+      }),
+    );
+
+    expect(response.data.value ?? response.data).toBe('ok');
+    expect(transactionObservations.get(aiRunId)).toMatchObject({
+      adapterCalls: 1,
+      startedSeenByAdapter: {
+        ID: aiRunId,
+        status: 'STARTED',
+      },
+    });
+    expect(await readAiRun(aiRunId)).toMatchObject({
+      status: 'SUCCEEDED',
+      responseModel: 'gpt-5.6-luna-sqlite-snapshot',
+    });
+    expect(await readTransactionProbe(aiRunId)).toBeDefined();
+  });
+
+  it('keeps SUCCEEDED audit committed when the later product request transaction rolls back', async () => {
+    const aiRunId = '00000000-0000-4000-8000-000000000132';
+
+    await expect(
+      withHardTimeout(
+        POST('/test-ai-transaction/executeGateway', {
+          aiRunId,
+          mode: 'SAFE_BOUNDARY_ROLLBACK',
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 500 });
+
+    expect(transactionObservations.get(aiRunId)).toMatchObject({
+      adapterCalls: 1,
+      startedSeenByAdapter: {
+        ID: aiRunId,
+        status: 'STARTED',
+      },
+    });
+    expect(await readTransactionProbe(aiRunId)).toBeUndefined();
+    expect(await readAiRun(aiRunId)).toMatchObject({
+      status: 'SUCCEEDED',
+      responseModel: 'gpt-5.6-luna-sqlite-snapshot',
+    });
   });
 });
