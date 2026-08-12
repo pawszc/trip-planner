@@ -25,7 +25,12 @@ providerami ani modelami.
 OpenAI integrujemy przez oficjalny pakiet `openai` i Responses API, nie Assistants API.
 Responses API jest bezpośrednim, aktualnym interfejsem dla pojedynczych strukturalnych
 wywołań i nie wprowadza niepotrzebnego lifecycle threads/runs. Używamy
-`responses.parse` oraz `zodTextFormat`.
+`responses.parse` oraz `zodTextFormat`, a request jawnie zawiera `store: false`. Aplikacja
+nie utrwala dzięki temu obiektu odpowiedzi przez Responses API. `store: false` nie jest
+jednak gwarancją Zero Data Retention i nie wyklucza wszystkich logów bezpieczeństwa ani
+abuse monitoringu po stronie providera. Przed przesłaniem prawdziwych danych użytkowników
+trzeba osobno zweryfikować ustawienia retencji organizacji, warunki prywatności, dostępność
+ZDR i dozwolony zakres danych.
 
 Anthropic integrujemy przez oficjalny `@anthropic-ai/sdk` i Messages API, nie Claude Code.
 Messages API jest programistycznym API modelu dla backendu; Claude Code jest narzędziem
@@ -63,6 +68,20 @@ Bezpieczna telemetria zachowuje tylko metadane i fingerprint wejścia. Nie przec
 promptów, pełnych payloadów, nagłówków ani credentiali. Persystencję `AiRuns` świadomie
 odkładamy do Fazy 3B, kiedy będzie znany produktowy lifecycle, retencja i wymagania
 prywatności.
+
+## Warunki wejścia do Fazy 3B
+
+Przed pierwszym produkcyjnym wywołaniem decyzja wymaga uzupełnienia projektu o:
+
+1. Task-aware routing z osobnym, jawnym profilem `provider + model + effort + max output
+tokens` dla `DECIDE`, `GENERATE` i `JUDGE`.
+2. Asynchroniczny recorder przygotowany do persistence.
+3. Rozdzielenie metadanych `configuredModel` i `responseModel`.
+4. Jawną politykę awarii recordera: `fail-open` albo `fail-closed`.
+5. Walidację zwracanych przez adapter metadanych: provider, task type, prompt version,
+   schema version i input fingerprint.
+
+Są to obowiązkowe bramki Fazy 3B, a nie elementy implementowane w Fazie 3A.
 
 ## Konsekwencje
 

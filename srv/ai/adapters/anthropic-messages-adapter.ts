@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
+import type { StopReason } from '@anthropic-ai/sdk/resources/messages';
 import type { ZodType } from 'zod';
 import type { AiConfig, AnthropicEffort } from '../config.ts';
 import { resolveMaxOutputTokens } from '../config.ts';
@@ -36,11 +37,11 @@ export interface AnthropicStructuredRequest<TOutput> {
 
 export interface AnthropicStructuredResponse {
   textBlocks: readonly string[];
+  stopReason: StopReason | null;
   model: string;
   usage: AiUsage;
   providerRequestId?: string;
   attempts: number;
-  refused: boolean;
   refusalCategory?: string;
 }
 
@@ -90,6 +91,7 @@ export const createAnthropicSdkClient: AnthropicClientFactory = (options) => {
         textBlocks: data.content
           .filter((block) => block.type === 'text')
           .map((block) => block.text),
+        stopReason: data.stop_reason,
         model: data.model,
         usage: {
           inputTokens,
@@ -102,7 +104,6 @@ export const createAnthropicSdkClient: AnthropicClientFactory = (options) => {
             : { reasoningTokens: data.usage.output_tokens_details.thinking_tokens }),
         },
         attempts: Math.max(attempts, 1),
-        refused: data.stop_reason === 'refusal',
         ...(refusalCategory === undefined ? {} : { refusalCategory }),
         ...(requestId === null || requestId === undefined ? {} : { providerRequestId: requestId }),
       };
@@ -157,6 +158,20 @@ function validateRequestMetadata<TOutput>(request: StructuredAiRequest<TOutput>)
   }
 }
 
+function normalizeStopReason(stopReason: StopReason | null): string {
+  return stopReason ?? 'null';
+}
+
+function incompleteOutputMessage(stopReason: StopReason | null): string {
+  if (stopReason === 'max_tokens') {
+    return 'Anthropic structured output was interrupted by the output token limit before completion.';
+  }
+  if (stopReason === 'model_context_window_exceeded') {
+    return 'Anthropic structured output was interrupted by the context window limit before completion.';
+  }
+  return 'Anthropic structured output did not finish with end_turn.';
+}
+
 export class AnthropicMessagesAdapter implements StructuredAiAdapter {
   readonly provider = AiProvider.ANTHROPIC;
   readonly model: string;
@@ -208,7 +223,7 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
         tools: [],
       });
 
-      if (response.refused) {
+      if (response.stopReason === 'refusal') {
         throw new AiError('MODEL_REFUSAL', 'Anthropic refused the structured output request.', {
           provider: this.provider,
           model: this.model,
@@ -216,13 +231,38 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
             response.refusalCategory === undefined ? {} : { category: response.refusalCategory },
         });
       }
-      const text = response.textBlocks.find((block) => block.trim().length > 0);
-      if (text === undefined) {
+
+      if (response.stopReason !== 'end_turn') {
+        throw new AiError(
+          'INVALID_STRUCTURED_OUTPUT',
+          incompleteOutputMessage(response.stopReason),
+          {
+            provider: this.provider,
+            model: this.model,
+            details: { stopReason: normalizeStopReason(response.stopReason) },
+          },
+        );
+      }
+
+      const textBlocks = response.textBlocks.filter((block) => block.trim().length > 0);
+      if (textBlocks.length === 0) {
         throw new AiError('EMPTY_MODEL_OUTPUT', 'Anthropic returned no text output block.', {
           provider: this.provider,
           model: this.model,
         });
       }
+      if (textBlocks.length > 1) {
+        throw new AiError(
+          'INVALID_STRUCTURED_OUTPUT',
+          'Anthropic returned more than one non-empty text output block.',
+          {
+            provider: this.provider,
+            model: this.model,
+            details: { textBlockCount: textBlocks.length },
+          },
+        );
+      }
+      const text = textBlocks[0]!;
 
       let parsed: unknown;
       try {

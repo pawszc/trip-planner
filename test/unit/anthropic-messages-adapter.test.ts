@@ -42,11 +42,11 @@ function successResponse(
 ): AnthropicStructuredResponse {
   return {
     textBlocks: [JSON.stringify(validOutput)],
+    stopReason: 'end_turn',
     model: request.model,
     usage,
     providerRequestId: 'anthropic-request-id',
     attempts: 1,
-    refused: false,
   };
 }
 
@@ -69,6 +69,14 @@ function throwingFactory(error: unknown): AnthropicClientFactory {
   return () => ({
     async execute() {
       throw error;
+    },
+  });
+}
+
+function responseFactory(overrides: Partial<AnthropicStructuredResponse>): AnthropicClientFactory {
+  return () => ({
+    async execute<TOutput>(request: AnthropicStructuredRequest<TOutput>) {
+      return { ...successResponse(request), ...overrides };
     },
   });
 }
@@ -142,6 +150,18 @@ describe('Anthropic Messages adapter', () => {
     expect(result.latencyMs).toBe(45);
   });
 
+  it('accepts end_turn with exactly one non-empty valid text block', async () => {
+    const result = await new AnthropicMessagesAdapter(
+      config(),
+      responseFactory({
+        stopReason: 'end_turn',
+        textBlocks: ['   ', JSON.stringify(validOutput), ''],
+      }),
+    ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC));
+
+    expect(result.output).toEqual(validOutput);
+  });
+
   it('requires the Anthropic credential only when a call would create a client', async () => {
     const factory = vi.fn<AnthropicClientFactory>();
     const adapter = new AnthropicMessagesAdapter(loadAiConfig({}), factory);
@@ -153,28 +173,128 @@ describe('Anthropic Messages adapter', () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
-  it('normalizes refusal and a missing text block', async () => {
-    const refusalFactory: AnthropicClientFactory = () => ({
-      async execute<TOutput>(request: AnthropicStructuredRequest<TOutput>) {
-        return { ...successResponse(request), refused: true, refusalCategory: 'general_harms' };
-      },
+  it('maps refusal stop_reason to MODEL_REFUSAL and preserves only its safe category', async () => {
+    await expect(
+      new AnthropicMessagesAdapter(
+        config(),
+        responseFactory({ stopReason: 'refusal', refusalCategory: 'general_harms' }),
+      ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
+    ).rejects.toMatchObject({ code: 'MODEL_REFUSAL', details: { category: 'general_harms' } });
+  });
+
+  it.each([
+    ['max_tokens', 'output token limit'],
+    ['model_context_window_exceeded', 'context window limit'],
+  ] as const)('rejects interrupted %s output before parsing JSON', async (stopReason, message) => {
+    await expect(
+      new AnthropicMessagesAdapter(
+        config(),
+        responseFactory({ stopReason, textBlocks: [JSON.stringify(validOutput)] }),
+      ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
+    ).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      message: expect.stringContaining(message),
+      details: { stopReason },
     });
-    const emptyFactory: AnthropicClientFactory = () => ({
-      async execute<TOutput>(request: AnthropicStructuredRequest<TOutput>) {
-        return { ...successResponse(request), textBlocks: [] };
-      },
+  });
+
+  it.each(['pause_turn', 'tool_use', 'stop_sequence'] as const)(
+    'rejects unfinished %s output in a controlled way',
+    async (stopReason) => {
+      await expect(
+        new AnthropicMessagesAdapter(
+          config(),
+          responseFactory({ stopReason, textBlocks: [JSON.stringify(validOutput)] }),
+        ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
+      ).rejects.toMatchObject({
+        code: 'INVALID_STRUCTURED_OUTPUT',
+        details: { stopReason },
+      });
+    },
+  );
+
+  it('rejects a null stop_reason in a controlled way', async () => {
+    await expect(
+      new AnthropicMessagesAdapter(config(), responseFactory({ stopReason: null })).call(
+        createLiveSmokeRequest(AiProvider.ANTHROPIC),
+      ),
+    ).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      details: { stopReason: 'null' },
     });
+  });
+
+  it('rejects a future unknown stop_reason before parsing output', async () => {
+    const futureStopReason = 'future_stop_reason' as AnthropicStructuredResponse['stopReason'];
 
     await expect(
-      new AnthropicMessagesAdapter(config(), refusalFactory).call(
-        createLiveSmokeRequest(AiProvider.ANTHROPIC),
-      ),
-    ).rejects.toMatchObject({ code: 'MODEL_REFUSAL', details: { category: 'general_harms' } });
+      new AnthropicMessagesAdapter(
+        config(),
+        responseFactory({ stopReason: futureStopReason }),
+      ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
+    ).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      details: { stopReason: 'future_stop_reason' },
+    });
+  });
+
+  it('returns EMPTY_MODEL_OUTPUT for zero non-empty text blocks after end_turn', async () => {
     await expect(
-      new AnthropicMessagesAdapter(config(), emptyFactory).call(
-        createLiveSmokeRequest(AiProvider.ANTHROPIC),
-      ),
+      new AnthropicMessagesAdapter(
+        config(),
+        responseFactory({ stopReason: 'end_turn', textBlocks: ['', '   ', '\n'] }),
+      ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
     ).rejects.toMatchObject({ code: 'EMPTY_MODEL_OUTPUT' });
+  });
+
+  it('rejects more than one non-empty text block without joining or selecting one', async () => {
+    await expect(
+      new AnthropicMessagesAdapter(
+        config(),
+        responseFactory({
+          stopReason: 'end_turn',
+          textBlocks: [JSON.stringify(validOutput), '   ', JSON.stringify(validOutput)],
+        }),
+      ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
+    ).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      details: { textBlockCount: 2 },
+    });
+  });
+
+  it('does not expose a truncated response body in stopReason details', async () => {
+    const rawResponseBody = `${JSON.stringify(validOutput)}-private-provider-response`;
+    let error: AiError | undefined;
+
+    try {
+      await new AnthropicMessagesAdapter(
+        config(),
+        responseFactory({ stopReason: 'max_tokens', textBlocks: [rawResponseBody] }),
+      ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC));
+    } catch (caught) {
+      if (caught instanceof AiError) {
+        error = caught;
+      }
+    }
+
+    expect(error?.code).toBe('INVALID_STRUCTURED_OUTPUT');
+    expect(error?.details).toEqual({ stopReason: 'max_tokens' });
+    expect(JSON.stringify(error?.toSafeJSON())).not.toContain(rawResponseBody);
+  });
+
+  it('never accepts syntactically valid JSON when stop_reason is max_tokens', async () => {
+    await expect(
+      new AnthropicMessagesAdapter(
+        config(),
+        responseFactory({
+          stopReason: 'max_tokens',
+          textBlocks: [JSON.stringify(validOutput)],
+        }),
+      ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
+    ).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      details: { stopReason: 'max_tokens' },
+    });
   });
 
   it('rejects invalid JSON without exposing the response body', async () => {
@@ -319,6 +439,7 @@ describe('official Anthropic SDK transport', () => {
 
     expect(response).toMatchObject({
       textBlocks: [JSON.stringify(validOutput)],
+      stopReason: 'end_turn',
       providerRequestId: 'req_sdk_test',
       attempts: 1,
       usage,

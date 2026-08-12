@@ -23,8 +23,10 @@ Braków nie wolno ukrywać ani uzupełniać przez model.
 - `srv/ai/live-smoke.ts` — minimalny, jawnie aktywowany test live;
 - `scripts/ai-*.ts` — bezpieczne punkty wejścia dla operatora.
 
-Typy OpenAI i Anthropic nie opuszczają adapterów. Pozostały kod zależy tylko od
-`StructuredAiAdapter` i `AiCallResult`.
+Typy OpenAI i Anthropic nie opuszczają adapterów. Publiczny `srv/ai/index.ts` eksportuje
+klasy adapterów, ale nie eksportuje ich fabryk klientów, opcji transportu, wrapperów
+request/response ani test seams. Pozostały kod zależy tylko od `StructuredAiAdapter` i
+`AiCallResult`.
 
 ## Kontrakt strukturalnego wywołania
 
@@ -58,10 +60,9 @@ kończy się `UNSUPPORTED_AI_PROVIDER`, a `AI_ENABLED=false` kończy zwykłe wyw
 ## Adapter OpenAI
 
 Adapter używa oficjalnego pakietu `openai` i Responses API. `responses.parse` otrzymuje
-format z `zodTextFormat`, wyłączone przechowywanie requestu, pusty zestaw narzędzi, jawny
-model, effort i limit output tokens. Parsed output jest ponownie sprawdzany przez lokalny
-schemat Zod. Refusal, brak parsed output albo niezgodność schematu są kontrolowanymi
-błędami.
+format z `zodTextFormat`, `store: false`, pusty zestaw narzędzi, jawny model, effort i limit
+output tokens. Parsed output jest ponownie sprawdzany przez lokalny schemat Zod. Refusal,
+brak parsed output albo niezgodność schematu są kontrolowanymi błędami.
 
 Domyślny model to `gpt-5.6-luna`, a effort `none`. Model jest konfigurowalny wyłącznie przez
 `OPENAI_DECIDE_MODEL` i nigdy nie jest cicho zastępowany.
@@ -70,9 +71,12 @@ Domyślny model to `gpt-5.6-luna`, a effort `none`. Model jest konfigurowalny wy
 
 Adapter używa oficjalnego `@anthropic-ai/sdk` i Messages API. `messages.create` otrzymuje
 stable structured output w `output_config.format` wygenerowany przez `zodOutputFormat`,
-wyłączone thinking, brak tools, jawny model, effort i limit output tokens. Jedyny blok
-tekstowy jest parsowany jako JSON i ponownie sprawdzany przez lokalny schemat Zod. Brak
-treści, refusal, błędny JSON i niezgodność schematu są kontrolowanymi błędami.
+wyłączone thinking, brak tools, jawny model, effort i limit output tokens. Adapter akceptuje
+structured output wyłącznie dla `stop_reason=end_turn`. `refusal` jest mapowany na
+`MODEL_REFUSAL`, a każdy inny lub brakujący stop reason jest odrzucany przed parsowaniem.
+Po `end_turn` wymagany jest dokładnie jeden niepusty blok tekstowy; dopiero ten blok jest
+parsowany jako JSON i ponownie sprawdzany przez lokalny schemat Zod. Brak treści, wiele
+bloków, błędny JSON i niezgodność schematu są kontrolowanymi błędami.
 
 Domyślny model to `claude-sonnet-5`, a effort `low`. Model jest konfigurowalny wyłącznie
 przez `ANTHROPIC_GENERATE_MODEL` i nigdy nie jest cicho zastępowany.
@@ -122,6 +126,20 @@ Surowy błąd SDK pozostaje nieenumerowalnym `cause`. Publiczna serializacja bł
 tylko kontrolowany kod, bezpieczny komunikat, retryability, provider, model i ograniczone
 details. Nigdy nie zawiera promptu, pełnego requestu lub response, nagłówków ani credentiali.
 
+### `store: false` a retencja danych
+
+Adapter OpenAI wysyła `store: false`, więc aplikacja nie utrwala obiektu odpowiedzi przez
+Responses API. To ustawienie nie jest jednak samo w sobie gwarancją Zero Data Retention
+(ZDR) i nie oznacza automatycznie braku wszystkich logów bezpieczeństwa lub abuse
+monitoringu po stronie providera.
+
+Przed przesłaniem prawdziwych danych użytkowników w Fazie 3B trzeba osobno zweryfikować:
+
+- ustawienia retencji organizacji;
+- warunki prywatności;
+- dostępność i zakres Zero Data Retention;
+- zakres danych, które wolno przesłać do providera.
+
 ## Zamknięty katalog błędów
 
 - konfiguracja i dostęp: `AI_DISABLED`, `LIVE_AI_NOT_ENABLED`,
@@ -166,6 +184,27 @@ request do wskazanego providera. Oczekiwany wynik ma ścisły kształt
 `{ "ok": true, "phase": "3a", "check": "structured-output" }`. Skrypty live nie należą do
 `verify`, `verify:full` ani CI i nie wolno ich uruchamiać bez świadomej zgody na zewnętrzne,
 potencjalnie płatne wywołanie.
+
+## Warunki wejścia do Fazy 3B
+
+Przed pierwszym produkcyjnym wywołaniem LLM trzeba zaprojektować i zatwierdzić:
+
+1. Task-aware routing, który dla każdego zadania jawnie wskazuje pełny profil wywołania:
+
+   | Zadanie    | Wymagana konfiguracja                         |
+   | ---------- | --------------------------------------------- |
+   | `DECIDE`   | provider + model + effort + max output tokens |
+   | `GENERATE` | provider + model + effort + max output tokens |
+   | `JUDGE`    | provider + model + effort + max output tokens |
+
+2. Asynchroniczny recorder przygotowany do persistence, bez blokowania ścieżki requestu.
+3. Jawne rozróżnienie `configuredModel` od `responseModel`.
+4. Politykę błędów recordera: świadomy wybór `fail-open` albo `fail-closed`.
+5. Walidację metadanych zwracanych przez adapter: provider, task type, prompt version,
+   schema version i input fingerprint.
+
+Te elementy są obowiązkowymi bramkami projektowymi przed Fazą 3B; Faza 3A ich nie
+implementuje.
 
 ## Znane ograniczenia
 

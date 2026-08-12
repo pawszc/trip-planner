@@ -5,6 +5,7 @@ import { loadAiConfig } from '../../srv/ai/config.js';
 import { AiProvider, AiTaskType, createInputFingerprint } from '../../srv/ai/contracts.js';
 import type {
   AiCallResult,
+  JsonValue,
   StructuredAiAdapter,
   StructuredAiRequest,
 } from '../../srv/ai/contracts.js';
@@ -104,6 +105,23 @@ describe('vendor-neutral AI gateway', () => {
     await expect(gateway.call(request(AiTaskType.DECIDE))).rejects.toMatchObject({
       code: 'AI_DISABLED',
       provider: AiProvider.OPENAI,
+    });
+    expect(openai.calls).toBe(0);
+  });
+
+  it('returns AI_DISABLED before fingerprinting a cyclic runtime input', async () => {
+    const openai = new FakeAdapter(AiProvider.OPENAI, 'openai-model');
+    const gateway = new AiGateway(loadAiConfig({}), [openai]);
+    const cyclicInput: Record<string, unknown> = {};
+    cyclicInput.self = cyclicInput;
+    const invalidRuntimeRequest = request(AiTaskType.DECIDE);
+    invalidRuntimeRequest.input = cyclicInput as unknown as JsonValue;
+
+    await expect(gateway.call(invalidRuntimeRequest)).rejects.toMatchObject({
+      name: 'AiError',
+      code: 'AI_DISABLED',
+      provider: AiProvider.OPENAI,
+      model: 'openai-model',
     });
     expect(openai.calls).toBe(0);
   });

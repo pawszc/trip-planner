@@ -36,7 +36,6 @@ export class AiGateway {
   async call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>> {
     const provider = request.provider ?? configuredProvider(this.config, request.taskType);
     const adapter = this.adapters.get(provider);
-    const fingerprint = createInputFingerprint(request.input);
 
     if (!this.config.enabled) {
       throw new AiError('AI_DISABLED', 'AI calls are disabled by configuration.', {
@@ -55,6 +54,8 @@ export class AiGateway {
         },
       );
     }
+
+    const fingerprint = createInputFingerprint(request.input);
 
     const commonEvent = {
       provider,
