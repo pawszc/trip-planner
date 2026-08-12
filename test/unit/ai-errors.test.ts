@@ -1,0 +1,104 @@
+import { describe, expect, it } from 'vitest';
+import { AiProvider } from '../../srv/ai/contracts.js';
+import { AI_ERROR_CODE_VALUES, AiError, normalizeProviderFailure } from '../../srv/ai/errors.js';
+
+const modelContext = {
+  provider: AiProvider.OPENAI,
+  model: 'gpt-configured',
+  modelEnvironmentVariable: 'OPENAI_DECIDE_MODEL',
+} as const;
+
+describe('normalized AI errors', () => {
+  it('keeps the required error catalog closed and complete', () => {
+    expect(AI_ERROR_CODE_VALUES).toEqual([
+      'AI_DISABLED',
+      'LIVE_AI_NOT_ENABLED',
+      'MISSING_CREDENTIALS',
+      'INVALID_AI_CONFIGURATION',
+      'UNSUPPORTED_AI_PROVIDER',
+      'AUTHENTICATION_FAILED',
+      'MODEL_ACCESS_DENIED',
+      'RATE_LIMITED',
+      'AI_TIMEOUT',
+      'PROVIDER_UNAVAILABLE',
+      'PROVIDER_ERROR',
+      'MODEL_REFUSAL',
+      'EMPTY_MODEL_OUTPUT',
+      'INVALID_STRUCTURED_OUTPUT',
+    ]);
+  });
+
+  it.each([
+    [401, 'AUTHENTICATION_FAILED', false],
+    [403, 'MODEL_ACCESS_DENIED', false],
+    [404, 'MODEL_ACCESS_DENIED', false],
+    [429, 'RATE_LIMITED', true],
+    [500, 'PROVIDER_UNAVAILABLE', true],
+    [503, 'PROVIDER_UNAVAILABLE', true],
+    [400, 'PROVIDER_ERROR', false],
+  ] as const)('maps HTTP %i to %s', (status, code, retryable) => {
+    const error = normalizeProviderFailure({
+      ...modelContext,
+      metadata: { status },
+      cause: new Error('raw provider body must stay private'),
+    });
+
+    expect(error).toMatchObject({ code, retryable, provider: AiProvider.OPENAI });
+    expect(error.toSafeJSON()).not.toHaveProperty('cause');
+  });
+
+  it('maps model access hints and explains the local model-only change', () => {
+    const error = normalizeProviderFailure({
+      ...modelContext,
+      metadata: { status: 400, isModelAccessError: true, providerCode: 'model_not_found' },
+      cause: new Error('hidden'),
+    });
+
+    expect(error.code).toBe('MODEL_ACCESS_DENIED');
+    expect(error.details).toMatchObject({
+      configuredModel: 'gpt-configured',
+      modelEnvironmentVariable: 'OPENAI_DECIDE_MODEL',
+      providerCode: 'model_not_found',
+    });
+    expect(error.details.nextStep).toContain('local .env');
+  });
+
+  it('distinguishes timeout, connection and quota metadata', () => {
+    const timeout = normalizeProviderFailure({
+      ...modelContext,
+      metadata: { isTimeout: true },
+      cause: new Error('hidden'),
+    });
+    const connection = normalizeProviderFailure({
+      ...modelContext,
+      metadata: { isConnectionError: true },
+      cause: new Error('hidden'),
+    });
+    const quota = normalizeProviderFailure({
+      ...modelContext,
+      metadata: { status: 429, isQuotaError: true },
+      cause: new Error('hidden'),
+    });
+
+    expect(timeout).toMatchObject({ code: 'AI_TIMEOUT', retryable: true });
+    expect(connection).toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    expect(quota.details.quotaRelated).toBe(true);
+  });
+
+  it('retains the original cause without serializing stack, raw body or credentials', () => {
+    const credential = 'sk-' + 'proj-' + 'abcdefghijklmnopqrstuvwxyz1234567890';
+    const cause = new Error(`Authorization: Bearer ${credential}`);
+    const error = new AiError('PROVIDER_ERROR', `Provider failed with ${credential}`, {
+      provider: AiProvider.OPENAI,
+      details: { OPENAI_API_KEY: credential, note: `x-api-key: ${credential}` },
+      cause,
+    });
+    const serialized = JSON.stringify(error.toSafeJSON());
+
+    expect(error.cause).toBe(cause);
+    expect(serialized).not.toContain(credential);
+    expect(serialized).not.toContain('stack');
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.details.OPENAI_API_KEY).toBe('[REDACTED]');
+  });
+});

@@ -15,6 +15,12 @@
     "verbatimModuleSyntax": true,
     "types": ["node", "vitest/globals", "@cap-js/cds-types"]
   },
-  "include": ["srv/**/*.ts", "test/unit/**/*.ts", "test/fixtures/**/*.ts", "*.config.ts"],
+  "include": [
+    "srv/**/*.ts",
+    "scripts/**/*.ts",
+    "test/unit/**/*.ts",
+    "test/fixtures/**/*.ts",
+    "*.config.ts"
+  ],
   "exclude": ["app", "node_modules", "gen", "dist"]
 }

@@ -8,6 +8,8 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 - `validation/` — czysta, testowalna walidacja briefu, hard constraints i soft preferences;
 - `orchestration/` — ograniczony pipeline pobierania danych i budowania kandydatów;
 - `providers/` — typowane kontrakty providerów oraz stabilne adaptery fixture;
+- `ai/` — vendor-neutral kontrakty LLM, routing, adaptery SDK, lokalna walidacja,
+  redakcja i bezpieczna telemetria;
 - `ranking/` — budżet, twarde filtrowanie, scoring i wybór zróżnicowanych wariantów;
 - `persistence/` — kontrolowane mapowanie wyników domenowych na znormalizowane rekordy;
 - serwis CAP — transport OData, trwałość, transakcje i kontrolowane błędy.
@@ -157,9 +159,28 @@ Projekcje tylko do odczytu: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions
 `RejectionReasons` i `RejectionSummaries`. Klient pobiera zbiory filtrem po
 `tripRequest_ID` albo `planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników.
 
-## Deterministyczny rdzeń i AI
+## Deterministyczny rdzeń i LLM Gateway
 
-Kod jest jedynym źródłem prawdy dla constraints, przejść workflow, wykonalności i kosztów. Przyszły LLM Gateway otrzyma wyłącznie jawne, ugruntowane dane oraz osobne funkcje decide/generate. Model może później przygotowywać klasyfikacje lub treść, ale nie wybiera, nie zatwierdza i nie zapisuje przejść `WorkflowRun`. Fakty fixture providerów mają już `SourceSnapshot`; przyszłe adaptery zachowają ten sam kontrakt przed wykorzystaniem danych przez model.
+Kod pozostaje jedynym źródłem prawdy dla constraints, przejść workflow, wykonalności,
+scoringu i arytmetyki finansowej. Gateway Fazy 3A nie jest jeszcze wywoływany przez CAP ani
+UI. Przyjmuje wyłącznie jawne, ugruntowane wejście JSON oraz schemat Zod, a zwraca
+zwalidowany wynik wraz z vendor-neutral metadanymi użycia.
+
+`AiGateway` rozdziela `DECIDE`, `JUDGE` i `SMOKE` do providera decyzyjnego, a
+`GENERATE` do providera generującego. Jawny override providera działa tylko na poziomie
+pojedynczego requestu. Brak adaptera, wyłączony gateway lub błąd dostawcy kończą się
+kontrolowanym błędem; nie ma cichego fallbacku między providerami ani modelami.
+
+Adapter OpenAI używa Responses API oraz structured outputs. Adapter Anthropic używa
+Messages API i structured outputs. Oba korzystają z oficjalnych SDK, ale typy SDK nie
+przechodzą poza warstwę adaptera. Wynik jest ponownie walidowany lokalnie przez Zod, nawet
+gdy provider deklaruje zgodność ze schematem. Klient SDK powstaje leniwie dopiero przy
+wywołaniu, dlatego import, build, testy i standardowy start nie wymagają kluczy.
+
+Gateway rejestruje tylko kontrolowane metadane: provider, model, typ zadania, wersje,
+fingerprint wejścia, czas, próby, tokeny i status cache. Nie zapisuje promptów, pełnego
+wejścia, pełnego wyjścia, nagłówków ani sekretów. Persystencja `AiRuns` jest odłożona do
+Fazy 3B.
 
 ## Stos technologiczny
 

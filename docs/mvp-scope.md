@@ -11,7 +11,8 @@
 
 ## Stan realizacji
 
-Faza 2 — od domeny do Planning API and Options UI — jest zakończona.
+Faza 2 — od domeny do Planning API and Options UI — jest zakończona. Faza 3A dodaje
+nieaktywną jeszcze w produkcie granicę integracji z LLM.
 
 ### Faza 2A — Domain and Workflow Core
 
@@ -47,9 +48,21 @@ Faza 2 — od domeny do Planning API and Options UI — jest zakończona.
 - jawne oznaczenie w UI, że fixture Fazy 2 jest demonstracyjnym scenariuszem z Wrocławia;
 - drugi scenariusz Playwright dla `INSUFFICIENT_OPTIONS`, zerowych kart i nowego briefu.
 
+### Faza 3A — Vendor-neutral LLM Gateway and Secure Credentials
+
+- jeden vendor-neutral kontrakt dla strukturalnych zadań `DECIDE`, `GENERATE`, `JUDGE`
+  i `SMOKE`;
+- jawny routing OpenAI/Anthropic, per-request override i brak cichego fallbacku;
+- oficjalne SDK OpenAI Responses i Anthropic Messages za izolowanymi adapterami;
+- structured outputs z obowiązkową, lokalną walidacją Zod;
+- bezpieczna konfiguracja, zamknięty katalog błędów, redakcja i telemetria bez payloadów;
+- offline testy rzeczywistych requestów SDK oraz osobne, manualne smoke testy live;
+- brak zmian UI, CAP, deterministycznego planowania i modelu persistence.
+
 ## Poza zakresem obecnego MVP
 
-- LLM, prompty produkcyjne i konwersacyjne pytania;
+- podłączenie LLM Gateway do produktu, prompty produkcyjne i konwersacyjne pytania;
+- trwałe `AiRuns`, produkcyjne evale i automatyczne safety checks;
 - prawdziwi providerzy, live search, kursy walut i aktualna dostępność;
 - itinerary dzień po dniu i wybór wariantu;
 - rezerwacje, płatności oraz uwierzytelnianie;
