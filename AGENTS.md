@@ -10,6 +10,9 @@
 - Live AI wymaga jawnego opt-in; domyślne testy nigdy nie wykonują płatnych requestów.
 - Nazwy modeli są jawnie konfigurowane i nigdy nie są cicho zmieniane ani zastępowane.
 - Każdy wynik providera AI musi przejść lokalną walidację schematu przed użyciem.
+- Routing AI jest kontrolowany wyłącznie przez profile zadań; request produktu nie zmienia providera, modelu ani effort.
+- Recorder AI jest asynchroniczny i fail-closed: brak trwałego `STARTED` blokuje request do providera.
+- `AiRuns` pozostaje wewnętrzne i nie przechowuje promptów, wejść, wyjść ani surowych błędów.
 - Każda zmiana domeny wymaga testów.
 - Każdy naprawiony błąd wymaga testu regresyjnego.
 - Przed zakończeniem pracy uruchom `npm run verify`.

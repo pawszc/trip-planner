@@ -15,7 +15,14 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - kontrolowany niedobór dwóch lub zera opcji;
 - dokładną konwersję major → minor units bez arytmetyki floating point;
 - mapowanie awarii providera na kontrolowany kod bez ujawnienia jego komunikatu.
-- konfigurację LLM Gateway, routing z override, brak fallbacku i blokadę `AI_DISABLED`;
+- task-aware profile `DECIDE`/`GENERATE`/`JUDGE`, migrację aliasów, walidację effort,
+  task-specific limity i blokadę `AI_DISABLED` przed fingerprintem;
+- routing bez per-request provider override, przekazanie profilu per call, UUID runu,
+  walidację każdego pola metadanych oraz `configuredModel`/`responseModel`;
+- asynchroniczny lifecycle recordera, wszystkie trzy przypadki fail-closed i brak payloadów
+  w eventach;
+- mapowanie persistent recordera, retencję i `expiresAt`, duplicate/state transitions oraz
+  kontrakt cleanup store;
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
 - structured outputs, ponowną lokalną walidację, refusal i brak poprawnej treści;
 - timeout, retry, zamknięty katalog błędów oraz redakcję kluczy i nagłówków;
@@ -42,6 +49,10 @@ sprawdza między innymi:
 - dwa równoległe wywołania `startPlanning` koaleskowane do jednego pipeline'u i runu;
 - kontrolowany niedobór z diagnostyką i zerem częściowych opcji;
 - rollback wszystkich zapisów po awarii providera.
+- INSERT `STARTED` oraz aktualizację tego samego `AiRuns` do `SUCCEEDED`/`FAILED`;
+- pełne bezpieczne metadata runu, opcjonalne powiązanie `PlanningRun` i brak raw payloadów;
+- odrzucenie brakującego lub ponownie kończonego runu oraz cleanup wyłącznie przeterminowanych;
+- brak publicznego endpointu `/trip-planner/AiRuns`.
 
 ### Playwright
 
@@ -80,3 +91,7 @@ Smoke testy są celowo poza CI i standardową weryfikacją, ponieważ są płatn
 zewnętrznej dostępności i uprawnień konta. Nie wolno ich uruchamiać automatycznie ani
 używać do omijania testów offline. Evale LLM nie zastąpią testów twardych reguł,
 persistence ani arytmetyki kodu.
+
+Testy `AiRuns` uruchamiają prawdziwy CAP 10 i SQLite in-memory. Store wykonuje krótkie,
+niezależne transakcje i nie utrzymuje transakcji podczas call providera. Kontrakt cleanup
+jest testowany, ale testy nie uruchamiają schedulera, bo nie istnieje on w Fazie 3B1.

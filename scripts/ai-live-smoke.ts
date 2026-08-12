@@ -4,7 +4,12 @@ import type { AiConfig } from '../srv/ai/config.ts';
 import { AiProvider } from '../srv/ai/contracts.ts';
 import type { AiErrorCode } from '../srv/ai/errors.ts';
 import { AiError } from '../srv/ai/errors.ts';
-import { runLiveSmoke, toSafeLiveSmokeResult } from '../srv/ai/live-smoke.ts';
+import {
+  resolveLiveSmokeProfile,
+  resolveLiveSmokeSourceTaskType,
+  runLiveSmoke,
+  toSafeLiveSmokeResult,
+} from '../srv/ai/live-smoke.ts';
 
 function parseProvider(value: string | undefined): AiProvider {
   if (value === 'openai') {
@@ -24,17 +29,14 @@ function modelSettings(
   modelEnvironmentVariable: string;
   credentialEnvironmentVariable: string;
 } {
-  return provider === AiProvider.OPENAI
-    ? {
-        model: config.openai.model,
-        modelEnvironmentVariable: 'OPENAI_DECIDE_MODEL',
-        credentialEnvironmentVariable: 'OPENAI_API_KEY',
-      }
-    : {
-        model: config.anthropic.model,
-        modelEnvironmentVariable: 'ANTHROPIC_GENERATE_MODEL',
-        credentialEnvironmentVariable: 'ANTHROPIC_API_KEY',
-      };
+  const profile = resolveLiveSmokeProfile(config, provider);
+  const sourceTaskType = resolveLiveSmokeSourceTaskType(config, provider);
+  return {
+    model: profile.model,
+    modelEnvironmentVariable: `AI_${sourceTaskType}_MODEL`,
+    credentialEnvironmentVariable:
+      provider === AiProvider.OPENAI ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
+  };
 }
 
 function safeNextStep(error: AiError, settings: ReturnType<typeof modelSettings>): string {
@@ -59,7 +61,7 @@ function safeNextStep(error: AiError, settings: ReturnType<typeof modelSettings>
 
 export interface SafeLiveSmokeFailure {
   provider: AiProvider;
-  model: string;
+  configuredModel: string;
   modelEnvironmentVariable: string;
   credentialEnvironmentVariable: string;
   code: AiErrorCode;
@@ -76,7 +78,7 @@ export function toSafeLiveSmokeFailure(
   const settings = modelSettings(config, provider);
   return {
     provider,
-    model: settings.model,
+    configuredModel: settings.model,
     modelEnvironmentVariable: settings.modelEnvironmentVariable,
     credentialEnvironmentVariable: settings.credentialEnvironmentVariable,
     code: error.code,
@@ -123,7 +125,19 @@ export async function runLiveSmokeScript(
       );
       return 1;
     }
-    writeLine(JSON.stringify(toSafeLiveSmokeFailure(error, config, provider)));
+    try {
+      writeLine(JSON.stringify(toSafeLiveSmokeFailure(error, config, provider)));
+    } catch (settingsError) {
+      const code = settingsError instanceof AiError ? settingsError.code : error.code;
+      writeLine(
+        JSON.stringify({
+          provider,
+          code,
+          nextStep:
+            'Configure at least one task profile for this provider without displaying credentials.',
+        }),
+      );
+    }
     return 1;
   }
 }

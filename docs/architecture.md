@@ -8,8 +8,8 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 - `validation/` — czysta, testowalna walidacja briefu, hard constraints i soft preferences;
 - `orchestration/` — ograniczony pipeline pobierania danych i budowania kandydatów;
 - `providers/` — typowane kontrakty providerów oraz stabilne adaptery fixture;
-- `ai/` — vendor-neutral kontrakty LLM, routing, adaptery SDK, lokalna walidacja,
-  redakcja i bezpieczna telemetria;
+- `ai/` — task-aware profile LLM, routing, adaptery SDK, lokalna walidacja, redakcja,
+  fail-closed recorder i wewnętrzna persistence `AiRuns`;
 - `ranking/` — budżet, twarde filtrowanie, scoring i wybór zróżnicowanych wariantów;
 - `persistence/` — kontrolowane mapowanie wyników domenowych na znormalizowane rekordy;
 - serwis CAP — transport OData, trwałość, transakcje i kontrolowane błędy.
@@ -159,17 +159,16 @@ Projekcje tylko do odczytu: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions
 `RejectionReasons` i `RejectionSummaries`. Klient pobiera zbiory filtrem po
 `tripRequest_ID` albo `planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników.
 
-## Deterministyczny rdzeń i LLM Gateway
+## Deterministyczny rdzeń i AI execution foundation
 
 Kod pozostaje jedynym źródłem prawdy dla constraints, przejść workflow, wykonalności,
-scoringu i arytmetyki finansowej. Gateway Fazy 3A nie jest jeszcze wywoływany przez CAP ani
-UI. Przyjmuje wyłącznie jawne, ugruntowane wejście JSON oraz schemat Zod, a zwraca
-zwalidowany wynik wraz z vendor-neutral metadanymi użycia.
+scoringu i arytmetyki finansowej. Gateway Fazy 3B1 nie jest wywoływany przez CAP ani UI.
+Przyjmuje wyłącznie jawne, ugruntowane wejście JSON i schemat Zod.
 
-`AiGateway` rozdziela `DECIDE`, `JUDGE` i `SMOKE` do providera decyzyjnego, a
-`GENERATE` do providera generującego. Jawny override providera działa tylko na poziomie
-pojedynczego requestu. Brak adaptera, wyłączony gateway lub błąd dostawcy kończą się
-kontrolowanym błędem; nie ma cichego fallbacku między providerami ani modelami.
+`AiGateway` wybiera pełny profil `DECIDE`, `GENERATE` lub `JUDGE`. Request produktu nie ma
+provider override i może jedynie obniżyć task-specific limit tokenów. Brak adaptera,
+wyłączony gateway lub błąd dostawcy kończą się kontrolowanym błędem; nie ma cichego
+fallbacku między providerami ani modelami.
 
 Adapter OpenAI używa Responses API oraz structured outputs. Adapter Anthropic używa
 Messages API i structured outputs. Oba korzystają z oficjalnych SDK, ale typy SDK nie
@@ -177,10 +176,23 @@ przechodzą poza warstwę adaptera. Wynik jest ponownie walidowany lokalnie prze
 gdy provider deklaruje zgodność ze schematem. Klient SDK powstaje leniwie dopiero przy
 wywołaniu, dlatego import, build, testy i standardowy start nie wymagają kluczy.
 
-Gateway rejestruje tylko kontrolowane metadane: provider, model, typ zadania, wersje,
-fingerprint wejścia, czas, próby, tokeny i status cache. Nie zapisuje promptów, pełnego
-wejścia, pełnego wyjścia, nagłówków ani sekretów. Persystencja `AiRuns` jest odłożona do
-Fazy 3B.
+Adapter nie przechowuje modelu; otrzymuje profil per call. Wynik rozróżnia
+`configuredModel` z profilu i `responseModel` od providera, a gateway waliduje wszystkie
+metadane przed użyciem outputu.
+
+Asynchroniczny recorder działa fail-closed. Trwały `STARTED` powstaje przed requestem do
+providera, a `SUCCEEDED` lub `FAILED` aktualizuje dokładnie ten sam UUID w krótkiej,
+niezależnej transakcji CAP. Brak zapisu blokuje wykonanie albo zwrot wyniku i kończy się
+`AI_AUDIT_FAILED`.
+
+Wewnętrzne `AiRuns` przechowuje provider/task, oba modele, wersje, fingerprint, timestamps,
+usage, latency, attempts, refusal i kontrolowany błąd. Nie zapisuje promptów, wejść, wyjść,
+raw responses, raw errors, nagłówków ani sekretów i nie jest publikowane w
+`TripPlannerService`. Domyślny `expiresAt` wynosi 30 dni. Cleanup ma kontrakt
+`deleteExpired(now)`, ale Faza 3B1 nie dodaje schedulera.
+
+Faza 3B2 doda grounded narratives i pierwsze produktowe `GENERATE`; Faza 3B3 doda
+wykonywanie `JUDGE`, safety pipeline i evale.
 
 ## Stos technologiczny
 

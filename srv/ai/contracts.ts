@@ -13,6 +13,18 @@ export enum AiTaskType {
   SMOKE = 'SMOKE',
 }
 
+export type ProfiledAiTaskType = Exclude<AiTaskType, AiTaskType.SMOKE>;
+
+export type AiEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface AiExecutionProfile {
+  taskType: AiTaskType;
+  provider: AiProvider;
+  model: string;
+  effort: AiEffort;
+  maxOutputTokens: number;
+}
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonObject = { readonly [key: string]: JsonValue };
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
@@ -26,7 +38,10 @@ export interface StructuredAiRequest<TOutput> {
   input: JsonValue;
   outputSchema: ZodType<TOutput>;
   maxOutputTokens?: number;
-  provider?: AiProvider;
+  /** Gateway-owned execution ID. A caller-supplied value is always overwritten by AiGateway. */
+  aiRunId?: string;
+  /** Optional safe association for future product calls; never contains trip input or prompt data. */
+  planningRunId?: string;
 }
 
 export interface AiUsage {
@@ -44,9 +59,11 @@ export interface AiRefusalState {
 }
 
 export interface AiCallResult<TOutput> {
+  aiRunId: string;
   output: TOutput;
   provider: AiProvider;
-  model: string;
+  configuredModel: string;
+  responseModel: string;
   taskType: AiTaskType;
   promptVersion: string;
   schemaVersion: string;
@@ -60,8 +77,16 @@ export interface AiCallResult<TOutput> {
 
 export interface StructuredAiAdapter {
   readonly provider: AiProvider;
-  readonly model: string;
-  call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>>;
+  call<TOutput>(
+    request: StructuredAiRequest<TOutput>,
+    profile: AiExecutionProfile,
+  ): Promise<AiCallResult<TOutput>>;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isValidAiRunId(value: string): boolean {
+  return UUID_PATTERN.test(value);
 }
 
 function serializeJson(value: JsonValue, seen: WeakSet<object>): string {

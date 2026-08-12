@@ -1,20 +1,35 @@
+import { randomUUID } from 'node:crypto';
 import { AnthropicMessagesAdapter } from './adapters/anthropic-messages-adapter.ts';
 import { OpenAiResponsesAdapter } from './adapters/openai-responses-adapter.ts';
 import type { AiConfig } from './config.ts';
-import { AiProvider } from './contracts.ts';
-import type { AiCallResult, AiUsage, StructuredAiAdapter } from './contracts.ts';
+import { AiProvider, AiTaskType } from './contracts.ts';
+import type {
+  AiCallResult,
+  AiExecutionProfile,
+  AiUsage,
+  ProfiledAiTaskType,
+  StructuredAiAdapter,
+} from './contracts.ts';
 import { AiError, createMissingCredentialsError } from './errors.ts';
 import { LIVE_SMOKE_SCHEMA_VERSION, createLiveSmokeRequest } from './schemas/live-smoke-schema.ts';
 import type { LiveSmokeOutput } from './schemas/live-smoke-schema.ts';
 
+const SMOKE_PROFILE_ORDER: readonly ProfiledAiTaskType[] = [
+  AiTaskType.DECIDE,
+  AiTaskType.GENERATE,
+  AiTaskType.JUDGE,
+];
+
 export interface LiveSmokeDependencies {
   createOpenAiAdapter?: (config: AiConfig) => StructuredAiAdapter;
   createAnthropicAdapter?: (config: AiConfig) => StructuredAiAdapter;
+  generateAiRunId?: () => string;
 }
 
 export interface SafeLiveSmokeResult {
   provider: AiProvider;
-  model: string;
+  configuredModel: string;
+  responseModel: string;
   status: 'ok';
   latencyMs: number;
   usage: AiUsage;
@@ -22,26 +37,50 @@ export interface SafeLiveSmokeResult {
   providerRequestId?: string;
 }
 
-function providerConfig(
+function findSmokeSourceProfile(
   config: AiConfig,
   provider: AiProvider,
-): {
-  model: string;
-  apiKey: string | undefined;
-  credentialEnvironmentVariable: string;
-} {
-  if (provider === AiProvider.OPENAI) {
-    return {
-      model: config.openai.model,
-      apiKey: config.openai.apiKey,
-      credentialEnvironmentVariable: 'OPENAI_API_KEY',
-    };
+): AiExecutionProfile | undefined {
+  for (const taskType of SMOKE_PROFILE_ORDER) {
+    const profile = config.taskProfiles[taskType];
+    if (profile.provider === provider) return profile;
+  }
+  return undefined;
+}
+
+/** Deterministically derives a tool-free smoke profile from configured product task profiles. */
+export function resolveLiveSmokeProfile(
+  config: AiConfig,
+  provider: AiProvider,
+): AiExecutionProfile {
+  const source = findSmokeSourceProfile(config, provider);
+  if (source === undefined) {
+    throw new AiError(
+      'INVALID_AI_CONFIGURATION',
+      'No configured task profile uses the selected live-smoke provider.',
+      { provider, details: { field: 'taskProfiles' } },
+    );
   }
   return {
-    model: config.anthropic.model,
-    apiKey: config.anthropic.apiKey,
-    credentialEnvironmentVariable: 'ANTHROPIC_API_KEY',
+    ...source,
+    taskType: AiTaskType.SMOKE,
+    maxOutputTokens: Math.min(128, source.maxOutputTokens),
   };
+}
+
+export function resolveLiveSmokeSourceTaskType(
+  config: AiConfig,
+  provider: AiProvider,
+): ProfiledAiTaskType {
+  const source = findSmokeSourceProfile(config, provider);
+  if (source === undefined || source.taskType === AiTaskType.SMOKE) {
+    throw new AiError(
+      'INVALID_AI_CONFIGURATION',
+      'No configured task profile uses the selected live-smoke provider.',
+      { provider, details: { field: 'taskProfiles' } },
+    );
+  }
+  return source.taskType;
 }
 
 function createAdapter(
@@ -60,30 +99,37 @@ export async function runLiveSmoke(
   provider: AiProvider,
   dependencies: LiveSmokeDependencies = {},
 ): Promise<AiCallResult<LiveSmokeOutput>> {
-  const selected = providerConfig(config, provider);
+  const profile = resolveLiveSmokeProfile(config, provider);
   if (!config.liveSmokeEnabled) {
     throw new AiError('LIVE_AI_NOT_ENABLED', 'Live AI smoke tests require explicit opt-in.', {
       provider,
-      model: selected.model,
+      model: profile.model,
       details: { field: 'AI_LIVE_SMOKE_ENABLED' },
     });
   }
-  if (selected.apiKey === undefined) {
+
+  const apiKey = config.providers[provider].apiKey;
+  if (apiKey === undefined) {
     throw createMissingCredentialsError(
       provider,
-      selected.model,
-      selected.credentialEnvironmentVariable,
+      profile.model,
+      provider === AiProvider.OPENAI ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
     );
   }
 
   const adapter = createAdapter(config, provider, dependencies);
-  return adapter.call(createLiveSmokeRequest(provider));
+  const request = {
+    ...createLiveSmokeRequest(),
+    aiRunId: (dependencies.generateAiRunId ?? randomUUID)(),
+  };
+  return adapter.call(request, profile);
 }
 
 export function toSafeLiveSmokeResult(result: AiCallResult<LiveSmokeOutput>): SafeLiveSmokeResult {
   return {
     provider: result.provider,
-    model: result.model,
+    configuredModel: result.configuredModel,
+    responseModel: result.responseModel,
     status: 'ok',
     latencyMs: result.latencyMs,
     usage: result.usage,

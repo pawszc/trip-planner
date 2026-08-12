@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { loadAiConfig } from '../../srv/ai/config.js';
-import { AiProvider } from '../../srv/ai/contracts.js';
+import { AiProvider, AiTaskType } from '../../srv/ai/contracts.js';
+import type { AiExecutionProfile, StructuredAiRequest } from '../../srv/ai/contracts.js';
 import { AiError } from '../../srv/ai/errors.js';
 import {
-  AnthropicMessagesAdapter,
+  AnthropicMessagesAdapter as ProductionAnthropicMessagesAdapter,
   createAnthropicSdkClient,
 } from '../../srv/ai/adapters/anthropic-messages-adapter.js';
 import type {
@@ -12,12 +13,15 @@ import type {
   AnthropicStructuredRequest,
   AnthropicStructuredResponse,
 } from '../../srv/ai/adapters/anthropic-messages-adapter.js';
-import { createLiveSmokeRequest, liveSmokeSchema } from '../../srv/ai/schemas/live-smoke-schema.js';
+import {
+  createLiveSmokeRequest as createProductionLiveSmokeRequest,
+  liveSmokeSchema,
+} from '../../srv/ai/schemas/live-smoke-schema.js';
 import type { LiveSmokeOutput } from '../../srv/ai/schemas/live-smoke-schema.js';
 
 const validOutput: LiveSmokeOutput = {
   ok: true,
-  phase: '3a',
+  phase: '3b1',
   check: 'structured-output',
 };
 
@@ -35,6 +39,32 @@ function config(overrides: Readonly<Record<string, string | undefined>> = {}) {
     ANTHROPIC_API_KEY: 'anthropic-test-credential',
     ...overrides,
   });
+}
+
+function profile(overrides: Partial<AiExecutionProfile> = {}): AiExecutionProfile {
+  return {
+    taskType: AiTaskType.SMOKE,
+    provider: AiProvider.ANTHROPIC,
+    model: 'claude-sonnet-5',
+    effort: 'low',
+    maxOutputTokens: 80,
+    ...overrides,
+  };
+}
+
+// Keep the Phase 3A test cases compact while every production call still receives a profile.
+class AnthropicMessagesAdapter extends ProductionAnthropicMessagesAdapter {
+  override call<TOutput>(
+    request: StructuredAiRequest<TOutput>,
+    executionProfile: AiExecutionProfile = profile(),
+  ) {
+    return super.call(request, executionProfile);
+  }
+}
+
+function createLiveSmokeRequest(..._arguments: [] | [AiProvider]) {
+  void _arguments;
+  return createProductionLiveSmokeRequest();
 }
 
 function successResponse(
@@ -95,7 +125,7 @@ describe('Anthropic Messages adapter', () => {
         }
       | undefined;
     const adapter = new AnthropicMessagesAdapter(
-      config({ AI_TIMEOUT_MS: '40000', AI_MAX_RETRIES: '2', AI_MAX_OUTPUT_TOKENS: '80' }),
+      config({ AI_TIMEOUT_MS: '40000', AI_MAX_RETRIES: '2' }),
       successFactory(
         (options) => {
           clientOptions = options;
@@ -119,7 +149,7 @@ describe('Anthropic Messages adapter', () => {
     expect(clientOptions?.apiKey).toBeTruthy();
     expect(captured).toEqual({
       model: 'claude-sonnet-5',
-      input: '{"check":"structured-output","ok":true,"phase":"3a"}',
+      input: '{"check":"structured-output","ok":true,"phase":"3b1"}',
       maxOutputTokens: 80,
       effort: 'low',
       thinking: 'disabled',
@@ -128,7 +158,8 @@ describe('Anthropic Messages adapter', () => {
     expect(result).toMatchObject({
       output: validOutput,
       provider: AiProvider.ANTHROPIC,
-      model: 'claude-sonnet-5',
+      configuredModel: 'claude-sonnet-5',
+      responseModel: 'claude-sonnet-5',
       usage,
       attempts: 1,
       providerRequestId: 'anthropic-request-id',
@@ -148,6 +179,63 @@ describe('Anthropic Messages adapter', () => {
     const result = await adapter.call(createLiveSmokeRequest(AiProvider.ANTHROPIC));
 
     expect(result.latencyMs).toBe(45);
+  });
+
+  it('takes model, effort and the maximum token limit from each call profile', async () => {
+    let captured: AnthropicStructuredRequest<unknown> | undefined;
+    const adapter = new AnthropicMessagesAdapter(
+      config(),
+      successFactory(undefined, (request) => {
+        captured = request;
+      }),
+    );
+
+    const result = await adapter.call(
+      createLiveSmokeRequest(),
+      profile({ model: 'claude-per-call', effort: 'xhigh', maxOutputTokens: 96 }),
+    );
+
+    expect(captured).toMatchObject({
+      model: 'claude-per-call',
+      effort: 'xhigh',
+      maxOutputTokens: 96,
+    });
+    expect(result).toMatchObject({
+      configuredModel: 'claude-per-call',
+      responseModel: 'claude-per-call',
+    });
+  });
+
+  it('lets a request lower but never raise the profile token limit', async () => {
+    const captured: number[] = [];
+    const adapter = new AnthropicMessagesAdapter(
+      config(),
+      successFactory(undefined, (request) => captured.push(request.maxOutputTokens)),
+    );
+
+    await adapter.call(
+      { ...createLiveSmokeRequest(), maxOutputTokens: 32 },
+      profile({ maxOutputTokens: 100 }),
+    );
+    await adapter.call(
+      { ...createLiveSmokeRequest(), maxOutputTokens: 200 },
+      profile({ maxOutputTokens: 100 }),
+    );
+
+    expect(captured).toEqual([32, 100]);
+  });
+
+  it('rejects another provider and none effort before creating a client', async () => {
+    const factory = vi.fn<AnthropicClientFactory>();
+    const adapter = new AnthropicMessagesAdapter(config(), factory);
+
+    await expect(
+      adapter.call(createLiveSmokeRequest(), profile({ provider: AiProvider.OPENAI })),
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED_AI_PROVIDER' });
+    await expect(
+      adapter.call(createLiveSmokeRequest(), profile({ effort: 'none' })),
+    ).rejects.toMatchObject({ code: 'INVALID_AI_CONFIGURATION' });
+    expect(factory).not.toHaveBeenCalled();
   });
 
   it('accepts end_turn with exactly one non-empty valid text block', async () => {
@@ -325,7 +413,7 @@ describe('Anthropic Messages adapter', () => {
       async execute<TOutput>(request: AnthropicStructuredRequest<TOutput>) {
         return {
           ...successResponse(request),
-          textBlocks: [JSON.stringify({ ok: false, phase: '3a', check: 'structured-output' })],
+          textBlocks: [JSON.stringify({ ok: false, phase: '3b1', check: 'structured-output' })],
         };
       },
     });
@@ -335,6 +423,32 @@ describe('Anthropic Messages adapter', () => {
         createLiveSmokeRequest(AiProvider.ANTHROPIC),
       ),
     ).rejects.toMatchObject({ code: 'INVALID_STRUCTURED_OUTPUT' });
+  });
+
+  it('keeps configuredModel separate from the provider responseModel', async () => {
+    const adapter = new AnthropicMessagesAdapter(
+      config(),
+      responseFactory({ model: 'claude-provider-snapshot' }),
+    );
+
+    const result = await adapter.call(
+      createLiveSmokeRequest(),
+      profile({ model: 'claude-configured-alias' }),
+    );
+
+    expect(result).toMatchObject({
+      configuredModel: 'claude-configured-alias',
+      responseModel: 'claude-provider-snapshot',
+    });
+  });
+
+  it('rejects an empty response model from Anthropic', async () => {
+    await expect(
+      new AnthropicMessagesAdapter(config(), responseFactory({ model: '   ' })).call(
+        createLiveSmokeRequest(),
+        profile(),
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
   });
 
   it.each([

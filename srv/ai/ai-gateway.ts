@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import type { AiConfig } from './config.ts';
-import { AiTaskType, createInputFingerprint } from './contracts.ts';
+import { isProfiledAiTaskType, validateAiExecutionProfile } from './config.ts';
+import { createInputFingerprint, isValidAiRunId } from './contracts.ts';
 import type {
   AiCallResult,
+  AiExecutionProfile,
   AiProvider,
   StructuredAiAdapter,
   StructuredAiRequest,
@@ -10,8 +13,68 @@ import { AiError } from './errors.ts';
 import type { AiRunRecorder, AiRunTelemetryEvent } from './telemetry.ts';
 import { NoopAiRunRecorder } from './telemetry.ts';
 
-function configuredProvider(config: AiConfig, taskType: AiTaskType): AiProvider {
-  return taskType === AiTaskType.GENERATE ? config.generateProvider : config.decideProvider;
+function auditFailure(
+  stage: 'STARTED' | 'SUCCEEDED' | 'FAILED',
+  profile: AiExecutionProfile,
+  cause: unknown,
+  originalErrorCode?: string,
+): AiError {
+  return new AiError('AI_AUDIT_FAILED', 'The AI audit record could not be persisted safely.', {
+    provider: profile.provider,
+    model: profile.model,
+    details: originalErrorCode === undefined ? { stage } : { originalErrorCode },
+    cause,
+  });
+}
+
+function adapterFailure(cause: unknown, profile: AiExecutionProfile): AiError {
+  return cause instanceof AiError
+    ? cause
+    : new AiError('PROVIDER_ERROR', `${profile.provider} failed to complete the request.`, {
+        provider: profile.provider,
+        model: profile.model,
+        cause,
+      });
+}
+
+function metadataMismatch(profile: AiExecutionProfile, message: string): never {
+  throw new AiError('PROVIDER_ERROR', message, {
+    provider: profile.provider,
+    model: profile.model,
+  });
+}
+
+function validateResultMetadata<TOutput>(
+  result: AiCallResult<TOutput>,
+  request: StructuredAiRequest<TOutput>,
+  profile: AiExecutionProfile,
+  aiRunId: string,
+  expectedFingerprint: string,
+): void {
+  if (result.provider !== profile.provider) {
+    metadataMismatch(profile, 'The selected adapter returned a different provider.');
+  }
+  if (result.configuredModel !== profile.model) {
+    metadataMismatch(profile, 'The selected adapter returned a different configured model.');
+  }
+  if (result.taskType !== request.taskType) {
+    metadataMismatch(profile, 'The selected adapter returned a different task type.');
+  }
+  if (result.promptVersion !== request.promptVersion) {
+    metadataMismatch(profile, 'The selected adapter returned a different prompt version.');
+  }
+  if (result.schemaVersion !== request.schemaVersion) {
+    metadataMismatch(profile, 'The selected adapter returned a different schema version.');
+  }
+  if (result.inputFingerprint !== expectedFingerprint) {
+    metadataMismatch(profile, 'The selected adapter returned a different input fingerprint.');
+  }
+  if (result.aiRunId !== aiRunId) {
+    metadataMismatch(profile, 'The selected adapter returned a different AI run ID.');
+  }
+  if (result.responseModel.trim().length === 0) {
+    metadataMismatch(profile, 'The selected adapter returned an empty response model.');
+  }
 }
 
 export class AiGateway {
@@ -21,6 +84,8 @@ export class AiGateway {
     private readonly config: AiConfig,
     adapters: readonly StructuredAiAdapter[],
     private readonly recorder: AiRunRecorder = new NoopAiRunRecorder(),
+    private readonly generateAiRunId: () => string = randomUUID,
+    private readonly now: () => Date = () => new Date(),
   ) {
     for (const adapter of adapters) {
       if (this.adapters.has(adapter.provider)) {
@@ -34,76 +99,114 @@ export class AiGateway {
   }
 
   async call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>> {
-    const provider = request.provider ?? configuredProvider(this.config, request.taskType);
-    const adapter = this.adapters.get(provider);
-
-    if (!this.config.enabled) {
-      throw new AiError('AI_DISABLED', 'AI calls are disabled by configuration.', {
-        provider,
-        ...(adapter === undefined ? {} : { model: adapter.model }),
-        details: { field: 'AI_ENABLED' },
-      });
-    }
-
-    if (adapter === undefined) {
+    if (!isProfiledAiTaskType(request.taskType)) {
       throw new AiError(
-        'UNSUPPORTED_AI_PROVIDER',
-        'No adapter is configured for the selected provider.',
-        {
-          provider,
-        },
+        'INVALID_AI_CONFIGURATION',
+        'Operator smoke calls must use the dedicated live-smoke path.',
+        { details: { taskType: request.taskType } },
       );
     }
 
-    const fingerprint = createInputFingerprint(request.input);
+    const profile = this.config.taskProfiles[request.taskType];
+    validateAiExecutionProfile(profile);
+    const adapter = this.adapters.get(profile.provider);
 
+    // Keep AI_DISABLED ahead of fingerprinting, ID creation, recorder writes and adapter calls.
+    if (!this.config.enabled) {
+      throw new AiError('AI_DISABLED', 'AI calls are disabled by configuration.', {
+        provider: profile.provider,
+        model: profile.model,
+        details: { field: 'AI_ENABLED' },
+      });
+    }
+    if (adapter === undefined) {
+      throw new AiError(
+        'UNSUPPORTED_AI_PROVIDER',
+        'No adapter is configured for the selected task profile.',
+        { provider: profile.provider, model: profile.model },
+      );
+    }
+
+    const aiRunId = this.generateAiRunId().trim();
+    if (!isValidAiRunId(aiRunId)) {
+      throw new AiError('INVALID_AI_CONFIGURATION', 'The AI run ID generator returned no UUID.', {
+        provider: profile.provider,
+        model: profile.model,
+        details: { field: 'aiRunId' },
+      });
+    }
+    const inputFingerprint = createInputFingerprint(request.input);
+    const startedAt = this.now().toISOString();
     const commonEvent = {
-      provider,
-      model: adapter.model,
+      aiRunId,
+      ...(request.planningRunId === undefined ? {} : { planningRunId: request.planningRunId }),
+      provider: profile.provider,
+      configuredModel: profile.model,
       taskType: request.taskType,
       promptVersion: request.promptVersion,
       schemaVersion: request.schemaVersion,
-      inputFingerprint: fingerprint,
+      inputFingerprint,
+      startedAt,
     } as const;
-    this.recorder.record({ ...commonEvent, status: 'STARTED' });
 
     try {
-      const result = await adapter.call(request);
-      if (result.provider !== provider) {
-        throw new AiError('PROVIDER_ERROR', 'The selected adapter returned a different provider.', {
-          provider,
-          model: adapter.model,
-        });
-      }
-      const successEvent: AiRunTelemetryEvent = {
-        ...commonEvent,
-        status: 'SUCCEEDED',
-        latencyMs: result.latencyMs,
-        attempts: result.attempts,
-        usage: result.usage,
-        refusal: result.refusal,
-        ...(result.providerRequestId === undefined
-          ? {}
-          : { providerRequestId: result.providerRequestId }),
-      };
-      this.recorder.record(successEvent);
-      return result;
+      await this.recorder.record({ ...commonEvent, status: 'STARTED' });
     } catch (cause) {
-      const error =
-        cause instanceof AiError
-          ? cause
-          : new AiError('PROVIDER_ERROR', `${provider} failed to complete the request.`, {
-              provider,
-              model: adapter.model,
-              cause,
-            });
-      this.recorder.record({
+      throw auditFailure('STARTED', profile, cause);
+    }
+
+    let result: AiCallResult<TOutput>;
+    try {
+      const executionRequest: StructuredAiRequest<TOutput> = { ...request, aiRunId };
+      result = await adapter.call(executionRequest, profile);
+      validateResultMetadata(result, executionRequest, profile, aiRunId, inputFingerprint);
+    } catch (cause) {
+      const error = adapterFailure(cause, profile);
+      const failureEvent: AiRunTelemetryEvent = {
         ...commonEvent,
         status: 'FAILED',
+        completedAt: this.now().toISOString(),
         errorCode: error.code,
-        ...(error.code === 'MODEL_REFUSAL' ? { refusal: { refused: true } } : {}),
-      });
+        retryable: error.retryable,
+        ...(error.code === 'MODEL_REFUSAL'
+          ? {
+              refusal: {
+                refused: true,
+                ...(typeof error.details.category === 'string'
+                  ? { category: error.details.category }
+                  : {}),
+              },
+            }
+          : {}),
+      };
+      try {
+        await this.recorder.record(failureEvent);
+      } catch (recorderCause) {
+        throw auditFailure('FAILED', profile, recorderCause, error.code);
+      }
       throw error;
     }
+
+    const successEvent: AiRunTelemetryEvent = {
+      ...commonEvent,
+      status: 'SUCCEEDED',
+      responseModel: result.responseModel,
+      completedAt: this.now().toISOString(),
+      latencyMs: result.latencyMs,
+      attempts: result.attempts,
+      usage: result.usage,
+      refusal: result.refusal,
+      retryable: false,
+      ...(result.providerRequestId === undefined
+        ? {}
+        : { providerRequestId: result.providerRequestId }),
+    };
+    try {
+      await this.recorder.record(successEvent);
+    } catch (cause) {
+      throw auditFailure('SUCCEEDED', profile, cause);
+    }
+
+    return result;
   }
 }
