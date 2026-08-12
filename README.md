@@ -4,8 +4,10 @@ Deterministic-first planner krótkich podróży. Kod waliduje twarde ograniczeni
 wersjonowane dane demonstracyjne, buduje i filtruje kandydatów, liczy budżet oraz scoring,
 a następnie pokazuje dokładnie trzy zróżnicowane warianty wraz ze źródłami i odrzuceniami.
 
-Faza 2 — Planning API and Options UI — jest ukończona. Projekt nie używa jeszcze LLM,
-zewnętrznych providerów, rezerwacji, płatności ani uwierzytelniania.
+Faza 2 — Planning API and Options UI — jest ukończona. Faza 3A dodaje domyślnie
+wyłączony, vendor-neutral LLM Gateway, ale nie łączy go jeszcze z przepływem produktu.
+Standardowe uruchomienie i testy nie wywołują płatnych API. Projekt nadal nie obsługuje
+rezerwacji, płatności ani uwierzytelniania.
 
 ## Uruchomienie
 
@@ -18,6 +20,10 @@ npm run dev
 
 Backend CAP działa na `http://localhost:4004` (`/health`), a frontend Vite na
 `http://localhost:5173`.
+
+Do standardowego uruchomienia nie są potrzebne klucze OpenAI ani Anthropic. Konfigurację
+gatewaya ładuje się jawnie dopiero w miejscu użycia; import, build i start aplikacji nie
+odczytują ani nie wymagają sekretów.
 
 ## Scenariusz referencyjny
 
@@ -35,6 +41,29 @@ Backend CAP działa na `http://localhost:4004` (`/health`), a frontend Vite na
 
 Każde źródło `INTERNAL_FIXTURE` jest w UI jawnie oznaczone jako dane demonstracyjne,
 nie jako aktualna oferta.
+
+## LLM Gateway Fazy 3A
+
+Gateway udostępnia jeden kontrakt strukturalnych wywołań i rozdziela zadania
+`DECIDE`/`JUDGE`/`SMOKE` oraz `GENERATE` między adaptery. Domyślna konfiguracja używa
+OpenAI Responses API z modelem `gpt-5.6-luna` do decyzji i Anthropic Messages API z
+modelem `claude-sonnet-5` do generowania. Nazwy modeli są jawnie konfigurowalne i nigdy
+nie są podmieniane automatycznie.
+
+`AI_ENABLED=false` wyłącza gateway dla produktu, a `AI_LIVE_SMOKE_ENABLED=false` blokuje
+ręczne testy live. Testy jednostkowe adapterów używają transportu HTTP in-memory i nie
+kontaktują się z internetem. Po świadomym skonfigurowaniu sekretów poza repo dostępne są:
+
+```sh
+npm run ai:credentials:check
+npm run ai:smoke:openai
+npm run ai:smoke:anthropic
+npm run ai:smoke
+```
+
+Smoke test jest osobnym, płatnym wywołaniem opt-in i nie należy do `verify` ani
+`verify:full`. Nigdy nie commituj `.env` ani kluczy. Pełny kontrakt, konfiguracja,
+bezpieczeństwo i ograniczenia są opisane w `docs/ai-gateway.md`.
 
 ## API
 

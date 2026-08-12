@@ -6,6 +6,10 @@
 - LLM nie wykonuje arytmetyki finansowej.
 - Brak danych nie może zostać ukryty ani uzupełniony przez model.
 - Nie dodawaj sekretów ani plików `.env` do repozytorium.
+- Nigdy nie otwieraj, nie wypisuj ani nie loguj zawartości pliku `.env`.
+- Live AI wymaga jawnego opt-in; domyślne testy nigdy nie wykonują płatnych requestów.
+- Nazwy modeli są jawnie konfigurowane i nigdy nie są cicho zmieniane ani zastępowane.
+- Każdy wynik providera AI musi przejść lokalną walidację schematu przed użyciem.
 - Każda zmiana domeny wymaga testów.
 - Każdy naprawiony błąd wymaga testu regresyjnego.
 - Przed zakończeniem pracy uruchom `npm run verify`.

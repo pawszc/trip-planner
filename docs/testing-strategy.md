@@ -15,6 +15,11 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - kontrolowany niedobór dwóch lub zera opcji;
 - dokładną konwersję major → minor units bez arytmetyki floating point;
 - mapowanie awarii providera na kontrolowany kod bez ujawnienia jego komunikatu.
+- konfigurację LLM Gateway, routing z override, brak fallbacku i blokadę `AI_DISABLED`;
+- kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
+- structured outputs, ponowną lokalną walidację, refusal i brak poprawnej treści;
+- timeout, retry, zamknięty katalog błędów oraz redakcję kluczy i nagłówków;
+- blokadę live smoke, brak credentiali i dokładnie jedno wywołanie po jawnym opt-in.
 
 Scenariusz referencyjny 2B wymaga dokładnie 28 zbudowanych, 6 poprawnych i 22
 odrzuconych kandydatów. Wynik to Praga `BEST_OVERALL`, Wiedeń `MOST_CONVENIENT` i
@@ -58,5 +63,20 @@ uruchamia ten sam zestaw oraz E2E. Przed zakończeniem pracy wymagany jest `veri
 PR — `verify:full`. Testów nie wyłącza się, nie pomija i nie rozwadnia w celu uzyskania
 zielonego wyniku.
 
-Przyszłe smoke testy live API będą osobnym, kontrolowanym workflow z sekretami poza repo.
-Przyszłe evale LLM nie zastąpią testów twardych reguł, persistence ani arytmetyki kodu.
+Testy adapterów nie patchują globalnego `fetch`: fabryka klienta otrzymuje lokalny,
+kontrolowany transport, który pozwala sprawdzić rzeczywisty payload SDK bez sieci. Żaden
+test w `test`, `verify` ani `verify:full` nie wymaga credentiali i nie wykonuje płatnego
+requestu.
+
+## Manualny smoke test AI
+
+`npm run ai:credentials:check` wykonuje wyłącznie lokalną kontrolę obecności wymaganych
+zmiennych i wypisuje bezpieczne statusy bez wartości sekretów. `npm run ai:smoke:openai` i
+`npm run ai:smoke:anthropic` wymagają `AI_LIVE_SMOKE_ENABLED=true` oraz klucza wybranego
+providera. Każdy skrypt wykonuje dokładnie jedno minimalne wywołanie o strukturalnym
+wyniku. `npm run ai:smoke` uruchamia je sekwencyjnie.
+
+Smoke testy są celowo poza CI i standardową weryfikacją, ponieważ są płatne, zależą od
+zewnętrznej dostępności i uprawnień konta. Nie wolno ich uruchamiać automatycznie ani
+używać do omijania testów offline. Evale LLM nie zastąpią testów twardych reguł,
+persistence ani arytmetyki kodu.

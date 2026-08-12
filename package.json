@@ -27,12 +27,19 @@
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "playwright test",
+    "ai:credentials:check": "node --env-file-if-exists=.env --import tsx scripts/ai-credentials-check.ts",
+    "ai:smoke:openai": "node --env-file=.env --import tsx scripts/ai-live-smoke.ts openai",
+    "ai:smoke:anthropic": "node --env-file=.env --import tsx scripts/ai-live-smoke.ts anthropic",
+    "ai:smoke": "npm run ai:smoke:openai && npm run ai:smoke:anthropic",
     "verify": "npm run lint && npm run typecheck && npm run test:unit && npm run test:integration && npm run build",
     "verify:full": "npm run verify && npm run test:e2e"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.116.0",
     "@cap-js/sqlite": "3.0.2",
-    "@sap/cds": "10.0.5"
+    "@sap/cds": "10.0.5",
+    "openai": "7.4.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@cap-js/cds-test": "1.0.2",
