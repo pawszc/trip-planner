@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { loadAiConfig } from '../../srv/ai/config.js';
-import { AiProvider } from '../../srv/ai/contracts.js';
+import { AiProvider, AiTaskType } from '../../srv/ai/contracts.js';
+import type { AiExecutionProfile, StructuredAiRequest } from '../../srv/ai/contracts.js';
 import { AiError } from '../../srv/ai/errors.js';
 import {
   OpenAiResponsesAdapter,
@@ -17,7 +18,7 @@ import type { LiveSmokeOutput } from '../../srv/ai/schemas/live-smoke-schema.js'
 
 const validOutput: LiveSmokeOutput = {
   ok: true,
-  phase: '3a',
+  phase: '3b1',
   check: 'structured-output',
 };
 
@@ -37,12 +38,31 @@ function config(overrides: Readonly<Record<string, string | undefined>> = {}) {
   });
 }
 
+function profile(overrides: Partial<AiExecutionProfile> = {}): AiExecutionProfile {
+  return {
+    taskType: AiTaskType.SMOKE,
+    provider: AiProvider.OPENAI,
+    model: 'gpt-profile-model',
+    effort: 'high',
+    maxOutputTokens: 64,
+    ...overrides,
+  };
+}
+
+function callAdapter(
+  adapter: OpenAiResponsesAdapter,
+  executionProfile: AiExecutionProfile = profile(),
+  request: StructuredAiRequest<LiveSmokeOutput> = createLiveSmokeRequest(),
+) {
+  return adapter.call(request, executionProfile);
+}
+
 function successResponse<TOutput>(
   request: OpenAiStructuredRequest<TOutput>,
 ): OpenAiStructuredResponse<TOutput> {
   return {
     outputParsed: request.outputSchema.parse(validOutput),
-    model: request.model,
+    model: `${request.model}-snapshot`,
     usage,
     providerRequestId: 'openai-request-id',
     attempts: 1,
@@ -89,7 +109,7 @@ describe('OpenAI Responses adapter', () => {
         }
       | undefined;
     const adapter = new OpenAiResponsesAdapter(
-      config({ AI_TIMEOUT_MS: '45000', AI_MAX_RETRIES: '2', AI_MAX_OUTPUT_TOKENS: '64' }),
+      config({ AI_TIMEOUT_MS: '45000', AI_MAX_RETRIES: '2' }),
       successFactory(
         (options) => {
           clientOptions = options;
@@ -109,16 +129,16 @@ describe('OpenAI Responses adapter', () => {
       ),
     );
 
-    const result = await adapter.call(createLiveSmokeRequest(AiProvider.OPENAI));
+    const result = await callAdapter(adapter);
 
     expect(clientOptions).toMatchObject({ timeoutMs: 45_000, maxRetries: 2 });
     expect(clientOptions?.apiKey).toBeTruthy();
     expect(captured).toEqual({
-      model: 'gpt-5.6-luna',
-      input: '{"check":"structured-output","ok":true,"phase":"3a"}',
-      schemaName: 'phase_3a_live_smoke',
+      model: 'gpt-profile-model',
+      input: '{"check":"structured-output","ok":true,"phase":"3b1"}',
+      schemaName: 'phase_3b1_live_smoke',
       maxOutputTokens: 64,
-      reasoningEffort: 'none',
+      reasoningEffort: 'high',
       store: false,
       tools: [],
       toolChoice: 'none',
@@ -126,7 +146,8 @@ describe('OpenAI Responses adapter', () => {
     expect(result).toMatchObject({
       output: validOutput,
       provider: AiProvider.OPENAI,
-      model: 'gpt-5.6-luna',
+      configuredModel: 'gpt-profile-model',
+      responseModel: 'gpt-profile-model-snapshot',
       usage,
       attempts: 1,
       providerRequestId: 'openai-request-id',
@@ -143,16 +164,45 @@ describe('OpenAI Responses adapter', () => {
       () => times.shift() ?? 137,
     );
 
-    const result = await adapter.call(createLiveSmokeRequest(AiProvider.OPENAI));
+    const result = await callAdapter(adapter);
 
     expect(result.latencyMs).toBe(37);
+  });
+
+  it('lets a request lower but never raise the profile token limit', async () => {
+    const captured: number[] = [];
+    const adapter = new OpenAiResponsesAdapter(
+      config(),
+      successFactory(undefined, (request) => captured.push(request.maxOutputTokens)),
+    );
+
+    await callAdapter(adapter, profile({ maxOutputTokens: 100 }), {
+      ...createLiveSmokeRequest(),
+      maxOutputTokens: 32,
+    });
+    await callAdapter(adapter, profile({ maxOutputTokens: 100 }), {
+      ...createLiveSmokeRequest(),
+      maxOutputTokens: 200,
+    });
+
+    expect(captured).toEqual([32, 100]);
+  });
+
+  it('rejects a profile for another provider before creating a client', async () => {
+    const factory = vi.fn<OpenAiClientFactory>();
+    const adapter = new OpenAiResponsesAdapter(config(), factory);
+
+    await expect(
+      callAdapter(adapter, profile({ provider: AiProvider.ANTHROPIC })),
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED_AI_PROVIDER' });
+    expect(factory).not.toHaveBeenCalled();
   });
 
   it('requires the OpenAI credential only when a call would create a client', async () => {
     const factory = vi.fn<OpenAiClientFactory>();
     const adapter = new OpenAiResponsesAdapter(loadAiConfig({}), factory);
 
-    await expect(adapter.call(createLiveSmokeRequest(AiProvider.OPENAI))).rejects.toMatchObject({
+    await expect(callAdapter(adapter)).rejects.toMatchObject({
       code: 'MISSING_CREDENTIALS',
       details: { credentialEnvironmentVariable: 'OPENAI_API_KEY' },
     });
@@ -172,14 +222,10 @@ describe('OpenAI Responses adapter', () => {
     });
 
     await expect(
-      new OpenAiResponsesAdapter(config(), refusalFactory).call(
-        createLiveSmokeRequest(AiProvider.OPENAI),
-      ),
+      callAdapter(new OpenAiResponsesAdapter(config(), refusalFactory)),
     ).rejects.toMatchObject({ code: 'MODEL_REFUSAL' });
     await expect(
-      new OpenAiResponsesAdapter(config(), emptyFactory).call(
-        createLiveSmokeRequest(AiProvider.OPENAI),
-      ),
+      callAdapter(new OpenAiResponsesAdapter(config(), emptyFactory)),
     ).rejects.toMatchObject({ code: 'EMPTY_MODEL_OUTPUT' });
   });
 
@@ -188,16 +234,26 @@ describe('OpenAI Responses adapter', () => {
       async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
         return {
           ...successResponse(request),
-          outputParsed: { ok: false, phase: '3a', check: 'structured-output' } as TOutput,
+          outputParsed: { ok: false, phase: '3b1', check: 'structured-output' } as TOutput,
         };
       },
     });
 
     await expect(
-      new OpenAiResponsesAdapter(config(), invalidFactory).call(
-        createLiveSmokeRequest(AiProvider.OPENAI),
-      ),
+      callAdapter(new OpenAiResponsesAdapter(config(), invalidFactory)),
     ).rejects.toMatchObject({ code: 'INVALID_STRUCTURED_OUTPUT' });
+  });
+
+  it('rejects an empty response model from OpenAI', async () => {
+    const emptyModelFactory: OpenAiClientFactory = () => ({
+      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
+        return { ...successResponse(request), model: '   ' };
+      },
+    });
+
+    await expect(
+      callAdapter(new OpenAiResponsesAdapter(config(), emptyModelFactory)),
+    ).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
   });
 
   it.each([
@@ -213,10 +269,8 @@ describe('OpenAI Responses adapter', () => {
     [Object.assign(new Error('server error'), { status: 503 }), 'PROVIDER_UNAVAILABLE'],
   ] as const)('normalizes provider failure to %s', async (providerError, code) => {
     await expect(
-      new OpenAiResponsesAdapter(config(), throwingFactory(providerError)).call(
-        createLiveSmokeRequest(AiProvider.OPENAI),
-      ),
-    ).rejects.toMatchObject({ code, provider: AiProvider.OPENAI, model: 'gpt-5.6-luna' });
+      callAdapter(new OpenAiResponsesAdapter(config(), throwingFactory(providerError))),
+    ).rejects.toMatchObject({ code, provider: AiProvider.OPENAI, model: 'gpt-profile-model' });
   });
 
   it('never includes the API key or raw provider message in a safe error', async () => {
@@ -228,7 +282,7 @@ describe('OpenAI Responses adapter', () => {
 
     let error: AiError | undefined;
     try {
-      await adapter.call(createLiveSmokeRequest(AiProvider.OPENAI));
+      await callAdapter(adapter);
     } catch (caught) {
       if (caught instanceof AiError) {
         error = caught;
@@ -297,7 +351,7 @@ describe('official OpenAI SDK transport', () => {
       model: 'gpt-5.6-luna',
       instructions: 'Return structured output.',
       input: JSON.stringify(validOutput),
-      schemaName: 'phase_3a_live_smoke',
+      schemaName: 'phase_3b1_live_smoke',
       outputSchema: liveSmokeSchema,
       maxOutputTokens: 128,
       reasoningEffort: 'none',
@@ -322,7 +376,7 @@ describe('official OpenAI SDK transport', () => {
       text: {
         format: {
           type: 'json_schema',
-          name: 'phase_3a_live_smoke',
+          name: 'phase_3b1_live_smoke',
           strict: true,
         },
       },

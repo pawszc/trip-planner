@@ -5,7 +5,7 @@ import { AI_ERROR_CODE_VALUES, AiError, normalizeProviderFailure } from '../../s
 const modelContext = {
   provider: AiProvider.OPENAI,
   model: 'gpt-configured',
-  modelEnvironmentVariable: 'OPENAI_DECIDE_MODEL',
+  modelEnvironmentVariable: 'AI_DECIDE_MODEL',
 } as const;
 
 describe('normalized AI errors', () => {
@@ -16,6 +16,7 @@ describe('normalized AI errors', () => {
       'MISSING_CREDENTIALS',
       'INVALID_AI_CONFIGURATION',
       'UNSUPPORTED_AI_PROVIDER',
+      'AI_AUDIT_FAILED',
       'AUTHENTICATION_FAILED',
       'MODEL_ACCESS_DENIED',
       'RATE_LIMITED',
@@ -57,7 +58,7 @@ describe('normalized AI errors', () => {
     expect(error.code).toBe('MODEL_ACCESS_DENIED');
     expect(error.details).toMatchObject({
       configuredModel: 'gpt-configured',
-      modelEnvironmentVariable: 'OPENAI_DECIDE_MODEL',
+      modelEnvironmentVariable: 'AI_DECIDE_MODEL',
       providerCode: 'model_not_found',
     });
     expect(error.details.nextStep).toContain('local .env');

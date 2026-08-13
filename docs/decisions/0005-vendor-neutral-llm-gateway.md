@@ -95,3 +95,16 @@ fallbacku obniża dostępność pojedynczego wywołania, ale zachowuje przewidyw
 model i semantykę. Live smoke nie daje deterministycznej gwarancji, ponieważ zależy od
 zewnętrznej sieci, limitów, salda i dostępu do modelu; dlatego uzupełnia, a nie zastępuje,
 testy offline.
+
+## Uzupełnienie po Fazie 3B1
+
+ADR 0006 zastępuje część tej decyzji dotyczącą routingu i telemetrii. Normalny request
+produktu nie ma już per-request provider override. Provider, model, effort i limit outputu
+są kontrolowane przez osobny profil `DECIDE`, `GENERATE` lub `JUDGE`; request może jedynie
+obniżyć limit tokenów. Jest to świadome odejście od kontraktu 3A, ponieważ swobodny override
+osłabiałby kontrolę kosztu i jakości, audyt oraz przyszłe limity. Testy wstrzykują profile
+konfiguracji zamiast zmieniać pojedynczy request.
+
+Telemetria 3B1 rozdziela `configuredModel` i `responseModel`, recorder jest asynchroniczny
+i fail-closed, a wewnętrzne `AiRuns` utrwala lifecycle bez promptów, wejść, wyjść i surowych
+błędów. Szczegóły oraz konsekwencje opisuje ADR 0006.

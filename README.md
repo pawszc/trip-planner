@@ -4,8 +4,9 @@ Deterministic-first planner krótkich podróży. Kod waliduje twarde ograniczeni
 wersjonowane dane demonstracyjne, buduje i filtruje kandydatów, liczy budżet oraz scoring,
 a następnie pokazuje dokładnie trzy zróżnicowane warianty wraz ze źródłami i odrzuceniami.
 
-Faza 2 — Planning API and Options UI — jest ukończona. Faza 3A dodaje domyślnie
-wyłączony, vendor-neutral LLM Gateway, ale nie łączy go jeszcze z przepływem produktu.
+Faza 2 — Planning API and Options UI — jest ukończona. Faza 3B1 dodaje domyślnie
+wyłączone, task-aware profile wykonania oraz trwały audyt `AiRuns`, ale nie łączy modeli z
+przepływem produktu.
 Standardowe uruchomienie i testy nie wywołują płatnych API. Projekt nadal nie obsługuje
 rezerwacji, płatności ani uwierzytelniania.
 
@@ -42,13 +43,28 @@ odczytują ani nie wymagają sekretów.
 Każde źródło `INTERNAL_FIXTURE` jest w UI jawnie oznaczone jako dane demonstracyjne,
 nie jako aktualna oferta.
 
-## LLM Gateway Fazy 3A
+## AI execution foundation Fazy 3B1
 
-Gateway udostępnia jeden kontrakt strukturalnych wywołań i rozdziela zadania
-`DECIDE`/`JUDGE`/`SMOKE` oraz `GENERATE` między adaptery. Domyślna konfiguracja używa
-OpenAI Responses API z modelem `gpt-5.6-luna` do decyzji i Anthropic Messages API z
-modelem `claude-sonnet-5` do generowania. Nazwy modeli są jawnie konfigurowalne i nigdy
-nie są podmieniane automatycznie.
+Gateway udostępnia jeden kontrakt strukturalnych wywołań i osobny profil
+`provider + model + effort + max output tokens` dla `DECIDE`, `GENERATE` i `JUDGE`.
+Domyślnie są to OpenAI Luna (`DECIDE`), Anthropic Sonnet (`GENERATE`) i OpenAI Terra
+(`JUDGE`). Request produktu nie ma provider override; opcjonalny limit może tylko obniżyć
+limit profilu. Zmiana providera wymaga jawnego modelu. Nazwy modeli są jawne i nigdy nie są
+cicho zmieniane.
+
+Adaptery otrzymują profil per call i rozróżniają `configuredModel` od `responseModel`.
+Każde wykonanie ma UUID i asynchroniczny lifecycle `STARTED` → `SUCCEEDED`/`FAILED`.
+Recorder jest fail-closed: brak trwałego `STARTED` blokuje provider, a brak trwałego
+`SUCCEEDED` blokuje zwrot outputu.
+
+`AiGateway` wymaga jawnego recordera, a persistent factory składa realny recorder i store.
+Na SQLite gateway działa poza aktywną transakcją DB: krótki odczyt kończy się przed AI, a
+krótki zapis produktu zaczyna dopiero po terminalnym audycie. Próba z aktywnej transakcji
+jest odrzucana przed adapterem, zamiast wejść w circular wait.
+
+Wewnętrzne `AiRuns` nie jest publikowane przez OData. Przechowuje wyłącznie bezpieczne
+metadane i domyślny `expiresAt` po 30 dniach — bez promptów, wejść, wyjść i surowych błędów.
+Cleanup ma zaimplementowany kontrakt, ale nie ma jeszcze schedulera.
 
 `AI_ENABLED=false` wyłącza gateway dla produktu, a `AI_LIVE_SMOKE_ENABLED=false` blokuje
 ręczne testy live. Testy jednostkowe adapterów używają transportu HTTP in-memory i nie
@@ -64,6 +80,9 @@ npm run ai:smoke
 Smoke test jest osobnym, płatnym wywołaniem opt-in i nie należy do `verify` ani
 `verify:full`. Nigdy nie commituj `.env` ani kluczy. Pełny kontrakt, konfiguracja,
 bezpieczeństwo i ograniczenia są opisane w `docs/ai-gateway.md`.
+
+Faza 3B1 nie dodaje żadnej akcji CAP wykonującej AI. Faza 3B2 doda grounded narratives,
+a Faza 3B3 wykonywanie judge, safety pipeline i evale.
 
 ## API
 

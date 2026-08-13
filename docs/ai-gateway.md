@@ -1,176 +1,203 @@
-# LLM Gateway Fazy 3A
+# AI execution foundation Fazy 3B1
 
 ## Cel i granice
 
-Faza 3A wprowadza vendor-neutral granicę dla przyszłych wywołań LLM. Nie zmienia działania
-`startPlanning`, CAP, UI, deterministycznego rankingu ani persistence. Gateway pozostaje
-domyślnie wyłączony i nie wykonuje żadnego requestu podczas importu, buildu, startu ani
-standardowych testów.
+Faza 3B1 dodaje task-aware profile wykonania, walidację metadanych adaptera i trwały audyt
+`AiRuns`. Nie podłącza modeli do produktu. `TripRequests.startPlanning()`, pozostałe akcje
+CAP i UI nie tworzą `AiGateway` ani nie wykonują AI. Gateway jest domyślnie wyłączony, a
+standardowe testy są offline i nie potrzebują credentiali.
 
-Twarde ograniczenia, kompletność danych, workflow, scoring i wszystkie obliczenia finansowe
-pozostają odpowiedzialnością kodu. Model otrzymuje wyłącznie jawne, ugruntowane dane JSON.
-Braków nie wolno ukrywać ani uzupełniać przez model.
+Kod pozostaje jedynym źródłem prawdy dla hard constraints, kompletności danych, workflow,
+rankingu i arytmetyki finansowej. Model nie może uzupełniać brakujących faktów ani liczyć
+budżetu.
 
 ## Moduły
 
-- `srv/ai/contracts.ts` — publiczne typy providerów, zadań, requestów, wyników i usage;
-- `srv/ai/config.ts` — czysty loader konfiguracji i walidacja granic;
-- `srv/ai/ai-gateway.ts` — routing, per-request override i brak fallbacku;
-- `srv/ai/adapters/` — izolowane adaptery oficjalnych SDK;
-- `srv/ai/errors.ts` — zamknięty katalog bezpiecznych błędów;
-- `srv/ai/redaction.ts` — redakcja sekretów i wrażliwych nagłówków;
-- `srv/ai/telemetry.ts` — vendor-neutral metadata bez promptów i payloadów;
-- `srv/ai/live-smoke.ts` — minimalny, jawnie aktywowany test live;
-- `scripts/ai-*.ts` — bezpieczne punkty wejścia dla operatora.
+- `srv/ai/contracts.ts` — vendor-neutral request, profile, wynik i fingerprint;
+- `srv/ai/config.ts` — czysty loader trzech profili i ustawień runtime;
+- `srv/ai/ai-gateway.ts` — task routing, UUID runu, fail-closed lifecycle i walidacja
+  metadanych;
+- `srv/ai/adapters/` — izolowane adaptery oficjalnych SDK, bez stałego modelu;
+- `srv/ai/telemetry.ts` — asynchroniczny kontrakt bez payloadów;
+- `srv/ai/persistence/` — store CAP i persistent recorder;
+- `srv/ai/live-smoke.ts` — osobna ścieżka operator-only;
+- `scripts/ai-*.ts` — lokalne helpery operatora.
 
-Typy OpenAI i Anthropic nie opuszczają adapterów. Publiczny `srv/ai/index.ts` eksportuje
-klasy adapterów, ale nie eksportuje ich fabryk klientów, opcji transportu, wrapperów
-request/response ani test seams. Pozostały kod zależy tylko od `StructuredAiAdapter` i
-`AiCallResult`.
+Typy OpenAI i Anthropic pozostają wewnątrz adapterów. Nie ma tools, streamingu, web search,
+MCP ani multimodalności.
 
-## Kontrakt strukturalnego wywołania
+## Task-aware profile
 
-`StructuredAiRequest<T>` zawiera:
+Każdy profil ma pełny kontrakt:
 
-- typ zadania: `DECIDE`, `GENERATE`, `JUDGE` albo `SMOKE`;
-- jawne `promptVersion`, `schemaName` i `schemaVersion`;
-- instrukcje i ugruntowane wejście zgodne z typem JSON;
-- schemat Zod wyniku;
-- opcjonalny limit tokenów i jawny override providera.
+```ts
+interface AiExecutionProfile {
+  taskType: AiTaskType;
+  provider: AiProvider;
+  model: string;
+  effort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  maxOutputTokens: number;
+}
+```
 
-Gateway kanonizuje JSON przez rekurencyjne sortowanie kluczy i tworzy SHA-256 fingerprint.
-Surowe wejście nie trafia do telemetrii. Wynik zawiera zwalidowane `output`, provider,
-model, wersje, fingerprint, usage, latency, liczbę faktycznych prób, identyfikator requestu
-providera, jeśli jest dostępny, oraz stan refusal.
+| Zadanie    | Provider  | Model             | Effort | Max output tokens |
+| ---------- | --------- | ----------------- | ------ | ----------------: |
+| `DECIDE`   | OpenAI    | `gpt-5.6-luna`    | `none` |               512 |
+| `GENERATE` | Anthropic | `claude-sonnet-5` | `low`  |              1600 |
+| `JUDGE`    | OpenAI    | `gpt-5.6-terra`   | `low`  |               768 |
 
-## Routing
+OpenAI akceptuje wszystkie sześć wartości effort. Anthropic odrzuca `none`. Niepoprawny
+profil kończy się `INVALID_AI_CONFIGURATION` przed utworzeniem klienta lub requestem
+sieciowym.
 
-| Zadanie    | Domyślny provider                           |
-| ---------- | ------------------------------------------- |
-| `DECIDE`   | `AI_DECIDE_PROVIDER`, domyślnie OpenAI      |
-| `JUDGE`    | `AI_DECIDE_PROVIDER`, domyślnie OpenAI      |
-| `SMOKE`    | `AI_DECIDE_PROVIDER`, domyślnie OpenAI      |
-| `GENERATE` | `AI_GENERATE_PROVIDER`, domyślnie Anthropic |
-
-Override w requeście może wybrać zarejestrowany adapter. Gateway nie przełącza się po
-błędzie na drugiego providera, inny model ani mniej rygorystyczny schemat. Brak adaptera
-kończy się `UNSUPPORTED_AI_PROVIDER`, a `AI_ENABLED=false` kończy zwykłe wywołanie
-`AI_DISABLED`.
-
-## Adapter OpenAI
-
-Adapter używa oficjalnego pakietu `openai` i Responses API. `responses.parse` otrzymuje
-format z `zodTextFormat`, `store: false`, pusty zestaw narzędzi, jawny model, effort i limit
-output tokens. Parsed output jest ponownie sprawdzany przez lokalny schemat Zod. Refusal,
-brak parsed output albo niezgodność schematu są kontrolowanymi błędami.
-
-Domyślny model to `gpt-5.6-luna`, a effort `none`. Model jest konfigurowalny wyłącznie przez
-`OPENAI_DECIDE_MODEL` i nigdy nie jest cicho zastępowany.
-
-## Adapter Anthropic
-
-Adapter używa oficjalnego `@anthropic-ai/sdk` i Messages API. `messages.create` otrzymuje
-stable structured output w `output_config.format` wygenerowany przez `zodOutputFormat`,
-wyłączone thinking, brak tools, jawny model, effort i limit output tokens. Adapter akceptuje
-structured output wyłącznie dla `stop_reason=end_turn`. `refusal` jest mapowany na
-`MODEL_REFUSAL`, a każdy inny lub brakujący stop reason jest odrzucany przed parsowaniem.
-Po `end_turn` wymagany jest dokładnie jeden niepusty blok tekstowy; dopiero ten blok jest
-parsowany jako JSON i ponownie sprawdzany przez lokalny schemat Zod. Brak treści, wiele
-bloków, błędny JSON i niezgodność schematu są kontrolowanymi błędami.
-
-Domyślny model to `claude-sonnet-5`, a effort `low`. Model jest konfigurowalny wyłącznie
-przez `ANTHROPIC_GENERATE_MODEL` i nigdy nie jest cicho zastępowany.
+`StructuredAiRequest` nie ma provider/model/effort override. Zawiera task type, wersje,
+nazwę schematu, instrukcje, ugruntowane wejście JSON, lokalny schemat Zod oraz opcjonalny
+`maxOutputTokens`. Limit requestu może tylko obniżyć limit profilu. Gateway nadpisuje
+ewentualny wewnętrzny `aiRunId` własnym UUID.
 
 ## Konfiguracja
 
-`loadAiConfig` jest funkcją czystą: nie czyta `process.env` samodzielnie. Wywołujący
-przekazuje środowisko jawnie. Brak klucza jest dopuszczalny aż do faktycznego wywołania
-wybranego adaptera.
+`loadAiConfig(env)` jest czystą funkcją i nigdy samodzielnie nie czyta `process.env`.
+Credentiale są opcjonalne do chwili faktycznego wywołania wybranego adaptera.
 
-| Zmienna                    | Domyślna wartość  | Walidacja                                          |
-| -------------------------- | ----------------- | -------------------------------------------------- |
-| `AI_ENABLED`               | `false`           | dokładnie `true` lub `false`                       |
-| `AI_LIVE_SMOKE_ENABLED`    | `false`           | dokładnie `true` lub `false`                       |
-| `AI_DECIDE_PROVIDER`       | `openai`          | `openai` albo `anthropic`                          |
-| `AI_GENERATE_PROVIDER`     | `anthropic`       | `openai` albo `anthropic`                          |
-| `OPENAI_DECIDE_MODEL`      | `gpt-5.6-luna`    | niepusty tekst                                     |
-| `OPENAI_REASONING_EFFORT`  | `none`            | `none`, `low`, `medium`, `high`, `xhigh` lub `max` |
-| `ANTHROPIC_GENERATE_MODEL` | `claude-sonnet-5` | niepusty tekst                                     |
-| `ANTHROPIC_EFFORT`         | `low`             | `low`, `medium`, `high`, `xhigh` lub `max`         |
-| `AI_TIMEOUT_MS`            | `30000`           | liczba całkowita 1000–120000                       |
-| `AI_MAX_RETRIES`           | `1`               | liczba całkowita 0–2                               |
-| `AI_MAX_OUTPUT_TOKENS`     | `128`             | liczba całkowita 1–8192                            |
-| `OPENAI_API_KEY`           | brak              | wymagany dopiero przez adapter OpenAI              |
-| `ANTHROPIC_API_KEY`        | brak              | wymagany dopiero przez adapter Anthropic           |
+| Zmienna                         | Default           | Walidacja                        |
+| ------------------------------- | ----------------- | -------------------------------- |
+| `AI_ENABLED`                    | `false`           | dokładnie `true` lub `false`     |
+| `AI_LIVE_SMOKE_ENABLED`         | `false`           | dokładnie `true` lub `false`     |
+| `AI_DECIDE_PROVIDER`            | `openai`          | `openai` albo `anthropic`        |
+| `AI_DECIDE_MODEL`               | `gpt-5.6-luna`    | niepusty tekst                   |
+| `AI_DECIDE_EFFORT`              | `none`            | effort zgodny z providerem       |
+| `AI_DECIDE_MAX_OUTPUT_TOKENS`   | `512`             | integer 1–8192                   |
+| `AI_GENERATE_PROVIDER`          | `anthropic`       | `openai` albo `anthropic`        |
+| `AI_GENERATE_MODEL`             | `claude-sonnet-5` | niepusty tekst                   |
+| `AI_GENERATE_EFFORT`            | `low`             | effort zgodny z providerem       |
+| `AI_GENERATE_MAX_OUTPUT_TOKENS` | `1600`            | integer 1–8192                   |
+| `AI_JUDGE_PROVIDER`             | `openai`          | `openai` albo `anthropic`        |
+| `AI_JUDGE_MODEL`                | `gpt-5.6-terra`   | niepusty tekst                   |
+| `AI_JUDGE_EFFORT`               | `low`             | effort zgodny z providerem       |
+| `AI_JUDGE_MAX_OUTPUT_TOKENS`    | `768`             | integer 1–8192                   |
+| `AI_TIMEOUT_MS`                 | `30000`           | integer 1000–120000              |
+| `AI_MAX_RETRIES`                | `1`               | integer 0–2                      |
+| `AI_RUN_RETENTION_DAYS`         | `30`              | integer 1–365                    |
+| `OPENAI_API_KEY`                | brak              | wymagany tylko do OpenAI call    |
+| `ANTHROPIC_API_KEY`             | brak              | wymagany tylko do Anthropic call |
 
-Limit z requestu może tylko obniżyć skonfigurowany `AI_MAX_OUTPUT_TOKENS`. Niepoprawna
-konfiguracja kończy się przed wywołaniem sieciowym.
+Do końca Fazy 3B dostępne są deprecated aliases:
 
-## Credentiale i zasady bezpieczeństwa
+- dla `DECIDE` używającego OpenAI: `OPENAI_DECIDE_MODEL`,
+  `OPENAI_REASONING_EFFORT`;
+- dla `GENERATE` używającego Anthropic: `ANTHROPIC_GENERATE_MODEL`,
+  `ANTHROPIC_EFFORT`.
 
-`.env.example` dokumentuje wyłącznie nazwy zmiennych i bezpieczne wartości domyślne.
-`.env` jest ignorowany przez Git i nie wolno go otwierać, wypisywać, logować ani
-commitować. Klucze przekazuje się tylko przez lokalne środowisko lub nieśledzony `.env`.
+Nowa zmienna ma pierwszeństwo. Alias innego providera jest ignorowany. Stary globalny
+`AI_MAX_OUTPUT_TOKENS` nie jest używany. `.env.example` dokumentuje wyłącznie nowe nazwy i
+puste credentiale. Aliasy zostaną usunięte po Fazie 3B.
 
-`npm run ai:credentials:check` sprawdza jedynie, czy zmienne są ustawione. Raportuje
-`configured`/`missing`, nazwy modeli i stan live opt-in, nigdy wartości kluczy.
+Jawne `AI_<TASK>_PROVIDER`, które różni się od defaultu zadania, wymaga jawnego i niepustego
+`AI_<TASK>_MODEL`. Brak modelu kończy się `INVALID_AI_CONFIGURATION` z
+`details.field = AI_<TASK>_MODEL`. Loader nie dobiera modelu nowego providera i nie używa
+legacy aliasu poprzedniego providera do spełnienia tego wymagania.
 
-Redakcja obejmuje:
+## Adapter per call
 
-- pola o nazwach kluczy, tokenów, sekretów i haseł;
-- nagłówki `Authorization` i `x-api-key`;
-- typowe prefiksy kluczy OpenAI i Anthropic w tekście;
-- zagnieżdżone obiekty, tablice i struktury cykliczne.
+```ts
+interface StructuredAiAdapter {
+  readonly provider: AiProvider;
+  call<T>(request: StructuredAiRequest<T>, profile: AiExecutionProfile): Promise<AiCallResult<T>>;
+}
+```
 
-Surowy błąd SDK pozostaje nieenumerowalnym `cause`. Publiczna serializacja błędu zawiera
-tylko kontrolowany kod, bezpieczny komunikat, retryability, provider, model i ograniczone
-details. Nigdy nie zawiera promptu, pełnego requestu lub response, nagłówków ani credentiali.
+Adapter nie ma właściwości modelu. Sprawdza provider i task profilu, bierze model, effort i
+limit z profilu, a timeout/retry/credential z głównej konfiguracji. OpenAI korzysta z
+Responses API, structured outputs, `store: false`, pustych tools i jawnego
+`reasoning.effort`. Anthropic korzysta z Messages API, `output_config.format`, jawnego
+effort, wyłączonego thinking i pustych tools. Oba wyniki przechodzą ponowną lokalną
+walidację Zod.
 
-### `store: false` a retencja danych
+`store: false` ogranicza utrwalenie obiektu odpowiedzi przez OpenAI, ale samo nie gwarantuje
+Zero Data Retention ani braku logów abuse monitoring. Ustawienia organizacji, ZDR i
+dozwolony zakres danych muszą zostać zatwierdzone przed Fazą 3B2.
 
-Adapter OpenAI wysyła `store: false`, więc aplikacja nie utrwala obiektu odpowiedzi przez
-Responses API. To ustawienie nie jest jednak samo w sobie gwarancją Zero Data Retention
-(ZDR) i nie oznacza automatycznie braku wszystkich logów bezpieczeństwa lub abuse
-monitoringu po stronie providera.
+## Configured model i response model
 
-Przed przesłaniem prawdziwych danych użytkowników w Fazie 3B trzeba osobno zweryfikować:
+`AiCallResult` zawiera osobno:
 
-- ustawienia retencji organizacji;
-- warunki prywatności;
-- dostępność i zakres Zero Data Retention;
-- zakres danych, które wolno przesłać do providera.
+- `configuredModel` z profilu;
+- `responseModel` z odpowiedzi providera.
 
-## Zamknięty katalog błędów
+Oba są niepuste. Provider może zwrócić dokładniejszy snapshot i sama różnica stringów nie
+jest błędem. Bezpieczny wynik smoke również pokazuje oba pola.
 
-- konfiguracja i dostęp: `AI_DISABLED`, `LIVE_AI_NOT_ENABLED`,
-  `MISSING_CREDENTIALS`, `INVALID_AI_CONFIGURATION`, `UNSUPPORTED_AI_PROVIDER`;
-- provider: `AUTHENTICATION_FAILED`, `MODEL_ACCESS_DENIED`, `RATE_LIMITED`,
-  `AI_TIMEOUT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`;
-- wynik: `MODEL_REFUSAL`, `EMPTY_MODEL_OUTPUT`, `INVALID_STRUCTURED_OUTPUT`.
+Gateway odrzuca wynik jako `PROVIDER_ERROR`, jeśli nie zgadzają się:
 
-Statusy 401, 403/404, 429, timeout, błędy połączenia i 5xx są mapowane niezależnie od SDK.
-Przy braku dostępu do modelu bezpieczny błąd wskazuje nazwę zmiennej konfiguracyjnej do
-zmiany; kod nie wybiera zamiennika automatycznie.
+- provider i configured model;
+- task type;
+- prompt version i schema version;
+- fingerprint wejścia;
+- UUID `aiRunId`;
+- obecność niepustego response model.
 
-## Retry, timeout i obserwowalność
+Niezgodny wynik nie trafia do wywołującego.
 
-Każdy klient SDK otrzymuje jawny timeout oraz `maxRetries`. Licznik `attempts` pochodzi z
-rzeczywistych prób transportu HTTP, a nie z założenia o zachowaniu SDK. Gateway nie dokłada
-własnej pętli retry.
+## Recorder fail-closed
 
-Recorder telemetrii otrzymuje wyłącznie: provider, model, typ zadania, wersje promptu i
-schematu, fingerprint, czas, próby, usage, cache, request ID, refusal i bezpieczny kod
-błędu. Domyślna implementacja niczego nie zapisuje. Trwała encja `AiRuns` jest odłożona do
-Fazy 3B.
+`AiRunRecorder.record(event)` zwraca `Promise<void>`. Konstruktor `AiGateway` wymaga jawnego
+recordera. `NoopAiRunRecorder` jest asynchroniczny i zawsze kończy się sukcesem, ale może być
+użyty tylko przez świadomą kompozycję testową/operator-only. Produkcyjny composition root
+`createPersistentAiGateway(config, dependencies?)` zawsze składa `PersistentAiRunRecorder`
+i `CapAiRunStore`, przekazuje `config.runRetentionDays` oraz domyślnie tworzy oba adaptery
+SDK. Factory nie czyta `.env`, nie zapisuje do bazy i nie wykonuje requestu przy tworzeniu.
 
-## Testy offline i ręczny smoke
+Lifecycle jednego UUID:
 
-Testy jednostkowe podają adapterom lokalny transport HTTP i sprawdzają payloady tworzone
-przez rzeczywiste SDK. Obejmują routing, structured output, lokalną walidację, usage,
-refusal, timeout, retry, błędy i redakcję. Nie patchują globalnego `fetch`, nie wymagają
-kluczy i nie korzystają z sieci.
+1. Gateway tworzy fingerprint, `aiRunId` i event `STARTED`.
+2. Dopiero po trwałym `STARTED` wywołuje adapter.
+3. Po poprawnym wyniku zapisuje `SUCCEEDED`, a dopiero potem zwraca output.
+4. Po znormalizowanym błędzie zapisuje `FAILED`, a dopiero potem zwraca błąd.
 
-Ręczne komendy live:
+Polityka jest zawsze fail-closed:
+
+- błąd `STARTED` → brak call adaptera i `AI_AUDIT_FAILED`;
+- błąd `SUCCEEDED` → output nie jest zwracany i `AI_AUDIT_FAILED`;
+- błąd `FAILED` → `AI_AUDIT_FAILED`, opcjonalnie tylko pierwotny `errorCode` w details;
+- poprawny `FAILED` → oryginalny, znormalizowany `AiError`.
+
+Nie ma opcji fail-open.
+
+## Wewnętrzne AiRuns
+
+`AiRuns.ID` jest UUID gatewaya. Opcjonalne `planningRun` pozwala powiązać przyszłe call
+produktu i zachować runy smoke/eval bez planu. Encja ma status/provider/task, oba modele,
+wersje, fingerprint, timestamps, `expiresAt`, token usage, latency, attempts, provider
+request ID, refusal oraz kontrolowany error code/retryability.
+
+Encja celowo nie ma pól na prompt, instrukcje, wejście, output, raw response, raw error,
+nagłówki ani credentiale. Nie jest projektowana w publicznym `TripPlannerService`; endpoint
+`/trip-planner/AiRuns` nie istnieje.
+
+`STARTED` wykonuje INSERT. `SUCCEEDED` i `FAILED` aktualizują dokładnie jeden rekord o tym
+samym ID i statusie `STARTED`. Inna liczba rekordów kończy się `AI_AUDIT_FAILED`, więc
+rekordu terminalnego nie można zakończyć ponownie. Każda operacja ma krótką, niezależną
+transakcję CAP; request do providera nie trzyma transakcji bazy.
+
+Na SQLite persistent gateway nie może działać po rozpoczęciu transakcji DB requestu. Próba
+stworzyłaby circular wait na jedynym połączeniu puli, dlatego `CapAiRunStore` wykrywa taki
+stan i kończy się fail-closed przed adapterem. Właściwa granica use case to: zakończona
+krótka transakcja odczytu → `STARTED` → adapter → terminalny audit → osobna krótka
+transakcja zapisu produktu. Realny test-only handler CAP potwierdza widoczność committed
+`STARTED` w adapterze i zachowanie `SUCCEEDED` po rollbacku późniejszego product write.
+
+`expiresAt` używa `AI_RUN_RETENTION_DAYS` (default 30). `deleteExpired(now)` usuwa wyłącznie
+`expiresAt < now`. Kontrakt cleanup jest zaimplementowany i testowany, ale 3B1 nie dodaje
+schedulera. Deployment lub kolejna faza operacyjna musi podłączyć jego wywołanie.
+
+## Offline testy i ręczny smoke
+
+Standardowe testy używają transportów HTTP in-memory i SQLite in-memory. Obejmują pełną
+kompozycję gateway + mock adapter + persistent recorder + real store, a także test-only
+request handler z twardym timeoutem pięciu sekund i kontrolą rollback independence. Nie wymagają
+credentiali i nie wykonują sieci. Ręczne komendy pozostają dostępne, ale nie należą do CI,
+`verify` ani `verify:full`:
 
 ```sh
 npm run ai:credentials:check
@@ -179,38 +206,17 @@ npm run ai:smoke:anthropic
 npm run ai:smoke
 ```
 
-Każdy smoke wymaga `AI_LIVE_SMOKE_ENABLED=true` i wykonuje dokładnie jeden minimalny
-request do wskazanego providera. Oczekiwany wynik ma ścisły kształt
-`{ "ok": true, "phase": "3a", "check": "structured-output" }`. Skrypty live nie należą do
-`verify`, `verify:full` ani CI i nie wolno ich uruchamiać bez świadomej zgody na zewnętrzne,
-potencjalnie płatne wywołanie.
+Smoke wymaga `AI_LIVE_SMOKE_ENABLED=true`. Dla wskazanego providera wybiera pierwszy profil
+w kolejności `DECIDE`, `GENERATE`, `JUDGE`, kopiuje model/effort i ogranicza output do 128.
+Brak profilu providera kończy się `INVALID_AI_CONFIGURATION`; nie ma ukrytego model fallback.
+Credential checker pokazuje wyłącznie presence flags, trzy profile, stan opt-in i retencję —
+bez wartości, fragmentów lub długości kluczy.
 
-## Warunki wejścia do Fazy 3B
+## Znane ograniczenia i następne fazy
 
-Przed pierwszym produkcyjnym wywołaniem LLM trzeba zaprojektować i zatwierdzić:
-
-1. Task-aware routing, który dla każdego zadania jawnie wskazuje pełny profil wywołania:
-
-   | Zadanie    | Wymagana konfiguracja                         |
-   | ---------- | --------------------------------------------- |
-   | `DECIDE`   | provider + model + effort + max output tokens |
-   | `GENERATE` | provider + model + effort + max output tokens |
-   | `JUDGE`    | provider + model + effort + max output tokens |
-
-2. Asynchroniczny recorder przygotowany do persistence, bez blokowania ścieżki requestu.
-3. Jawne rozróżnienie `configuredModel` od `responseModel`.
-4. Politykę błędów recordera: świadomy wybór `fail-open` albo `fail-closed`.
-5. Walidację metadanych zwracanych przez adapter: provider, task type, prompt version,
-   schema version i input fingerprint.
-
-Te elementy są obowiązkowymi bramkami projektowymi przed Fazą 3B; Faza 3A ich nie
-implementuje.
-
-## Znane ograniczenia
-
-- gateway nie jest jeszcze używany przez produkt;
-- nie ma produkcyjnych promptów, evali, safety pipeline ani `AiRuns`;
-- nie ma fallbacku i awaria skonfigurowanego providera kończy wywołanie;
-- smoke zależy od sieci, salda, limitów i dostępu konta do dokładnie skonfigurowanego modelu;
-- adaptery obsługują wyłącznie tekstowy structured output, bez tools, obrazów i streamingu;
-- telemetria ma interfejs i bezpieczny kontrakt, ale domyślnie nie jest utrwalana.
+- produkt nadal nie wykonuje AI i nie ma produkcyjnych promptów;
+- cleanup nie ma schedulera;
+- nie ma fallbacku providera/modelu;
+- adaptery obsługują wyłącznie tekstowy structured output;
+- Faza 3B2 doda grounded narratives i produktowe `GENERATE`;
+- Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline i evale.

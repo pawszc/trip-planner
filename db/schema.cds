@@ -112,6 +112,24 @@ type OptionNoteKind : String(16) enum {
   RISK;
 }
 
+type AiRunStatus : String(16) enum {
+  STARTED;
+  SUCCEEDED;
+  FAILED;
+}
+
+type AiProvider : String(16) enum {
+  OPENAI;
+  ANTHROPIC;
+}
+
+type AiTaskType : String(16) enum {
+  DECIDE;
+  GENERATE;
+  JUDGE;
+  SMOKE;
+}
+
 // Trwały zapis twardych ograniczeń i podstawowej preferencji tempa podróży.
 entity TripRequests : cuid, managed {
   originCity : String(120) not null;
@@ -158,6 +176,43 @@ entity PlanningRuns : cuid, managed {
   selectedOptionCount : Integer not null;
   errorCode : String(80);
   errorMessage : String(500);
+}
+
+// Wewnętrzny audyt wykonania AI przechowuje wyłącznie bezpieczne metadane.
+// Nie jest projektowany do publicznego TripPlannerService.
+entity AiRuns : cuid, managed {
+  planningRun : Association to one PlanningRuns;
+  status : AiRunStatus not null;
+  taskType : AiTaskType not null;
+  provider : AiProvider not null;
+
+  configuredModel : String(160) not null;
+  responseModel : String(160);
+
+  promptVersion : String(120) not null;
+  schemaVersion : String(120) not null;
+  inputFingerprint : String(64) not null;
+
+  startedAt : Timestamp not null;
+  completedAt : Timestamp;
+  expiresAt : Timestamp not null;
+
+  inputTokens : Integer64;
+  outputTokens : Integer64;
+  totalTokens : Integer64;
+  cacheReadTokens : Integer64;
+  cacheWriteTokens : Integer64;
+  reasoningTokens : Integer64;
+
+  latencyMs : Integer;
+  attempts : Integer;
+
+  providerRequestId : String(250);
+  refusal : Boolean not null default false;
+  refusalCategory : String(80);
+
+  errorCode : String(80);
+  retryable : Boolean;
 }
 
 // Audit kolejności przejść wykonywanych atomowo przez udany startPlanning.

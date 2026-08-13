@@ -1,11 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import OpenAI, { APIError } from 'openai';
 import { zodTextFormat } from 'openai/helpers/zod';
 import type { ZodType } from 'zod';
 import type { AiConfig, OpenAiReasoningEffort } from '../config.ts';
-import { resolveMaxOutputTokens } from '../config.ts';
-import { AiProvider, canonicalizeJson, createInputFingerprint } from '../contracts.ts';
+import { resolveMaxOutputTokens, validateAiExecutionProfile } from '../config.ts';
+import {
+  AiProvider,
+  canonicalizeJson,
+  createInputFingerprint,
+  isValidAiRunId,
+} from '../contracts.ts';
 import type {
   AiCallResult,
+  AiExecutionProfile,
   AiUsage,
   StructuredAiAdapter,
   StructuredAiRequest,
@@ -13,7 +20,6 @@ import type {
 import { AiError, createMissingCredentialsError, normalizeProviderFailure } from '../errors.ts';
 import type { ProviderFailureMetadata } from '../errors.ts';
 
-const MODEL_ENVIRONMENT_VARIABLE = 'OPENAI_DECIDE_MODEL';
 const CREDENTIAL_ENVIRONMENT_VARIABLE = 'OPENAI_API_KEY';
 
 export interface OpenAiClientOptions {
@@ -211,29 +217,49 @@ function validateRequestMetadata<TOutput>(request: StructuredAiRequest<TOutput>)
 
 export class OpenAiResponsesAdapter implements StructuredAiAdapter {
   readonly provider = AiProvider.OPENAI;
-  readonly model: string;
 
   constructor(
     private readonly config: AiConfig,
     private readonly clientFactory: OpenAiClientFactory = createOpenAiSdkClient,
     private readonly now: () => number = () => Date.now(),
-  ) {
-    this.model = config.openai.model;
-  }
+  ) {}
 
-  async call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>> {
+  async call<TOutput>(
+    request: StructuredAiRequest<TOutput>,
+    profile: AiExecutionProfile,
+  ): Promise<AiCallResult<TOutput>> {
     validateRequestMetadata(request);
-    if (request.provider !== undefined && request.provider !== this.provider) {
-      throw new AiError('UNSUPPORTED_AI_PROVIDER', 'The request targets a different AI provider.', {
-        provider: request.provider,
-        model: this.model,
+    validateAiExecutionProfile(profile);
+    if (profile.provider !== this.provider) {
+      throw new AiError('UNSUPPORTED_AI_PROVIDER', 'The profile targets a different AI provider.', {
+        provider: profile.provider,
+        model: profile.model,
       });
     }
-    const apiKey = this.config.openai.apiKey;
+    if (profile.taskType !== request.taskType) {
+      throw new AiError(
+        'INVALID_AI_CONFIGURATION',
+        'The profile task does not match the request.',
+        {
+          provider: this.provider,
+          model: profile.model,
+          details: { field: 'profile.taskType' },
+        },
+      );
+    }
+    const aiRunId = request.aiRunId?.trim() ?? randomUUID();
+    if (!isValidAiRunId(aiRunId)) {
+      throw new AiError('INVALID_AI_CONFIGURATION', 'aiRunId must be a UUID.', {
+        provider: this.provider,
+        model: profile.model,
+        details: { field: 'aiRunId' },
+      });
+    }
+    const apiKey = this.config.providers[AiProvider.OPENAI].apiKey;
     if (apiKey === undefined) {
       throw createMissingCredentialsError(
         this.provider,
-        this.model,
+        profile.model,
         CREDENTIAL_ENVIRONMENT_VARIABLE,
       );
     }
@@ -247,16 +273,13 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         maxRetries: this.config.maxRetries,
       });
       const response = await client.execute({
-        model: this.model,
+        model: profile.model,
         instructions: request.instructions,
         input: canonicalizeJson(request.input),
         schemaName: request.schemaName,
         outputSchema: request.outputSchema,
-        maxOutputTokens: resolveMaxOutputTokens(
-          request.maxOutputTokens,
-          this.config.maxOutputTokens,
-        ),
-        reasoningEffort: this.config.openai.reasoningEffort,
+        maxOutputTokens: resolveMaxOutputTokens(request.maxOutputTokens, profile.maxOutputTokens),
+        reasoningEffort: profile.effort,
         store: false,
         tools: [],
         toolChoice: 'none',
@@ -265,13 +288,13 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
       if (response.refused) {
         throw new AiError('MODEL_REFUSAL', 'OpenAI refused the structured output request.', {
           provider: this.provider,
-          model: this.model,
+          model: profile.model,
         });
       }
       if (response.outputParsed === null) {
         throw new AiError('EMPTY_MODEL_OUTPUT', 'OpenAI returned no parsed structured output.', {
           provider: this.provider,
-          model: this.model,
+          model: profile.model,
         });
       }
       const locallyValidated = request.outputSchema.safeParse(response.outputParsed);
@@ -279,14 +302,22 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         throw new AiError(
           'INVALID_STRUCTURED_OUTPUT',
           'OpenAI output failed local schema validation.',
-          { provider: this.provider, model: this.model, cause: locallyValidated.error },
+          { provider: this.provider, model: profile.model, cause: locallyValidated.error },
         );
+      }
+      if (response.model.trim().length === 0) {
+        throw new AiError('PROVIDER_ERROR', 'OpenAI returned an empty response model.', {
+          provider: this.provider,
+          model: profile.model,
+        });
       }
 
       return {
+        aiRunId,
         output: locallyValidated.data,
         provider: this.provider,
-        model: response.model,
+        configuredModel: profile.model,
+        responseModel: response.model,
         taskType: request.taskType,
         promptVersion: request.promptVersion,
         schemaVersion: request.schemaVersion,
@@ -307,27 +338,27 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         throw new AiError(
           'INVALID_STRUCTURED_OUTPUT',
           'OpenAI output failed structured output parsing.',
-          { provider: this.provider, model: this.model, cause: error },
+          { provider: this.provider, model: profile.model, cause: error },
         );
       }
       if (isContentFilterError(error)) {
         throw new AiError('MODEL_REFUSAL', 'OpenAI refused the structured output request.', {
           provider: this.provider,
-          model: this.model,
+          model: profile.model,
           cause: error,
         });
       }
       if (isLengthFinishError(error)) {
         throw new AiError('EMPTY_MODEL_OUTPUT', 'OpenAI did not complete structured output.', {
           provider: this.provider,
-          model: this.model,
+          model: profile.model,
           cause: error,
         });
       }
       throw normalizeProviderFailure({
         provider: this.provider,
-        model: this.model,
-        modelEnvironmentVariable: MODEL_ENVIRONMENT_VARIABLE,
+        model: profile.model,
+        modelEnvironmentVariable: `AI_${request.taskType}_MODEL`,
         metadata: openAiFailureMetadata(error),
         cause: error,
       });

@@ -11,8 +11,8 @@
 
 ## Stan realizacji
 
-Faza 2 — od domeny do Planning API and Options UI — jest zakończona. Faza 3A dodaje
-nieaktywną jeszcze w produkcie granicę integracji z LLM.
+Faza 2 — od domeny do Planning API and Options UI — jest zakończona. Faza 3B1 dodaje
+nieaktywny jeszcze w produkcie fundament task-aware execution i trwałego audytu LLM.
 
 ### Faza 2A — Domain and Workflow Core
 
@@ -59,10 +59,21 @@ nieaktywną jeszcze w produkcie granicę integracji z LLM.
 - offline testy rzeczywistych requestów SDK oraz osobne, manualne smoke testy live;
 - brak zmian UI, CAP, deterministycznego planowania i modelu persistence.
 
+### Faza 3B1 — Task-Aware AI Execution Profiles and Persistent Audit Foundation
+
+- osobne profile provider/model/effort/max output tokens dla `DECIDE`, `GENERATE` i `JUDGE`;
+- brak provider override w requestcie produktu i profil przekazywany adapterowi per call;
+- osobne `configuredModel` i `responseModel` oraz walidacja metadanych gatewaya;
+- stabilny UUID, asynchroniczny recorder i jawna polityka fail-closed;
+- wewnętrzne `AiRuns` bez promptów, wejść, wyjść i surowych błędów;
+- 30-dniowa domyślna retencja, `expiresAt` i testowalny cleanup bez schedulera;
+- pełne testy offline CAP/SQLite; brak akcji CAP lub UI wykonującej AI.
+
 ## Poza zakresem obecnego MVP
 
 - podłączenie LLM Gateway do produktu, prompty produkcyjne i konwersacyjne pytania;
-- trwałe `AiRuns`, produkcyjne evale i automatyczne safety checks;
+- grounded narratives (Faza 3B2), wykonywanie judge, evale i automatyczne safety checks
+  (Faza 3B3);
 - prawdziwi providerzy, live search, kursy walut i aktualna dostępność;
 - itinerary dzień po dniu i wybór wariantu;
 - rezerwacje, płatności oraz uwierzytelnianie;
