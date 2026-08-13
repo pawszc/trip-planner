@@ -2,9 +2,11 @@
 
 ## Cel
 
-Level 2 usuwa ręczne przekazywanie wyników między narzędziami. GitHub przechowuje
-wersjonowany kontrakt implementacyjny i jest kanałem przekazania pracy, a Notion zachowuje
-roadmapę oraz decyzje strategiczne.
+Level 2 usuwa ręczne kopiowanie wyników w kierunku Codex → ChatGPT: GitHub jest kanałem
+przekazania pracy, a ChatGPT czyta PR, diff, testy i wersjonowane dokumenty bez kopiowania
+outputu Codexa. Kierunek ChatGPT → Codex nie jest jeszcze automatyczny; do Level 2.5/3
+przekazanie uwag review wymaga jawnego, uruchomionego przez użytkownika handoffu. Notion
+zachowuje roadmapę oraz decyzje strategiczne.
 
 ## Źródła prawdy i role
 
@@ -16,8 +18,8 @@ roadmapę oraz decyzje strategiczne.
   wyznacza jej zakres, kryteria akceptacji, testy, politykę kosztów i warunki eskalacji.
 - **ChatGPT** — architekt i reviewer produktu. Analizuje repozytorium, diff oraz wyniki
   testów bez kopiowania outputu Codexa.
-- **Codex** — wykonawca. Implementuje zaakceptowaną fazę, uruchamia weryfikację i poprawia
-  drobne błędy oraz uwagi review na tym samym pull requeście.
+- **Codex** — wykonawca. Implementuje zaakceptowaną fazę, uruchamia weryfikację i po jawnym
+  handoffie użytkownika poprawia drobne błędy oraz uwagi review na tym samym pull requeście.
 
 W razie materialnego konfliktu między źródłami Codex nie wybiera interpretacji samodzielnie.
 Opisuje konflikt, eskaluje go i zatrzymuje implementację do czasu decyzji.
@@ -38,18 +40,24 @@ ze statusem `READY`.
 2. Codex tworzy osobny branch i implementuje wyłącznie zakres tej fazy.
 3. Codex wykonuje pełną weryfikację offline wymaganą przez repozytorium i specyfikację.
 4. Codex otwiera Draft PR z kompletnym raportem.
-5. ChatGPT reviewuje PR, diff, testy i aktualny stan repozytorium bez pośredniego kopiowania
-   outputu Codexa.
-6. Drobne uwagi wracają do Codexa i są poprawiane na tym samym PR wraz z odpowiednimi
-   testami regresyjnymi.
-7. Problem strategiczny zatrzymuje pętlę i wymaga decyzji człowieka.
-8. Po approval i merge następna faza może ruszyć wyłącznie wtedy, gdy ma status `READY`.
+5. ChatGPT reviewuje przez GitHub PR, diff, testy i aktualny stan repozytorium bez
+   pośredniego kopiowania outputu Codexa.
+6. Użytkownik jawnie uruchamia handoff uwag review z ChatGPT do Codexa; Level 2 nie wykonuje
+   tego kroku automatycznie.
+7. Po tym handoffie Codex poprawia drobne uwagi na tym samym PR wraz z odpowiednimi testami
+   regresyjnymi.
+8. Problem strategiczny zatrzymuje pętlę i wymaga decyzji człowieka.
+9. Po approval i merge następna faza może ruszyć wyłącznie wtedy, gdy ma status `READY`.
+
+Każda kolejna iteracja ChatGPT → Codex również wymaga jawnego handoffu uruchomionego przez
+użytkownika. Automatyczne przekazywanie feedbacku w tym kierunku pozostaje poza Level 2 i
+może zostać wprowadzone dopiero w Level 2.5/3.
 
 ## Autonomiczne poprawki i eskalacja
 
-Codex samodzielnie naprawia błędy, edge cases, lint, typy, nazewnictwo, dokumentację
-techniczną, brakujące testy regresyjne i lokalne refaktory, o ile pozostają w zaakceptowanym
-zakresie i nie zmieniają kontraktów.
+Po rozpoczęciu pracy albo jawnym handoffie użytkownika Codex samodzielnie naprawia błędy,
+edge cases, lint, typy, nazewnictwo, dokumentację techniczną, brakujące testy regresyjne i
+lokalne refaktory, o ile pozostają w zaakceptowanym zakresie i nie zmieniają kontraktów.
 
 Eskalacja jest wymagana przed materialną zmianą celu lub roadmapy, architektury albo modelu
 danych, długoterminowego kontraktu API, zasad security/privacy/retention, providera lub

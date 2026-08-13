@@ -25,8 +25,16 @@ wersjonowaną specyfikację.
 - Deterministyczny, wersjonowany `GroundedOptionContext` budowany wyłącznie z
   zatwierdzonych `PlanningRun`, `RankedOption` i istniejących provenance/source snapshots.
 - Jawne reprezentowanie `UNKNOWN` i missing bez uzupełniania przez LLM.
+- Każdy referencjonowalny fakt oraz każda jawna pozycja `UNKNOWN`/missing w
+  `GroundedOptionContext` ma deterministyczny, unikalny w tym kontekście `factId`, związany
+  z dokładną wersją i fingerprintem kontekstu.
 - Wersjonowane prompty dla zadania `GENERATE`.
-- Ścisły Zod structured output i obowiązkowa lokalna walidacja.
+- Ścisły Zod structured output, w którym każdy generowany blok narracji ma obowiązkową,
+  niepustą listę `factReferences` wskazującą `factId` z dokładnego kontekstu użytego w
+  requeście.
+- Obowiązkowa lokalna walidacja schematu i integralności referencji. Brak pola
+  `factReferences`, pusta lista albo identyfikator nieobecny w dokładnym kontekście requestu
+  odrzuca cały output przed persistence lub użyciem; błędne referencje nie są cicho usuwane.
 - Wewnętrzne persistence wykonania i wyniku narracji jako `NarrativeRuns` i
   `OptionNarratives` albo semantycznie równoważne nazwy zgodne z istniejącym modelem.
 - Jawne linkage do właściwych `PlanningRun`, `RankedOption` i `AiRun`.
@@ -37,8 +45,9 @@ wersjonowaną specyfikację.
 
 ## Out of scope
 
-- Wykonywanie `JUDGE`.
-- Safety pipeline i pełne evale Fazy 3B3.
+- Wykonywanie `JUDGE`, w tym semantyczna ocena, czy tekst rzeczywiście wynika ze wskazanych
+  faktów.
+- Safety pipeline i wszystkie evale Fazy 3B3.
 - Provider albo model fallback.
 - Integracje z rzeczywistymi źródłami danych podróżnych.
 - Generowanie itinerary.
@@ -51,6 +60,9 @@ wersjonowaną specyfikację.
   i arytmetyki finansowej. LLM tworzy wyłącznie narrację.
 - Model nie wykonuje obliczeń finansowych, nie zmienia ugruntowanych wartości i nie
   uzupełnia brakujących danych. `UNKNOWN` i missing pozostają jawne.
+- Walidacja 3B2 obejmuje wyłącznie ścisły schemat i deterministyczną integralność
+  referencji. Poprawna referencja zapewnia traceability, ale nie dowodzi semantycznie, że
+  treść bloku wynika ze wskazanego faktu; taka ocena należy do `JUDGE` w Fazie 3B3.
 - Routing odbywa się wyłącznie przez profil `GENERATE`; request produktu nie zmienia
   providera, modelu ani effort i nie istnieje cichy fallback.
 - Lifecycle audytu 3B1 pozostaje fail-closed. Durable `STARTED` musi poprzedzać provider
@@ -66,9 +78,17 @@ wersjonowaną specyfikację.
 ## Acceptance criteria
 
 - Grounded context jest deterministyczny, wersjonowany i zawiera wyłącznie zatwierdzone
-  fakty wraz z provenance oraz jawnymi brakami.
+  fakty wraz z provenance oraz jawnymi brakami. Każdy referencjonowalny wpis ma
+  deterministyczny, unikalny i związany z dokładnym kontekstem `factId`.
 - Wersjonowany request `GENERATE` zwraca wyłącznie wynik zgodny ze ścisłym schematem Zod,
   ponownie zwalidowany lokalnie przed użyciem.
+- Każdy blok narracji zawiera co najmniej jeden identyfikator w `factReferences`, a każdy
+  identyfikator rozwiązuje się do wpisu w dokładnym `GroundedOptionContext` użytym dla tego
+  requestu.
+- Brakujące, puste, nieznane, nieaktualne albo pochodzące z innego kontekstu referencje
+  powodują odrzucenie całego outputu przed persistence lub użyciem.
+- Referencja do istniejącego wpisu jawnie oznaczonego `UNKNOWN`/missing jest poprawna
+  referencyjnie i nie może zostać pomylona z nieznanym identyfikatorem.
 - Trwały wynik narracji jest jednoznacznie powiązany z planning runem, opcją i właściwym
   audytem AI.
 - Jawny CAP use case respektuje fazową granicę transakcji i nie odtwarza SQLite deadlocku
@@ -80,10 +100,16 @@ wersjonowaną specyfikację.
 
 ## Required tests
 
-- Dokładna konstrukcja i wersjonowanie grounded context.
-- `UNKNOWN` i missing pozostają jawne.
-- Ungrounded factual fields zwrócone przez model nie są akceptowane.
-- Ścisła walidacja schematu.
+- Dokładna konstrukcja, wersjonowanie i fingerprint grounded context oraz deterministyczne,
+  unikalne generowanie `factId` związanych z tym kontekstem.
+- `UNKNOWN` i missing pozostają jawne, otrzymują `factId` i mogą być poprawnym celem
+  referencji bez uzupełniania wartości.
+- Każdy blok narracji wymaga niepustej listy `factReferences`.
+- Brak pola, pusta lista oraz nieznane, nieaktualne lub pochodzące z innego kontekstu
+  `factId` odrzucają cały output; walidator nie usuwa błędnych referencji i nie akceptuje
+  częściowego wyniku.
+- Ścisła walidacja schematu i referential integrity odbywa się lokalnie, bez wykonywania
+  `JUDGE`, safety pipeline ani evali.
 - Brak provider call przed durable `STARTED`.
 - Poprawne linkage planning run/option/AI run.
 - Failed AI albo audit nie zmienia deterministycznych opcji.
