@@ -22,3 +22,19 @@
 - Nie dodawaj zależności bez udokumentowanego uzasadnienia.
 - Stosuj małe, czytelne moduły i ścisłe typowanie TypeScript.
 - Raportuj wszystkie znane ograniczenia.
+
+## Protokół wykonania Level 2
+
+- Przed implementacją przeczytaj `AGENTS.md`, odpowiednie dokumenty w `docs/` oraz aktywną
+  specyfikację w `docs/phases/`.
+- Nigdy nie pracuj bezpośrednio na branchu `main`.
+- Jedna faza albo task wymaga jednego brancha i jednego pull requestu.
+- Zaakceptowana specyfikacja fazy jest kontraktem zakresu i nie wolno jej cicho rozszerzać.
+- Drobne błędy i uwagi review w zaakceptowanym zakresie poprawiaj samodzielnie na tym samym
+  pull requeście.
+- Problem strategiczny eskaluj i zatrzymaj pętlę implementacji do czasu podjęcia decyzji.
+- Przy materialnym konflikcie dokumentacji nie zgaduj; opisz konflikt i eskaluj go.
+- Przed pull requestem uruchom `npm run verify:full` oraz `git diff --check`.
+- W pull requeście raportuj zakres, testy, odstępstwa od specyfikacji, znane
+  ograniczenia/ryzyka, external/live calls oraz przewidywany i rzeczywisty koszt płatnych
+  API.
