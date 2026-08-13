@@ -1,0 +1,119 @@
+# Phase 3B2 — Grounded option narratives
+
+## Goal
+
+Dostarczyć pierwszy rzeczywisty use case LLM w produkcie: grounded narratives dla opcji
+już wybranych przez deterministyczny pipeline, bez prawa modelu do zmiany faktów,
+constraints, budżetu lub rankingu.
+
+## Status
+
+`READY`
+
+Status obowiązuje po zmergowaniu bootstrap PR ustanawiającego workflow Level 2 i tę
+wersjonowaną specyfikację.
+
+## Preconditions
+
+- Faza 3B1 została zmergowana w PR #6.
+- Task-aware AI profiles, fail-closed audit i wewnętrzne `AiRuns` pozostają nienaruszone.
+- Obowiązuje granica z `docs/ai-workflow.md`: krótki read/commit → AI
+  audit/provider/audit bez aktywnej transakcji DB → osobny krótki product write.
+
+## Scope
+
+- Deterministyczny, wersjonowany `GroundedOptionContext` budowany wyłącznie z
+  zatwierdzonych `PlanningRun`, `RankedOption` i istniejących provenance/source snapshots.
+- Jawne reprezentowanie `UNKNOWN` i missing bez uzupełniania przez LLM.
+- Wersjonowane prompty dla zadania `GENERATE`.
+- Ścisły Zod structured output i obowiązkowa lokalna walidacja.
+- Wewnętrzne persistence wykonania i wyniku narracji jako `NarrativeRuns` i
+  `OptionNarratives` albo semantycznie równoważne nazwy zgodne z istniejącym modelem.
+- Jawne linkage do właściwych `PlanningRun`, `RankedOption` i `AiRun`.
+- Jeden jawny CAP use case korzystający z profilu `GENERATE`.
+- Kontrolowane zachowanie, w którym błąd albo brak narracji nie zmienia opcji, rankingu,
+  hard constraints ani budżetu.
+- Dokumentacja i testy.
+
+## Out of scope
+
+- Wykonywanie `JUDGE`.
+- Safety pipeline i pełne evale Fazy 3B3.
+- Provider albo model fallback.
+- Integracje z rzeczywistymi źródłami danych podróżnych.
+- Generowanie itinerary.
+- Zmiana deterministycznego rankingu, constraints albo budżetu.
+- Scheduler cleanup.
+
+## Architecture constraints
+
+- Kod pozostaje jedynym źródłem prawdy dla constraints, kompletności, workflow, rankingu
+  i arytmetyki finansowej. LLM tworzy wyłącznie narrację.
+- Model nie wykonuje obliczeń finansowych, nie zmienia ugruntowanych wartości i nie
+  uzupełnia brakujących danych. `UNKNOWN` i missing pozostają jawne.
+- Routing odbywa się wyłącznie przez profil `GENERATE`; request produktu nie zmienia
+  providera, modelu ani effort i nie istnieje cichy fallback.
+- Lifecycle audytu 3B1 pozostaje fail-closed. Durable `STARTED` musi poprzedzać provider
+  call, a output może zostać użyty dopiero po lokalnej walidacji i durable `SUCCEEDED`.
+- Żadna transakcja DB nie pozostaje aktywna podczas provider call. Product read, wykonanie
+  AI z audytem i product write są osobnymi fazami zgodnymi z `docs/ai-workflow.md`.
+- `AiRuns` pozostaje wewnętrzne i nie przechowuje promptów, wejść, wyjść ani surowych
+  błędów. Nie wolno dodawać sekretów ani utrwalać raw provider payloads.
+- Prawdziwe dane użytkowników nie mogą zostać wysłane do providera przed zatwierdzeniem
+  ustawień retencji organizacji, ZDR i dozwolonego zakresu danych opisanego w
+  `docs/ai-gateway.md`.
+
+## Acceptance criteria
+
+- Grounded context jest deterministyczny, wersjonowany i zawiera wyłącznie zatwierdzone
+  fakty wraz z provenance oraz jawnymi brakami.
+- Wersjonowany request `GENERATE` zwraca wyłącznie wynik zgodny ze ścisłym schematem Zod,
+  ponownie zwalidowany lokalnie przed użyciem.
+- Trwały wynik narracji jest jednoznacznie powiązany z planning runem, opcją i właściwym
+  audytem AI.
+- Jawny CAP use case respektuje fazową granicę transakcji i nie odtwarza SQLite deadlocku
+  wykrytego w 3B1.
+- Awaria AI, walidacji albo audytu nie zmienia deterministycznych opcji, rankingu,
+  constraints ani budżetu i nie pozostawia wyniku przedstawianego jako poprawny.
+- Dokumentacja opisuje kontrakt, zachowanie przy błędzie i wszystkie znane ograniczenia.
+- Nie zostaje zaimplementowany żaden element wymieniony w `Out of scope`.
+
+## Required tests
+
+- Dokładna konstrukcja i wersjonowanie grounded context.
+- `UNKNOWN` i missing pozostają jawne.
+- Ungrounded factual fields zwrócone przez model nie są akceptowane.
+- Ścisła walidacja schematu.
+- Brak provider call przed durable `STARTED`.
+- Poprawne linkage planning run/option/AI run.
+- Failed AI albo audit nie zmienia deterministycznych opcji.
+- Kompozycja transakcji nie odtwarza SQLite deadlocku z 3B1.
+- Standardowe testy nie wykonują live ani paid AI.
+- Każdy naprawiony błąd otrzymuje test regresyjny.
+
+## Cost/live-call policy
+
+- `npm run verify` i `npm run verify:full` wykonują zero paid/live AI calls.
+- Live smoke nie jest uruchamiany automatycznie.
+- Jeżeli live call okaże się konieczny do spełnienia acceptance criteria, przed jego
+  wykonaniem trzeba eskalować liczbę requestów i przewidywany koszt.
+
+## Escalation triggers
+
+Zatrzymaj implementację i eskaluj, jeżeli:
+
+- grounded context wymaga materialnego redesignu domeny albo modelu danych;
+- CAP API wymaga materialnej zmiany kontraktu zamiast addytywnego use case;
+- privacy wymaga przechowywania promptów, raw outputs albo raw errors;
+- trzeba osłabić fail-closed audit;
+- strategicznie zmienia się provider albo model;
+- zakres fazy znacząco rośnie.
+
+## Definition of Done
+
+- Wszystkie acceptance criteria są spełnione.
+- `npm run verify:full` przechodzi.
+- `git diff --check` przechodzi.
+- Nie ma ukrytych live ani paid calls.
+- Draft PR zawiera kompletny raport wymagany przez szablon repozytorium.
+- Nie pozostaje nierozwiązana eskalacja strategiczna.
