@@ -1,10 +1,11 @@
 # Przepływ AI
 
-## Stan Fazy 3B1
+## Stan po Fazie 3B2
 
-Faza 3B1 przygotowuje bezpieczny fundament wykonania, ale nadal nie podłącza LLM do
-`startPlanning`, żadnej akcji CAP ani UI. `AI_ENABLED=false` jest defaultem. Nie ma
-produkcyjnych promptów, automatycznych wywołań ani ręcznego wywołania AI z produktu.
+Faza 3B2 dodaje pierwszy jawny use case produktu: bound action
+`RankedOptions.generateNarrative()`. Akcja opisuje pojedynczą opcję już wybraną przez kod i
+nie jest automatycznie wywoływana przez `startPlanning` ani UI. `AI_ENABLED=false` pozostaje
+defaultem, więc bez jawnego opt-in nie powstaje audit ani request do providera.
 
 Każdy normalny request wskazuje `DECIDE`, `GENERATE` lub `JUDGE`. Gateway wybiera wyłącznie
 skonfigurowany profil zadania; request nie może zmienić providera, modelu ani effort i może
@@ -19,8 +20,8 @@ override w requestcie produktu.
 4. Asynchroniczny recorder utrwala `STARTED` w krótkiej transakcji CAP.
 5. Dopiero po sukcesie `STARTED` adapter wykonuje request bez otwartej transakcji bazy.
 6. Adapter lokalnie waliduje structured output i zwraca oba identyfikatory modelu.
-7. Gateway waliduje provider, configured model, task, wersje, fingerprint, UUID i response
-   model.
+7. Gateway ponownie waliduje output oraz provider, configured model, task, wersje,
+   fingerprint, UUID i response model.
 8. Recorder aktualizuje ten sam rekord do `SUCCEEDED`; dopiero wtedy output może wrócić.
 9. Po błędzie adaptera recorder aktualizuje ten sam rekord do `FAILED`; dopiero wtedy wraca
    znormalizowany błąd.
@@ -38,6 +39,26 @@ trwałego `SUCCEEDED` blokuje użycie poprawnego outputu.
 output i surowe błędy nigdy nie są utrwalane. Encja jest wewnętrzna i nie ma endpointu
 OData. Cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze schedulera.
 
+## Grounded narrative w Fazie 3B2
+
+1. Osobna krótka transakcja odczytu pobiera udany `PlanningRun`, jedną `RankedOption`, jej
+   `BudgetItems` oraz `SourceSnapshots`, a następnie kończy się przed AI.
+2. Kod buduje `grounded-option-context-v1`, jawnie materializuje `UNKNOWN`/`MISSING`,
+   sortuje fakty i tworzy fingerprint canonical JSON.
+3. Każdy fakt otrzymuje deterministyczny `factId` związany z wersją i dokładnym
+   fingerprintem kontekstu.
+4. Gateway wybiera wyłącznie profil `GENERATE`, zapisuje durable `STARTED`, wykonuje
+   provider call bez transakcji produktu i zapisuje terminalny audit.
+5. Strict Zod wymaga dokładnego fingerprintu oraz niepustych `factReferences` w każdym
+   bloku. Nieznany, nieaktualny albo obcy identyfikator odrzuca cały output.
+6. Wynik jest ponownie walidowany lokalnie. Dopiero potem osobna krótka transakcja zapisuje
+   `NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences`.
+7. Awaria dowolnej fazy nie zmienia opcji, rankingu, constraints ani budżetu. Rollback
+   product write nie usuwa wcześniej zatwierdzonego `AiRun`.
+
+Poprawna referencja daje traceability, ale bez `JUDGE` nie dowodzi semantycznie, że tekst
+rzeczywiście wynika z faktu. Safety pipeline i taka kontrola należą do Fazy 3B3.
+
 ## Docelowy przepływ produktu
 
 1. Krótka transakcja odczytu kończy się i uwalnia połączenie przed AI.
@@ -50,6 +71,6 @@ OData. Cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze s
 8. Osobna krótka transakcja zapisuje wynik produktowy; jej rollback nie usuwa audytu.
 9. Plan dzień po dniu powstaje dopiero po wyborze wariantu.
 
-Faza 3B2 doda grounded option context, wersjonowane prompty i narracje do wybranych opcji.
-Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline oraz offline/płatne opt-in evale. Żaden z
-tych elementów nie jest wykonywany w 3B1.
+Faza 3B2 implementuje dla narracji kroki 1, 3, 5, 7 i 8 tego docelowego przepływu. Nie
+wykonuje `DECIDE` ani `JUDGE`. Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline oraz
+offline/płatne opt-in evale.

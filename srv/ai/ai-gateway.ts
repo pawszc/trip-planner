@@ -86,16 +86,40 @@ function validateResultMetadata<TOutput>(
   }
 }
 
+function validateResultOutput<TOutput>(
+  result: AiCallResult<TOutput>,
+  request: StructuredAiRequest<TOutput>,
+  profile: AiExecutionProfile,
+): TOutput {
+  const validation = request.outputSchema.safeParse(result.output);
+  if (!validation.success) {
+    throw new AiError(
+      'INVALID_STRUCTURED_OUTPUT',
+      'The AI adapter output failed gateway-level local schema validation.',
+      { provider: profile.provider, model: profile.model },
+    );
+  }
+  return validation.data;
+}
+
 export class AiGateway {
   private readonly adapters = new Map<AiProvider, StructuredAiAdapter>();
+  private readonly config: AiConfig;
+  private readonly recorder: AiRunRecorder;
+  private readonly generateAiRunId: () => string;
+  private readonly now: () => Date;
 
   constructor(
-    private readonly config: AiConfig,
+    config: AiConfig,
     adapters: readonly StructuredAiAdapter[],
-    private readonly recorder: AiRunRecorder,
-    private readonly generateAiRunId: () => string = randomUUID,
-    private readonly now: () => Date = () => new Date(),
+    recorder: AiRunRecorder,
+    generateAiRunId: () => string = randomUUID,
+    now: () => Date = () => new Date(),
   ) {
+    this.config = config;
+    this.recorder = recorder;
+    this.generateAiRunId = generateAiRunId;
+    this.now = now;
     for (const adapter of adapters) {
       if (this.adapters.has(adapter.provider)) {
         throw new AiError('INVALID_AI_CONFIGURATION', 'AI adapter providers must be unique.', {
@@ -169,6 +193,10 @@ export class AiGateway {
       const executionRequest: StructuredAiRequest<TOutput> = { ...request, aiRunId };
       result = await adapter.call(executionRequest, profile);
       validateResultMetadata(result, executionRequest, profile, aiRunId, inputFingerprint);
+      result = {
+        ...result,
+        output: validateResultOutput(result, executionRequest, profile),
+      };
     } catch (cause) {
       const error = adapterFailure(cause, profile);
       const failureEvent: AiRunTelemetryEvent = {

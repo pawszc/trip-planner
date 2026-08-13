@@ -22,7 +22,10 @@ service TripPlannerService {
 
   @readonly
   @cds.redirection.target
-  entity RankedOptions as projection on db.RankedOptions;
+  entity RankedOptions as projection on db.RankedOptions actions {
+    // Narracja opisuje wyłącznie tę już wybraną przez deterministyczny pipeline opcję.
+    action generateNarrative() returns NarrativeRuns;
+  };
 
   @readonly
   entity BudgetItems as projection on db.BudgetItems;
@@ -57,4 +60,49 @@ service TripPlannerService {
 
   @readonly
   entity RejectionSummaries as projection on db.RejectionSummaries;
+
+  @readonly
+  entity NarrativeRuns as projection on db.NarrativeRuns {
+    key ID,
+    planningRun,
+    rankedOption,
+    aiRun.ID as aiRunId,
+    status,
+    contextVersion,
+    contextFingerprint,
+    promptVersion,
+    schemaVersion,
+    blockCount,
+    completedAt,
+    createdAt,
+    modifiedAt
+  };
+
+  @readonly
+  entity OptionNarratives as projection on db.OptionNarratives {
+    key ID,
+    narrativeRun,
+    planningRun,
+    rankedOption,
+    aiRun.ID as aiRunId,
+    sequence,
+    kind,
+    text,
+    createdAt,
+    modifiedAt
+  };
+
+  @readonly
+  entity NarrativeFactReferences as projection on db.NarrativeFactReferences {
+    key ID,
+    narrativeRun,
+    optionNarrative,
+    planningRun,
+    rankedOption,
+    aiRun.ID as aiRunId,
+    sequence,
+    factId,
+    createdAt,
+    modifiedAt
+  };
 }

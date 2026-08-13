@@ -324,6 +324,21 @@ describe('task-aware AI gateway', () => {
     },
   );
 
+  it('revalidates adapter output at the gateway boundary before recording SUCCEEDED', async () => {
+    const recorder = new MemoryRecorder();
+    const openai = new FakeAdapter(AiProvider.OPENAI);
+    openai.mutator = (result) => {
+      result.output = { decision: 'not-ok' } as unknown as { decision: 'ok' };
+    };
+    const subject = gateway(enabledConfig(), [openai], recorder);
+
+    await expect(subject.call(request(AiTaskType.DECIDE))).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+    });
+    expect(recorder.events.map(({ status }) => status)).toEqual(['STARTED', 'FAILED']);
+    expect(recorder.events[1]).toMatchObject({ errorCode: 'INVALID_STRUCTURED_OUTPUT' });
+  });
+
   it('records metadata without instructions, grounded input or parsed output', async () => {
     const recorder = new MemoryRecorder();
     const openai = new FakeAdapter(AiProvider.OPENAI);

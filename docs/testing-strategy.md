@@ -24,6 +24,15 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   w eventach;
 - mapowanie persistent recordera, retencję i `expiresAt`, duplicate/state transitions oraz
   kontrakt cleanup store;
+- dokładną, deterministyczną konstrukcję `grounded-option-context-v1`, jego fingerprint,
+  unikalne fact IDs oraz zmianę wszystkich identyfikatorów po zmianie exact context;
+- jawne fakty `UNKNOWN` i `MISSING` bez uzupełniania wartości oraz ich poprawne użycie jako
+  celów referencji;
+- strict schema narracji, niepuste `factReferences`, exact context fingerprint i odrzucenie
+  brakujących, pustych, obcych, nieaktualnych, powtórzonych lub częściowo błędnych referencji;
+- offline konwersję tego samego schematu przez helpery structured output obu SDK;
+- atomowy mapper `NarrativeRuns`/`OptionNarratives`/`NarrativeFactReferences` z dokładnym
+  linkage do planning runu, opcji i audytu AI;
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
 - structured outputs, ponowną lokalną walidację, refusal i brak poprawnej treści;
 - timeout, retry, zamknięty katalog błędów oraz redakcję kluczy i nagłówków;
@@ -59,6 +68,13 @@ sprawdza między innymi:
   który potwierdza fail-closed zamiast circular wait;
 - fazową granicę wykonania, committed `STARTED` widoczny w niezależnym odczycie adaptera
   oraz przetrwanie `SUCCEEDED` po rollbacku późniejszego product write.
+- bound action `RankedOptions.generateNarrative()` z realnym CAP i SQLite: profil
+  `GENERATE`, committed `STARTED` przed adapterem, ścisłe linkage narracji oraz atomowy
+  product write po terminalnym audycie;
+- brak narracji i brak zmiany deterministycznej opcji po `AI_DISABLED`, błędzie providera,
+  niepoprawnej referencji albo awarii durable `STARTED`;
+- przetrwanie `SUCCEEDED` po wymuszonym rollbacku późniejszego zapisu narracji bez
+  odtworzenia circular wait.
 
 ### Playwright
 
@@ -103,3 +119,8 @@ niezależne transakcje i nie utrzymuje transakcji podczas call providera. Aktywn
 DB requestu jest jawnie niedozwolona i testowana, ponieważ przy pojedynczym połączeniu
 SQLite prowadziłaby do circular wait. Kontrakt cleanup jest testowany, ale testy nie
 uruchamiają schedulera, bo nie istnieje on w Fazie 3B1.
+
+Testy narracji 3B2 wstrzykują adapter `GENERATE` działający wyłącznie w pamięci. Nie czytają
+credentiali, nie uruchamiają `JUDGE` i nie kontaktują się z providerem. Ten adapter również
+ponownie używa requestowego schematu, dlatego przypadek obcej referencji kończy się
+`INVALID_STRUCTURED_OUTPUT` i terminalnym `FAILED`, zanim powstanie persistence produktu.

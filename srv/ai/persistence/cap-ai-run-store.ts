@@ -96,10 +96,16 @@ function completionColumns(update: AiRunSucceededUpdate | AiRunFailedUpdate) {
 }
 
 export class CapAiRunStore implements AiRunStore {
+  private readonly databaseProvider: DatabaseProvider;
+  private readonly activeDatabaseTransactionDetector: ActiveDatabaseTransactionDetector;
+
   constructor(
-    private readonly databaseProvider: DatabaseProvider = defaultDatabaseProvider,
-    private readonly activeDatabaseTransactionDetector: ActiveDatabaseTransactionDetector = hasActiveCapDatabaseTransaction,
-  ) {}
+    databaseProvider: DatabaseProvider = defaultDatabaseProvider,
+    activeDatabaseTransactionDetector: ActiveDatabaseTransactionDetector = hasActiveCapDatabaseTransaction,
+  ) {
+    this.databaseProvider = databaseProvider;
+    this.activeDatabaseTransactionDetector = activeDatabaseTransactionDetector;
+  }
 
   async insertStarted(record: AiRunStartedRecord): Promise<void> {
     try {

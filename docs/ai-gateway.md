@@ -1,11 +1,12 @@
-# AI execution foundation Fazy 3B1
+# AI execution i grounded narratives po Fazie 3B2
 
 ## Cel i granice
 
-Faza 3B1 dodaje task-aware profile wykonania, walidację metadanych adaptera i trwały audyt
-`AiRuns`. Nie podłącza modeli do produktu. `TripRequests.startPlanning()`, pozostałe akcje
-CAP i UI nie tworzą `AiGateway` ani nie wykonują AI. Gateway jest domyślnie wyłączony, a
-standardowe testy są offline i nie potrzebują credentiali.
+Faza 3B1 dodała task-aware profile wykonania, walidację metadanych adaptera i trwały audyt
+`AiRuns`. Faza 3B2 wykorzystuje ten fundament w jednej jawnej bound action
+`RankedOptions.generateNarrative()`. `TripRequests.startPlanning()` i UI nadal nie wykonują
+AI. Gateway jest domyślnie wyłączony, a standardowe testy są offline i nie potrzebują
+credentiali.
 
 Kod pozostaje jedynym źródłem prawdy dla hard constraints, kompletności danych, workflow,
 rankingu i arytmetyki finansowej. Model nie może uzupełniać brakujących faktów ani liczyć
@@ -21,6 +22,8 @@ budżetu.
 - `srv/ai/telemetry.ts` — asynchroniczny kontrakt bez payloadów;
 - `srv/ai/persistence/` — store CAP i persistent recorder;
 - `srv/ai/live-smoke.ts` — osobna ścieżka operator-only;
+- `srv/narratives/` — grounded context, prompt/schema, krótki odczyt i atomowy zapis
+  zwalidowanych narracji;
 - `scripts/ai-*.ts` — lokalne helpery operatora.
 
 Typy OpenAI i Anthropic pozostają wewnątrz adapterów. Nie ma tools, streamingu, web search,
@@ -112,11 +115,14 @@ limit z profilu, a timeout/retry/credential z głównej konfiguracji. OpenAI kor
 Responses API, structured outputs, `store: false`, pustych tools i jawnego
 `reasoning.effort`. Anthropic korzysta z Messages API, `output_config.format`, jawnego
 effort, wyłączonego thinking i pustych tools. Oba wyniki przechodzą ponowną lokalną
-walidację Zod.
+walidację Zod. Gateway dodatkowo waliduje `result.output` tym samym schematem po sprawdzeniu
+metadanych i przed durable `SUCCEEDED`, więc custom/test adapter nie może ominąć kontraktu
+typem TypeScript.
 
 `store: false` ogranicza utrwalenie obiektu odpowiedzi przez OpenAI, ale samo nie gwarantuje
 Zero Data Retention ani braku logów abuse monitoring. Ustawienia organizacji, ZDR i
-dozwolony zakres danych muszą zostać zatwierdzone przed Fazą 3B2.
+dozwolony zakres danych muszą zostać zatwierdzone przed ustawieniem `AI_ENABLED=true` dla
+produktowej akcji 3B2.
 
 ## Configured model i response model
 
@@ -166,8 +172,8 @@ Nie ma opcji fail-open.
 
 ## Wewnętrzne AiRuns
 
-`AiRuns.ID` jest UUID gatewaya. Opcjonalne `planningRun` pozwala powiązać przyszłe call
-produktu i zachować runy smoke/eval bez planu. Encja ma status/provider/task, oba modele,
+`AiRuns.ID` jest UUID gatewaya. Opcjonalne `planningRun` wiąże produktowe wykonanie narracji
+z planem i nadal pozwala zachować runy smoke/eval bez planu. Encja ma status/provider/task, oba modele,
 wersje, fingerprint, timestamps, `expiresAt`, token usage, latency, attempts, provider
 request ID, refusal oraz kontrolowany error code/retryability.
 
@@ -212,11 +218,24 @@ Brak profilu providera kończy się `INVALID_AI_CONFIGURATION`; nie ma ukrytego 
 Credential checker pokazuje wyłącznie presence flags, trzy profile, stan opt-in i retencję —
 bez wartości, fragmentów lub długości kluczy.
 
+## Produktowy use case 3B2
+
+`RankedOptions.generateNarrative()` buduje `grounded-option-context-v1` wyłącznie z udanego
+`PlanningRun`, wybranej opcji, kategorii budżetu i istniejących source snapshots. Każdy fakt,
+również `UNKNOWN` i `MISSING`, ma `factId` związany z dokładnym fingerprintem kontekstu.
+Prompt `grounded-option-narrative-prompt-v1` i strict schema
+`grounded-option-narrative-schema-v1` wymagają niepustych referencji w każdym bloku.
+
+Nieznana, pusta, nieaktualna albo pochodząca z innego kontekstu referencja odrzuca cały
+output. Po ponownej lokalnej walidacji osobna transakcja zapisuje `NarrativeRuns`,
+`OptionNarratives` i znormalizowane `NarrativeFactReferences` powiązane z dokładnym
+`AiRun`. Szczegółową decyzję opisuje ADR 0007.
+
 ## Znane ograniczenia i następne fazy
 
-- produkt nadal nie wykonuje AI i nie ma produkcyjnych promptów;
+- produkt wykonuje AI wyłącznie po jawnej akcji na pojedynczej `RankedOption` i opt-in;
+- poprawne referencje nie są semantycznym dowodem groundedness bez przyszłego `JUDGE`;
 - cleanup nie ma schedulera;
 - nie ma fallbacku providera/modelu;
 - adaptery obsługują wyłącznie tekstowy structured output;
-- Faza 3B2 doda grounded narratives i produktowe `GENERATE`;
 - Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline i evale.

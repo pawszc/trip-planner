@@ -8,10 +8,11 @@ constraints, budżetu lub rankingu.
 
 ## Status
 
-`READY`
+`REVIEW`
 
-Status obowiązuje po zmergowaniu bootstrap PR ustanawiającego workflow Level 2 i tę
-wersjonowaną specyfikację.
+Implementacja rozpoczęła się po zmergowaniu bootstrap PR ustanawiającego workflow Level 2
+i tę wersjonowaną specyfikację. `REVIEW` oznacza przekazanie kompletnej implementacji do
+pętli Draft PR bez automatycznego startu następnej fazy.
 
 ## Preconditions
 

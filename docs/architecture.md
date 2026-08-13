@@ -10,6 +10,8 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 - `providers/` — typowane kontrakty providerów oraz stabilne adaptery fixture;
 - `ai/` — task-aware profile LLM, routing, adaptery SDK, lokalna walidacja, redakcja,
   fail-closed recorder i wewnętrzna persistence `AiRuns`;
+- `narratives/` — deterministyczny grounded context, fact IDs, wersjonowany prompt/schema,
+  fazowy odczyt i atomowy zapis zwalidowanych narracji;
 - `ranking/` — budżet, twarde filtrowanie, scoring i wybór zróżnicowanych wariantów;
 - `persistence/` — kontrolowane mapowanie wyników domenowych na znormalizowane rekordy;
 - serwis CAP — transport OData, trwałość, transakcje i kontrolowane błędy.
@@ -154,16 +156,25 @@ Bound actions na `TripRequests`:
 - `confirmConstraints()` — zatwierdza brief;
 - `startPlanning()` — zwraca wersjonowany `PlanningRun`.
 
+Bound action na `RankedOptions`:
+
+- `generateNarrative()` — po jawnym opt-in uruchamia profil `GENERATE` dla jednej już
+  wybranej opcji i zwraca `NarrativeRun`.
+
 Projekcje tylko do odczytu: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions`,
 `RankedOptions`, `BudgetBreakdowns`, `BudgetItems`, `SourceSnapshots`, `OptionNotes`,
 `RejectionReasons` i `RejectionSummaries`. Klient pobiera zbiory filtrem po
 `tripRequest_ID` albo `planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników.
 
-## Deterministyczny rdzeń i AI execution foundation
+`NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences` są projekcjami tylko do
+odczytu. Pokazują bezpieczny `aiRunId`, ale nie publikują wewnętrznej encji `AiRuns`.
+
+## Deterministyczny rdzeń i AI execution
 
 Kod pozostaje jedynym źródłem prawdy dla constraints, przejść workflow, wykonalności,
-scoringu i arytmetyki finansowej. Gateway Fazy 3B1 nie jest wywoływany przez CAP ani UI.
-Przyjmuje wyłącznie jawne, ugruntowane wejście JSON i schemat Zod.
+scoringu i arytmetyki finansowej. `startPlanning` ani UI nie wykonują AI. Jedyna akcja CAP
+Fazy 3B2 przyjmuje wyłącznie jawny, ugruntowany kontekst JSON i ścisły schemat Zod dla
+pojedynczej, wcześniej wybranej opcji.
 
 `AiGateway` wybiera pełny profil `DECIDE`, `GENERATE` lub `JUDGE`. Request produktu nie ma
 provider override i może jedynie obniżyć task-specific limit tokenów. Brak adaptera,
@@ -202,8 +213,26 @@ raw responses, raw errors, nagłówków ani sekretów i nie jest publikowane w
 `TripPlannerService`. Domyślny `expiresAt` wynosi 30 dni. Cleanup ma kontrakt
 `deleteExpired(now)`, ale Faza 3B1 nie dodaje schedulera.
 
-Faza 3B2 doda grounded narratives i pierwsze produktowe `GENERATE`; Faza 3B3 doda
-wykonywanie `JUDGE`, safety pipeline i evale.
+### Grounded option narratives
+
+Krótki root transaction odczytuje udany `PlanningRun`, jedną `RankedOption`, jej
+`BudgetItems` i `SourceSnapshots`, po czym kończy się przed AI. Kontekst
+`grounded-option-context-v1` stabilnie sortuje fakty i tworzy fingerprint canonical JSON.
+Każdy fakt, w tym jawny `UNKNOWN` lub `MISSING`, otrzymuje deterministyczny
+`fact_<sha256>` związany z wersją i dokładnym fingerprintem.
+
+`grounded-option-narrative-prompt-v1` używa wyłącznie profilu `GENERATE`. Strict output
+wymaga exact context fingerprint i niepustych `factReferences` każdego bloku. Lokalny
+validator odrzuca cały output z pustym, nieznanym, nieaktualnym lub obcym fact ID; niczego
+nie filtruje częściowo. Referencja zapewnia traceability, ale bez `JUDGE` nie jest jeszcze
+semantycznym dowodem zgodności tekstu z faktem.
+
+Po trwałym `SUCCEEDED` gatewaya osobna transakcja zapisuje `NarrativeRuns`, bloki
+`OptionNarratives` i znormalizowane `NarrativeFactReferences`. Każdy rekord ma linkage do
+`PlanningRun`, `RankedOption` i dokładnego `AiRun`. Awaria AI, audytu, walidacji albo zapisu
+nie zmienia deterministycznych opcji. Rollback product write nie usuwa audytu.
+
+Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline i evale.
 
 ## Stos technologiczny
 
