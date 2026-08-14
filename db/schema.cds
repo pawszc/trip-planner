@@ -173,6 +173,8 @@ entity PlanningRuns : cuid, managed {
   workflowRun : Association to one WorkflowRuns not null;
   requestFingerprint : String(64) not null;
   status : PlanningRunStatus not null;
+  // Nullable bez defaultu: legacy row nie może otrzymać wersji, której nie da się udowodnić.
+  currencyContractVersion : String(80);
   providerFixtureVersion : String(80) not null;
   engineVersion : String(80) not null;
   scoringVersion : String(120) not null;
@@ -365,6 +367,9 @@ entity BudgetItems : cuid, managed {
   classification : MoneyClassification not null;
   currency : String(3) not null;
   amountMinor : Integer64;
+  // Nullable bez defaultu zapewnia bezpieczny upgrade; wszystkie nowe zapisy podają obie części.
+  confirmedAmountMinor : Integer64;
+  estimatedAmountMinor : Integer64;
 }
 
 @assert.unique.optionNote: [rankedOption, kind, sequence]

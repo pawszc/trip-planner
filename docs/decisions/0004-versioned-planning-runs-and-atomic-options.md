@@ -12,14 +12,16 @@ czytelnych źródeł i braku częściowo zapisanych kart przy błędzie.
 ## Decyzja
 
 Każde pełne wejście otrzymuje SHA-256 fingerprint obejmujący potwierdzony brief, profile,
-wersję zamkniętego kontraktu walut, fixture providerów, engine i scoringu. `PlanningRuns` ma unikalność po briefie i
-fingerprincie. Wszystkie trwałe wyniki wskazują `TripRequest`, `WorkflowRun` oraz
+wersję zamkniętego kontraktu walut, fixture providerów, engine i scoringu. Dokładna wersja
+kontraktu walut jest również utrwalana na `PlanningRuns`. `PlanningRuns` ma unikalność po
+briefie i fingerprincie. Wszystkie trwałe wyniki wskazują `TripRequest`, `WorkflowRun` oraz
 `PlanningRun`.
 
 Utrwalamy znormalizowane encje:
 
 - `RankedOptions` — dokładnie trzy finalne karty i komponenty score;
-- `BudgetItems` — siedem jawnych kategorii z price type i klasyfikacją;
+- `BudgetItems` — siedem jawnych kategorii z price type, klasyfikacją oraz osobnymi częściami
+  confirmed/estimated, także dla legalnych agregatów mieszanych;
 - `SourceSnapshots` — kontrolowane pochodzenie, bez surowych payloadów providerów;
 - `OptionNotes` — deterministyczne zalety, kompromisy i ryzyka;
 - `RejectionReasons` i `RejectionSummaries` — szczegóły oraz grupowanie kodów;

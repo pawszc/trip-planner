@@ -166,6 +166,10 @@ describe('candidate builder and budget', () => {
       amountMinor: 10_000,
       priceType: 'ESTIMATE',
     });
+    expect(candidate?.budget.categoryAmounts.ADDITIONAL_FEES).toEqual({
+      confirmedAmountMinor: 4_000,
+      estimatedAmountMinor: 6_000,
+    });
     expect(candidate?.budget).toMatchObject({
       confirmedAmountMinor: 158_000,
       estimatedAmountMinor: 145_600,
@@ -189,6 +193,10 @@ describe('candidate builder and budget', () => {
     }).candidates[0];
 
     expect(candidate?.budget.additionalFees.priceType).toBe('UNKNOWN');
+    expect(candidate?.budget.categoryAmounts.ADDITIONAL_FEES).toEqual({
+      confirmedAmountMinor: 4_000,
+      estimatedAmountMinor: 0,
+    });
     expect(candidate?.budget).toMatchObject({
       confirmedAmountMinor: 158_000,
       estimatedAmountMinor: 112_000,

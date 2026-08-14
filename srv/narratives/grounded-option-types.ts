@@ -29,6 +29,7 @@ export interface GroundedPlanningRunRecord {
   tripRequest_ID: string;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
   requestFingerprint: string;
+  currencyContractVersion: string | null;
   providerFixtureVersion: string;
   engineVersion: string;
   scoringVersion: string;
@@ -90,6 +91,8 @@ export interface GroundedBudgetItemRecord {
   classification: 'CONFIRMED' | 'ESTIMATED' | 'UNKNOWN';
   currency: string;
   amountMinor: IntegerValue | null;
+  confirmedAmountMinor: IntegerValue | null;
+  estimatedAmountMinor: IntegerValue | null;
 }
 
 export interface GroundedSourceSnapshotRecord {

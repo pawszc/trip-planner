@@ -5,6 +5,7 @@ import type { AiGateway } from './ai/ai-gateway.ts';
 import { loadAiConfig } from './ai/config.ts';
 import { createPersistentAiGateway } from './ai/create-persistent-ai-gateway.ts';
 import { AI_ERROR_CODE_VALUES, AiError, type AiErrorCode } from './ai/errors.ts';
+import { CURRENCY_CONTRACT_VERSION } from './domain/currency.ts';
 import { confirmTripRequestStatus, DomainError } from './domain/trip-request.ts';
 import { transitionWorkflowState } from './domain/workflow-run.ts';
 import {
@@ -368,6 +369,7 @@ export default class TripPlannerService extends cds.ApplicationService {
 
         const context = createPlanningContext(current);
         const versions = {
+          currencyContractVersion: CURRENCY_CONTRACT_VERSION,
           providerFixtureVersion: MOCK_FIXTURE_VERSION,
           engineVersion: DEFAULT_CANDIDATE_ENGINE_CONFIG.version,
           scoringVersion: SCORE_VERSION,
@@ -418,6 +420,7 @@ export default class TripPlannerService extends cds.ApplicationService {
           tripRequestId: ID,
           workflowRunId: workflowRun.ID,
           requestFingerprint,
+          currencyContractVersion: versions.currencyContractVersion,
           providerFixtureVersion: MOCK_FIXTURE_VERSION,
           startedAt,
           completedAt: new Date().toISOString(),

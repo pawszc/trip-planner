@@ -35,6 +35,8 @@ function makeIncompleteBudget(input: GroundedOptionContextInput): void {
   food.classification = 'UNKNOWN';
   food.priceType = 'UNKNOWN';
   food.amountMinor = null;
+  food.confirmedAmountMinor = '0';
+  food.estimatedAmountMinor = '0';
   input.budgetItems = input.budgetItems.filter((item) => item.category !== 'ATTRACTIONS');
   removeSourceContext(input, 'BUDGET:ATTRACTIONS');
   input.rankedOption.confirmedAmountMinor = '218000';
@@ -68,7 +70,7 @@ describe('GroundedOptionContext', () => {
       },
     });
     expect(first.fingerprint).toBe(
-      '47285ff5164a6534f1cf01a2c54dd1c88d92f1945fd796ff3482adab0b5869ae',
+      '50baec2965c5a317642e583a798a3c9b7582b31a06b187680a3687dfa25528a8',
     );
     expect(first.facts.map((fact) => fact.key)).toEqual([
       'option.accommodation',
@@ -144,6 +146,14 @@ describe('GroundedOptionContext', () => {
     expect(formatGroundedMoney('123456', 'EUR', 'test.eur')).toBe('1,234.56 EUR');
     expect(formatGroundedMoney('-45', 'PLN', 'test.negative')).toBe('-0.45 PLN');
     expect(formatGroundedMoney(null, 'PLN', 'test.unknown')).toBeNull();
+    expect(() =>
+      formatGroundedMoney(
+        '1234',
+        'PLN',
+        'test.unsupported-contract',
+        'currency-fraction-digits-v0-legacy',
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_GROUNDED_OPTION_CONTEXT' }));
     for (const currency of ['JPY', 'KWD', 'USD', 'ZZZ']) {
       expect(() => formatGroundedMoney('1234', currency, `test.${currency}`)).toThrowError(
         expect.objectContaining({ code: 'INVALID_GROUNDED_OPTION_CONTEXT' }),
@@ -194,6 +204,10 @@ describe('GroundedOptionContext', () => {
       value: {
         amountMinor: null,
         amountDisplay: null,
+        confirmedAmountMinor: '0',
+        confirmedAmountDisplay: '0.00 PLN',
+        estimatedAmountMinor: '0',
+        estimatedAmountDisplay: '0.00 PLN',
         moneyDisplayVersion: GROUNDED_MONEY_DISPLAY_VERSION,
         classification: 'UNKNOWN',
         priceType: 'UNKNOWN',
@@ -249,12 +263,14 @@ describe('GroundedOptionContext', () => {
       ),
     ).toBe(true);
 
-    const confirmed = input.budgetItems
-      .filter((item) => item.classification === 'CONFIRMED')
-      .reduce((sum, item) => sum + BigInt(String(item.amountMinor)), 0n);
-    const estimated = input.budgetItems
-      .filter((item) => item.classification === 'ESTIMATED')
-      .reduce((sum, item) => sum + BigInt(String(item.amountMinor)), 0n);
+    const confirmed = input.budgetItems.reduce(
+      (sum, item) => sum + BigInt(String(item.confirmedAmountMinor)),
+      0n,
+    );
+    const estimated = input.budgetItems.reduce(
+      (sum, item) => sum + BigInt(String(item.estimatedAmountMinor)),
+      0n,
+    );
     expect(summary).toMatchObject({
       status: 'KNOWN',
       value: {
@@ -275,6 +291,8 @@ describe('GroundedOptionContext', () => {
     food.priceType = 'UNKNOWN';
     food.classification = 'UNKNOWN';
     food.amountMinor = null;
+    food.confirmedAmountMinor = '0';
+    food.estimatedAmountMinor = '0';
     input.rankedOption.estimatedAmountMinor = '134600';
     input.rankedOption.unknownCategoryCount = 1;
     input.rankedOption.totalAmountMinor = null;
@@ -296,11 +314,56 @@ describe('GroundedOptionContext', () => {
     });
   });
 
+  it('preserves mixed confirmed and estimated additional fees without changing aggregate semantics', () => {
+    const input = contextInput();
+    const fees = input.budgetItems.find((item) => item.category === 'ADDITIONAL_FEES');
+    if (fees === undefined) throw new Error('The fixture must contain ADDITIONAL_FEES.');
+    fees.priceType = 'ESTIMATE';
+    fees.classification = 'ESTIMATED';
+    fees.amountMinor = '10000';
+    fees.confirmedAmountMinor = '4000';
+    fees.estimatedAmountMinor = '6000';
+    input.rankedOption.confirmedAmountMinor = '222000';
+    input.rankedOption.estimatedAmountMinor = '268600';
+    input.rankedOption.totalAmountMinor = '490600';
+    input.rankedOption.costPerPersonMinor = '245300';
+    input.rankedOption.remainingBudgetMinor = '109400';
+
+    const context = buildGroundedOptionContext(input);
+    const fact = context.facts.find(
+      (candidate) => candidate.key === 'option.budget.category.ADDITIONAL_FEES',
+    );
+    expect(fact).toMatchObject({
+      status: 'KNOWN',
+      value: {
+        amountMinor: '10000',
+        amountDisplay: '100.00 PLN',
+        confirmedAmountMinor: '4000',
+        confirmedAmountDisplay: '40.00 PLN',
+        estimatedAmountMinor: '6000',
+        estimatedAmountDisplay: '60.00 PLN',
+        classification: 'ESTIMATED',
+      },
+    });
+  });
+
   it.each([
     [
       'category arithmetic',
       (input: GroundedOptionContextInput) => {
         input.rankedOption.confirmedAmountMinor = '218001';
+      },
+    ],
+    [
+      'category component arithmetic',
+      (input: GroundedOptionContextInput) => {
+        input.budgetItems[0]!.confirmedAmountMinor = '119999';
+      },
+    ],
+    [
+      'legacy category without component lineage',
+      (input: GroundedOptionContextInput) => {
+        input.budgetItems[0]!.confirmedAmountMinor = null;
       },
     ],
     [
@@ -334,6 +397,8 @@ describe('GroundedOptionContext', () => {
         food.priceType = 'UNKNOWN';
         food.classification = 'UNKNOWN';
         food.amountMinor = null;
+        food.confirmedAmountMinor = '0';
+        food.estimatedAmountMinor = '0';
         input.rankedOption.estimatedAmountMinor = '134600';
         input.rankedOption.unknownCategoryCount = 1;
       },
@@ -360,6 +425,18 @@ describe('GroundedOptionContext', () => {
   });
 
   it.each([
+    [
+      'missing PlanningRun currency contract version',
+      (input: GroundedOptionContextInput) => {
+        input.planningRun.currencyContractVersion = null;
+      },
+    ],
+    [
+      'unsupported PlanningRun currency contract version',
+      (input: GroundedOptionContextInput) => {
+        input.planningRun.currencyContractVersion = 'currency-fraction-digits-v0-legacy';
+      },
+    ],
     [
       'empty PlanningRun provider fixture version',
       (input: GroundedOptionContextInput) => {

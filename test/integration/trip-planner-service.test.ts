@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Request } from '@sap/cds';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { SUPPORTED_CURRENCY_CODES } from '../../srv/domain/currency.ts';
+import { CURRENCY_CONTRACT_VERSION, SUPPORTED_CURRENCY_CODES } from '../../srv/domain/currency.ts';
 import type { HardConstraints, SoftPreferences } from '../../srv/domain/trip-request.js';
 import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
 import { MOCK_FIXTURE_VERSION } from '../../srv/providers/fixtures/fixture-source.js';
@@ -61,6 +61,7 @@ interface PlanningRunResponse {
   workflowRun_ID: string;
   requestFingerprint: string;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
+  currencyContractVersion: string | null;
   providerFixtureVersion: string;
   engineVersion: string;
   scoringVersion: string;
@@ -113,6 +114,8 @@ interface BudgetItemResponse {
   classification: 'CONFIRMED' | 'ESTIMATED' | 'UNKNOWN';
   currency: string;
   amountMinor: number | string | null;
+  confirmedAmountMinor: number | string | null;
+  estimatedAmountMinor: number | string | null;
 }
 
 interface SourceSnapshotResponse {
@@ -668,6 +671,7 @@ describe('TripPlannerService', () => {
       status: 'SUCCEEDED',
       tripRequest_ID: tripRequest.ID,
       workflowRun_ID: workflowRuns[0]?.ID,
+      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
       providerFixtureVersion: MOCK_FIXTURE_VERSION,
       engineVersion: 'candidate-engine-v1',
       scoringVersion: 'candidate-score-v1:candidate-engine-v1',
@@ -811,6 +815,15 @@ describe('TripPlannerService', () => {
       );
       expect(items.every((item) => item.sourceSnapshot_ID)).toBe(true);
       expect(items.every((item) => item.amountMinor !== null)).toBe(true);
+      expect(
+        items.every(
+          (item) =>
+            item.confirmedAmountMinor !== null &&
+            item.estimatedAmountMinor !== null &&
+            Number(item.confirmedAmountMinor) + Number(item.estimatedAmountMinor) ===
+              Number(item.amountMinor),
+        ),
+      ).toBe(true);
       expect(items.every((item) => item.currency === option.currency)).toBe(true);
       expect(
         items.every((item) =>
@@ -828,12 +841,8 @@ describe('TripPlannerService', () => {
             item.scoringVersion === planningRun.scoringVersion,
         ),
       ).toBe(true);
-      const confirmed = items
-        .filter((item) => item.classification === 'CONFIRMED')
-        .reduce((sum, item) => sum + Number(item.amountMinor), 0);
-      const estimated = items
-        .filter((item) => item.classification === 'ESTIMATED')
-        .reduce((sum, item) => sum + Number(item.amountMinor), 0);
+      const confirmed = items.reduce((sum, item) => sum + Number(item.confirmedAmountMinor), 0);
+      const estimated = items.reduce((sum, item) => sum + Number(item.estimatedAmountMinor), 0);
       expect(confirmed).toBe(Number(option.confirmedAmountMinor));
       expect(estimated).toBe(Number(option.estimatedAmountMinor));
       expect(confirmed + estimated).toBe(Number(option.totalAmountMinor));

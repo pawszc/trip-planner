@@ -50,8 +50,10 @@ schedulera. Narracje są danymi produktu i nie mają mandatory association do `A
    sortuje fakty i tworzy fingerprint canonical JSON. Transport i nocleg dostają dokładne
    source snapshot IDs z persisted source contexts; brak lub wieloznaczność kończy się
    fail-closed. Lineage fixture/scoringu oraz zgodność kategorii z agregatem budżetu są
-   walidowane przed utworzeniem faktów. Code-derived score, selection i agregat budżetu mają
-   jawne wersje derivation.
+   walidowane przed utworzeniem faktów. Reader używa utrwalonej wersji kontraktu walut i
+   wymaga części confirmed/estimated każdej kategorii; nie odtwarza ich ani wersji z
+   bieżących stałych. Code-derived score, selection i agregat budżetu mają jawne wersje
+   derivation.
 3. Każdy fakt otrzymuje deterministyczny `factId` związany z wersją i dokładnym
    fingerprintem kontekstu. Kod tworzy też display pieniędzy przez zamknięty dwucyfrowy
    kontrakt PLN/EUR; model nie dzieli ani nie formatuje kwot.

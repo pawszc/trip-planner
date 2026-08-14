@@ -1,4 +1,7 @@
-import { CURRENCY_CONTRACT_VERSION, getSupportedCurrencyDefinition } from '../domain/currency.ts';
+import {
+  getSupportedCurrencyDefinitionForContract,
+  isSupportedCurrencyContractVersion,
+} from '../domain/currency.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import { majorUnitsToMinorUnits } from '../orchestration/planning-request.ts';
 import {
@@ -14,6 +17,8 @@ const MAX_SAFE_MINOR = BigInt(Number.MAX_SAFE_INTEGER);
 export interface ValidatedGroundedBudgetItem {
   readonly record: GroundedBudgetItemRecord;
   readonly amountMinor: string | null;
+  readonly confirmedAmountMinor: string;
+  readonly estimatedAmountMinor: string;
   readonly status: 'KNOWN' | 'UNKNOWN';
 }
 
@@ -89,9 +94,19 @@ export function validateGroundedBudgetConsistency(
   input: GroundedOptionContextInput,
 ): ValidatedGroundedBudget {
   const { rankedOption: option, tripRequest } = input;
-  const currency = getSupportedCurrencyDefinition(option.currency);
+  const persistedCurrencyContractVersion = input.planningRun.currencyContractVersion;
+  if (!isSupportedCurrencyContractVersion(persistedCurrencyContractVersion)) {
+    invalidBudget('Grounded budget has a missing or unsupported currency contract version.');
+  }
+  const currencyContractVersion = persistedCurrencyContractVersion;
+  const currency = getSupportedCurrencyDefinitionForContract(
+    currencyContractVersion,
+    option.currency,
+  );
   if (currency === null || tripRequest.currency !== currency.code) {
-    invalidBudget('Grounded budget uses an unsupported or inconsistent currency.');
+    invalidBudget(
+      'Grounded budget uses a missing/unsupported currency contract version or inconsistent currency.',
+    );
   }
 
   if (!Number.isSafeInteger(tripRequest.adults) || tripRequest.adults <= 0) {
@@ -100,7 +115,11 @@ export function validateGroundedBudgetConsistency(
 
   let requestedBudgetMinor: number;
   try {
-    requestedBudgetMinor = majorUnitsToMinorUnits(tripRequest.totalBudget, tripRequest.currency);
+    requestedBudgetMinor = majorUnitsToMinorUnits(
+      tripRequest.totalBudget,
+      tripRequest.currency,
+      currencyContractVersion,
+    );
   } catch {
     invalidBudget('Grounded budget cannot derive the persisted TripRequest budget safely.');
   }
@@ -137,8 +156,27 @@ export function validateGroundedBudgetConsistency(
       if (item.amountMinor !== null) {
         invalidBudget(`Grounded budget category ${item.category} gives UNKNOWN a value.`);
       }
+      const confirmedPart = normalizeInteger(
+        item.confirmedAmountMinor,
+        `budgetItems.${item.category}.confirmedAmountMinor`,
+      );
+      const estimatedPart = normalizeInteger(
+        item.estimatedAmountMinor,
+        `budgetItems.${item.category}.estimatedAmountMinor`,
+      );
+      confirmed += confirmedPart.integer;
+      estimated += estimatedPart.integer;
+      if (confirmed > MAX_SAFE_MINOR || estimated > MAX_SAFE_MINOR) {
+        invalidBudget('Grounded budget category subtotals exceed the safe minor-unit range.');
+      }
       unknownCount += 1;
-      itemsByCategory.set(item.category, { record: item, amountMinor: null, status: 'UNKNOWN' });
+      itemsByCategory.set(item.category, {
+        record: item,
+        amountMinor: null,
+        confirmedAmountMinor: confirmedPart.text,
+        estimatedAmountMinor: estimatedPart.text,
+        status: 'UNKNOWN',
+      });
       continue;
     }
 
@@ -146,14 +184,37 @@ export function validateGroundedBudgetConsistency(
       invalidBudget(`Grounded budget category ${item.category} has no required known amount.`);
     }
     const amount = normalizeInteger(item.amountMinor, `budgetItems.${item.category}.amountMinor`);
-    if (item.classification === 'CONFIRMED') confirmed += amount.integer;
-    else estimated += amount.integer;
+    const confirmedPart = normalizeInteger(
+      item.confirmedAmountMinor,
+      `budgetItems.${item.category}.confirmedAmountMinor`,
+    );
+    const estimatedPart = normalizeInteger(
+      item.estimatedAmountMinor,
+      `budgetItems.${item.category}.estimatedAmountMinor`,
+    );
+    if (confirmedPart.integer + estimatedPart.integer !== amount.integer) {
+      invalidBudget(`Grounded budget category ${item.category} components contradict amountMinor.`);
+    }
+    if (item.classification === 'CONFIRMED' && estimatedPart.integer !== 0n) {
+      invalidBudget(`Grounded budget category ${item.category} has estimated confirmed money.`);
+    }
+    if (
+      item.classification === 'ESTIMATED' &&
+      amount.integer > 0n &&
+      estimatedPart.integer === 0n
+    ) {
+      invalidBudget(`Grounded budget category ${item.category} has no estimated component.`);
+    }
+    confirmed += confirmedPart.integer;
+    estimated += estimatedPart.integer;
     if (confirmed > MAX_SAFE_MINOR || estimated > MAX_SAFE_MINOR) {
       invalidBudget('Grounded budget category subtotals exceed the safe minor-unit range.');
     }
     itemsByCategory.set(item.category, {
       record: item,
       amountMinor: amount.text,
+      confirmedAmountMinor: confirmedPart.text,
+      estimatedAmountMinor: estimatedPart.text,
       status: 'KNOWN',
     });
   }
@@ -195,7 +256,7 @@ export function validateGroundedBudgetConsistency(
     }
     return {
       currency: currency.code,
-      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+      currencyContractVersion,
       budgetLimitMinor: budgetLimit.text,
       confirmedAmountMinor: persistedConfirmed.text,
       estimatedAmountMinor: persistedEstimated.text,
@@ -224,7 +285,7 @@ export function validateGroundedBudgetConsistency(
 
   return {
     currency: currency.code,
-    currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+    currencyContractVersion,
     budgetLimitMinor: budgetLimit.text,
     confirmedAmountMinor: persistedConfirmed.text,
     estimatedAmountMinor: persistedEstimated.text,

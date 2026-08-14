@@ -64,6 +64,10 @@ pętli Draft PR bez automatycznego startu następnej fazy.
 - Zamknięty `currency-fraction-digits-v1` współdzielony przez walidację briefu, major → minor
   i grounded display obsługuje wyłącznie PLN/EUR z dwiema cyframi. JPY, KWD i nieznane kody
   są odrzucane; rozszerzenie precision wymaga osobnej decyzji o modelu budżetowym.
+- Wersja kontraktu walut jest częścią fingerprintu i trwałego `PlanningRun`. Grounded reader
+  nie może zastąpić brakującej lub nieobsługiwanej wersji historycznej bieżącą stałą runtime.
+- Każda trwała kategoria budżetu zachowuje części confirmed/estimated. Legalne mieszane
+  `ADDITIONAL_FEES` zachowuje obie części, które sumują się do znanego `amountMinor`.
 - Model nie wykonuje obliczeń finansowych, nie zmienia ugruntowanych wartości i nie
   uzupełnia brakujących danych. Kod przygotowuje human-readable display z minor units i
   precision waluty; model nie dzieli minor units ani nie formatuje pieniędzy. `UNKNOWN` i
@@ -134,6 +138,10 @@ pętli Draft PR bez automatycznego startu następnej fazy.
   wersjonowany kontrakt walut.
 - Arytmetyka, klasyfikacje, waluty, kompletność, status agregatu i lineage wersji budżetu
   odrzucają każdą sprzeczność fail-closed.
+- Legalny kandydat z mixed confirmed/estimated additional fees przechodzi kalkulator,
+  persistence, grounded reader i realny przepływ CAP bez zmiany semantyki budżetu.
+- Addytywny upgrade schematu nie backfilluje wersji kontraktu ani części kategorii dla legacy
+  rows; brakujące lub nieobsługiwane lineage jest odrzucane fail-closed przed AI.
 - Rozwiązywalne provenance transportu/noclegu i fail-closed dla dangling lub ambiguous
   source-context mappings.
 - `INVALID_GROUNDED_OPTION_CONTEXT` i `INVALID_NARRATIVE_PERSISTENCE` mapowane do HTTP 500.

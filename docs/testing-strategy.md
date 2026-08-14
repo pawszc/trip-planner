@@ -33,6 +33,10 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   JPY/KWD/nieznanych kodów oraz `null` dla kwot `UNKNOWN`/`MISSING`;
 - zgodność siedmiu kategorii budżetu z klasyfikacjami, walutą, partial sums,
   `unknownCategoryCount`, statusem agregatu, total, per-person i remaining;
+- zachowanie części confirmed/estimated każdej kategorii, w tym mieszanego
+  `ADDITIONAL_FEES`, przez kalkulator, mapper persistence i grounded context;
+- odczyt utrwalonej `PlanningRuns.currencyContractVersion` oraz fail-closed dla brakującej lub
+  nieobsługiwanej wersji historycznej bez runtime backfillu;
 - fail-closed lineage `providerFixtureVersion` i `scoringVersion` pomiędzy `PlanningRun`,
   `RankedOption`, `BudgetItems` i `SourceSnapshots`;
 - rozwiązywalne source snapshot IDs transportu/noclegu, jawne wersje internal derivations i
@@ -86,6 +90,8 @@ sprawdza między innymi:
   spójny i nie ma dangling mandatory database associations;
 - regresyjne HTTP 500 dla `INVALID_GROUNDED_OPTION_CONTEXT` i
   `INVALID_NARRATIVE_PERSISTENCE`;
+- realną persistence mieszanego `ADDITIONAL_FEES` z niezerowymi częściami confirmed/estimated
+  oraz bezpieczny nullable/no-default upgrade dla nieoznaczonych `PlanningRuns` legacy;
 - brak narracji i brak zmiany deterministycznej opcji po `AI_DISABLED`, błędzie providera,
   niepoprawnej referencji albo awarii durable `STARTED`;
 - przetrwanie `SUCCEEDED` po wymuszonym rollbacku późniejszego zapisu narracji bez

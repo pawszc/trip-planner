@@ -55,12 +55,30 @@ Minor units pozostają finansowym źródłem prawdy. Zamknięty kontrakt
 `grounded-money-display-v1`; formatter nie pyta `Intl` o precision. JPY, KWD i nieznane
 kody są odrzucane zamiast reinterpretowania istniejących minor units.
 
+Dokładna `currencyContractVersion` użyta w fingerprintcie jest zapisywana na `PlanningRuns`.
+Grounded reader używa tej utrwalonej wartości zarówno do walidacji waluty, jak i display;
+nie zastępuje jej bieżącą stałą runtime. Brakująca albo nieobsługiwana wersja historyczna
+odrzuca kontekst fail-closed przed AI.
+
 Przed utworzeniem faktów kod sprawdza siedem kategorii, zgodność `priceType` z
 `classification`, jedną walutę, sumy confirmed/estimated, limit z `TripRequest`, total,
 zaokrąglany w górę koszt na osobę i remaining. `unknownCategoryCount` musi dokładnie liczyć
 pozycje `UNKNOWN` i `MISSING`. Przy choć jednej takiej pozycji status agregatu jest
 odpowiednio `UNKNOWN` albo `MISSING`, a total, cost-per-person i remaining muszą być `null`.
 Kontekst z częściowymi kategoriami i kompletnym agregatem jest odrzucany.
+
+Każdy `BudgetItem` zachowuje osobno `confirmedAmountMinor` i `estimatedAmountMinor`.
+Znana kategoria wymaga ich sumy równej `amountMinor`; zagregowane `ADDITIONAL_FEES` może mieć
+obie części niezerowe bez przeklasyfikowania całości. Kategoria `UNKNOWN` nadal ma
+`amountMinor: null`, ale zachowuje każdą znaną część składową, aby partial sums pozostały
+odtwarzalne i zgodne z deterministycznym kalkulatorem.
+
+Zmiana schematu jest addytywna i bezpieczna dla istniejących baz: nowe pola składowych oraz
+`PlanningRuns.currencyContractVersion` są nullable bez defaultu, a każdy nowy zapis podaje
+je jawnie. Wiersz legacy pozostaje `null`; migracja nie przypisuje mu automatycznie wersji
+ani części, których nie da się udowodnić. Próba zbudowania narracji z takiego wiersza kończy
+się `INVALID_GROUNDED_OPTION_CONTEXT`; potrzebny jest nowy, jawnie wersjonowany run albo
+osobna udowodniona migracja, a nie backfill na podstawie bieżącego kodu.
 
 Kod `grounded-money-display-v1` bez floating point tworzy jawne wartości display dla limitu, sumy,
 kwot confirmed/estimated, kosztu na osobę i pozostałego budżetu. Kategorie budżetu również

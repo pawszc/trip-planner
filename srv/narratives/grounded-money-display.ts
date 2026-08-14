@@ -1,5 +1,9 @@
 import { DomainError } from '../domain/domain-error.ts';
-import { getSupportedCurrencyDefinition, SUPPORTED_CURRENCY_CODES } from '../domain/currency.ts';
+import {
+  CURRENCY_CONTRACT_VERSION,
+  getSupportedCurrencyDefinitionForContract,
+  SUPPORTED_CURRENCY_CODES,
+} from '../domain/currency.ts';
 import type { IntegerValue } from './grounded-option-types.ts';
 
 export const GROUNDED_MONEY_DISPLAY_VERSION = 'grounded-money-display-v1';
@@ -8,11 +12,11 @@ function invalidMoneyDisplay(message: string): never {
   throw new DomainError('INVALID_GROUNDED_OPTION_CONTEXT', message);
 }
 
-function requireCurrency(currency: string, field: string) {
-  const definition = getSupportedCurrencyDefinition(currency);
+function requireCurrency(currency: string, contractVersion: string, field: string) {
+  const definition = getSupportedCurrencyDefinitionForContract(contractVersion, currency);
   if (definition === null) {
     invalidMoneyDisplay(
-      `Grounded context field ${field} is not supported by the currency contract (${SUPPORTED_CURRENCY_CODES.join(', ')}).`,
+      `Grounded context field ${field} is not supported by currency contract ${contractVersion || '(missing)'} (${SUPPORTED_CURRENCY_CODES.join(', ')}).`,
     );
   }
   return definition;
@@ -34,8 +38,9 @@ export function formatGroundedMoney(
   amountMinor: IntegerValue | null,
   currencyValue: string,
   field: string,
+  currencyContractVersion = CURRENCY_CONTRACT_VERSION,
 ): string | null {
-  const currency = requireCurrency(currencyValue, `${field}.currency`);
+  const currency = requireCurrency(currencyValue, currencyContractVersion, `${field}.currency`);
   if (amountMinor === null) return null;
   const normalized = normalizeMinorUnits(amountMinor, `${field}.amountMinor`);
   const fractionDigits = currency.fractionDigits;

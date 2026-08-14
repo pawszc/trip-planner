@@ -12,6 +12,7 @@ export const groundedOptionContextInput = {
     tripRequest_ID: '00000000-0000-4000-8000-000000000001',
     status: 'SUCCEEDED',
     requestFingerprint: 'a'.repeat(64),
+    currencyContractVersion: 'currency-fraction-digits-v1',
     providerFixtureVersion: 'europe-reference-v1',
     engineVersion: 'candidate-engine-v1',
     scoringVersion: 'candidate-score-v1:selection-v1',
@@ -81,6 +82,8 @@ export const groundedOptionContextInput = {
     classification,
     currency: 'PLN',
     amountMinor,
+    confirmedAmountMinor: classification === 'CONFIRMED' ? amountMinor : '0',
+    estimatedAmountMinor: classification === 'ESTIMATED' ? amountMinor : '0',
   })),
   sourceSnapshots: [
     {

@@ -1,10 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { PlanningContext } from '../domain/candidate.ts';
-import {
-  CURRENCY_CONTRACT_VERSION,
-  convertMajorUnitsToMinorUnits,
-  SUPPORTED_CURRENCY_CODES,
-} from '../domain/currency.ts';
+import { convertMajorUnitsToMinorUnits, SUPPORTED_CURRENCY_CODES } from '../domain/currency.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import type { PersistedTripRequest } from '../mapping/trip-request-mapper.ts';
 import { normalizeTripRequest } from '../mapping/trip-request-mapper.ts';
@@ -13,8 +9,12 @@ import { normalizeTripRequest } from '../mapping/trip-request-mapper.ts';
  * Konwertuje major units na minor units przez parser dziesiętny i BigInt.
  * Dzięki temu 0,1 nie przechodzi przez arytmetykę binarnego floating point.
  */
-export function majorUnitsToMinorUnits(value: unknown, currencyValue: unknown): number {
-  const conversion = convertMajorUnitsToMinorUnits(value, currencyValue);
+export function majorUnitsToMinorUnits(
+  value: unknown,
+  currencyValue: unknown,
+  currencyContractVersion?: string,
+): number {
+  const conversion = convertMajorUnitsToMinorUnits(value, currencyValue, currencyContractVersion);
   if (!conversion.ok && conversion.reason === 'UNSUPPORTED_CURRENCY') {
     throw new DomainError(
       'INVALID_CURRENCY',
@@ -52,13 +52,21 @@ export function createPlanningContext(tripRequest: PersistedTripRequest): Planni
   };
 }
 
+export interface PlanningVersions {
+  currencyContractVersion: string;
+  providerFixtureVersion: string;
+  engineVersion: string;
+  scoringVersion: string;
+}
+
 /** Stabilny fingerprint obejmuje pełny, potwierdzony input oraz wersje pipeline'u. */
 export function createPlanningFingerprint(
   context: PlanningContext,
-  versions: { providerFixtureVersion: string; engineVersion: string; scoringVersion: string },
+  versions: PlanningVersions,
 ): string {
+  const { currencyContractVersion, ...pipelineVersions } = versions;
   const payload = JSON.stringify({
-    currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+    currencyContractVersion,
     tripRequestId: context.tripRequestId,
     originCity: context.originCity,
     startDate: context.startDate,
@@ -69,7 +77,7 @@ export function createPlanningFingerprint(
     pace: context.pace,
     hardConstraints: context.hardConstraints,
     softPreferences: context.softPreferences,
-    versions,
+    versions: pipelineVersions,
   });
   return createHash('sha256').update(payload, 'utf8').digest('hex');
 }

@@ -129,6 +129,15 @@ const completeBudget: BudgetBreakdown = {
   attractions: createMoney(14_000, 'PLN', 'ESTIMATE', internalRuleSnapshot),
   additionalFees: createMoney(7_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot),
   buffer: createMoney(12_450, 'PLN', 'ESTIMATE', internalRuleSnapshot),
+  categoryAmounts: {
+    TRANSPORT: { confirmedAmountMinor: 60_000, estimatedAmountMinor: 0 },
+    ACCOMMODATION: { confirmedAmountMinor: 120_000, estimatedAmountMinor: 0 },
+    LOCAL_TRANSPORT: { confirmedAmountMinor: 0, estimatedAmountMinor: 12_000 },
+    FOOD: { confirmedAmountMinor: 0, estimatedAmountMinor: 36_000 },
+    ATTRACTIONS: { confirmedAmountMinor: 0, estimatedAmountMinor: 14_000 },
+    ADDITIONAL_FEES: { confirmedAmountMinor: 7_000, estimatedAmountMinor: 0 },
+    BUFFER: { confirmedAmountMinor: 0, estimatedAmountMinor: 12_450 },
+  },
   budgetLimitMinor: 300_000,
   confirmedAmountMinor: 187_000,
   estimatedAmountMinor: 74_450,
@@ -209,6 +218,10 @@ describe('modele domenowe kandydatów', () => {
     const incompleteBudget: BudgetBreakdown = {
       ...completeBudget,
       food: unknownMoney('PLN', internalRuleSnapshot),
+      categoryAmounts: {
+        ...completeBudget.categoryAmounts,
+        FOOD: { confirmedAmountMinor: 0, estimatedAmountMinor: 0 },
+      },
       unknownCategories: ['FOOD'],
       totalAmountMinor: null,
       costPerPersonMinor: null,

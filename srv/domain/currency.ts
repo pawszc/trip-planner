@@ -4,6 +4,12 @@
  */
 export const CURRENCY_CONTRACT_VERSION = 'currency-fraction-digits-v1';
 
+export const SUPPORTED_CURRENCY_CONTRACT_VERSIONS = Object.freeze([
+  CURRENCY_CONTRACT_VERSION,
+] as const);
+export type SupportedCurrencyContractVersion =
+  (typeof SUPPORTED_CURRENCY_CONTRACT_VERSIONS)[number];
+
 export const SUPPORTED_CURRENCY_DEFINITIONS = Object.freeze({
   EUR: { code: 'EUR', fractionDigits: 2 },
   PLN: { code: 'PLN', fractionDigits: 2 },
@@ -26,6 +32,21 @@ export function getSupportedCurrencyDefinition(value: unknown): SupportedCurrenc
   return SUPPORTED_CURRENCY_DEFINITIONS[value as SupportedCurrencyCode];
 }
 
+export function isSupportedCurrencyContractVersion(
+  value: unknown,
+): value is SupportedCurrencyContractVersion {
+  return SUPPORTED_CURRENCY_CONTRACT_VERSIONS.some((version) => version === value);
+}
+
+/** Odczyt historyczny nigdy nie zastępuje brakującej wersji bieżącym kontraktem runtime. */
+export function getSupportedCurrencyDefinitionForContract(
+  contractVersion: unknown,
+  currencyValue: unknown,
+): SupportedCurrencyDefinition | null {
+  if (!isSupportedCurrencyContractVersion(contractVersion)) return null;
+  return getSupportedCurrencyDefinition(currencyValue);
+}
+
 export function isSupportedCurrency(value: unknown): value is SupportedCurrencyCode {
   return getSupportedCurrencyDefinition(value) !== null;
 }
@@ -45,8 +66,9 @@ export type MajorToMinorConversionResult =
 export function convertMajorUnitsToMinorUnits(
   value: unknown,
   currencyValue: unknown,
+  contractVersion: unknown = CURRENCY_CONTRACT_VERSION,
 ): MajorToMinorConversionResult {
-  const currency = getSupportedCurrencyDefinition(currencyValue);
+  const currency = getSupportedCurrencyDefinitionForContract(contractVersion, currencyValue);
   if (currency === null) return { ok: false, reason: 'UNSUPPORTED_CURRENCY' };
 
   const decimal = String(value).trim();

@@ -1,5 +1,4 @@
 import type { JsonValue } from '../ai/contracts.ts';
-import { CURRENCY_CONTRACT_VERSION } from '../domain/currency.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import {
   type ValidatedGroundedBudget,
@@ -275,18 +274,21 @@ function createOptionFacts(
           budget.budgetLimitMinor,
           budget.currency,
           'rankedOption.budgetLimit',
+          budget.currencyContractVersion,
         ),
         confirmedAmountMinor: budget.confirmedAmountMinor,
         confirmedAmountDisplay: formatGroundedMoney(
           budget.confirmedAmountMinor,
           budget.currency,
           'rankedOption.confirmedAmount',
+          budget.currencyContractVersion,
         ),
         estimatedAmountMinor: budget.estimatedAmountMinor,
         estimatedAmountDisplay: formatGroundedMoney(
           budget.estimatedAmountMinor,
           budget.currency,
           'rankedOption.estimatedAmount',
+          budget.currencyContractVersion,
         ),
         unknownCategoryCount: budget.unknownCategoryCount,
         totalAmountMinor: budget.totalAmountMinor,
@@ -294,23 +296,26 @@ function createOptionFacts(
           budget.totalAmountMinor,
           budget.currency,
           'rankedOption.totalAmount',
+          budget.currencyContractVersion,
         ),
         costPerPersonMinor: budget.costPerPersonMinor,
         costPerPersonDisplay: formatGroundedMoney(
           budget.costPerPersonMinor,
           budget.currency,
           'rankedOption.costPerPerson',
+          budget.currencyContractVersion,
         ),
         remainingBudgetMinor: budget.remainingBudgetMinor,
         remainingBudgetDisplay: formatGroundedMoney(
           budget.remainingBudgetMinor,
           budget.currency,
           'rankedOption.remainingBudget',
+          budget.currencyContractVersion,
         ),
       },
       sourceSnapshotIds: [],
       internalDerivation: internalDerivation(
-        `${planningRun.engineVersion}:${GROUNDED_MONEY_DISPLAY_VERSION}:${CURRENCY_CONTRACT_VERSION}`,
+        `${planningRun.engineVersion}:${GROUNDED_MONEY_DISPLAY_VERSION}:${planningRun.currencyContractVersion}`,
         'budgetDerivationVersion',
       ),
     },
@@ -398,6 +403,21 @@ function createBudgetFacts(
         validatedItem.amountMinor,
         budget.currency,
         `budgetItems.${category}`,
+        budget.currencyContractVersion,
+      ),
+      confirmedAmountMinor: validatedItem.confirmedAmountMinor,
+      confirmedAmountDisplay: formatGroundedMoney(
+        validatedItem.confirmedAmountMinor,
+        budget.currency,
+        `budgetItems.${category}.confirmed`,
+        budget.currencyContractVersion,
+      ),
+      estimatedAmountMinor: validatedItem.estimatedAmountMinor,
+      estimatedAmountDisplay: formatGroundedMoney(
+        validatedItem.estimatedAmountMinor,
+        budget.currency,
+        `budgetItems.${category}.estimated`,
+        budget.currencyContractVersion,
       ),
       currencyContractVersion: budget.currencyContractVersion,
       moneyDisplayVersion: GROUNDED_MONEY_DISPLAY_VERSION,
@@ -490,6 +510,7 @@ export function buildGroundedContextComponents(
     invalidGroundedContext('Grounded narratives require a successful PlanningRun.');
   }
   validateGroundedLineage(input);
+  const budget = validateGroundedBudgetConsistency(input);
 
   const planningRun: GroundedContextPlanningRun = {
     id: requireGroundedText(input.planningRun.ID, 'planningRun.ID'),
@@ -497,7 +518,7 @@ export function buildGroundedContextComponents(
       input.planningRun.requestFingerprint,
       'planningRun.requestFingerprint',
     ),
-    currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+    currencyContractVersion: budget.currencyContractVersion,
     providerFixtureVersion: requireGroundedText(
       input.planningRun.providerFixtureVersion,
       'planningRun.providerFixtureVersion',
@@ -516,7 +537,6 @@ export function buildGroundedContextComponents(
     rank: requireNonNegativeInteger(input.rankedOption.rank, 'rankedOption.rank'),
     role: input.rankedOption.role,
   };
-  const budget = validateGroundedBudgetConsistency(input);
   const sources = normalizeSources(input, budget.currency);
   const sourceSnapshots = sources.sourceSnapshots;
   const factDrafts = [

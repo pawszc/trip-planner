@@ -14,6 +14,9 @@ import type {
 import { AiError } from '../../srv/ai/errors.ts';
 import { CapAiRunStore } from '../../srv/ai/persistence/cap-ai-run-store.ts';
 import type { AiRunStore } from '../../srv/ai/persistence/ai-run-store.ts';
+import { CURRENCY_CONTRACT_VERSION } from '../../srv/domain/currency.ts';
+import { createMoney, isKnownMoney } from '../../srv/domain/money.ts';
+import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
 import { referenceTripRequestODataPayload } from '../fixtures/trip-request.ts';
 
 process.env.CDS_TYPESCRIPT = 'true';
@@ -103,12 +106,29 @@ type OfflineMode = 'SUCCESS' | 'INVALID_REFERENCE' | 'PROVIDER_FAILURE';
 
 interface NarrativeServiceSeam {
   createNarrativeGateway(): AiGateway;
+  createPlanningProviders(): CandidateEngineProviders;
   after(event: string, handler: (result: unknown, request: Request) => void): void;
 }
 
 const forceProductRollbackHeader = 'x-test-force-narrative-rollback';
 let narrativeService: NarrativeServiceSeam;
 let originalGatewayFactory: () => AiGateway;
+let originalPlanningProviderFactory: () => CandidateEngineProviders;
+
+interface PersistedBudgetItem {
+  category: string;
+  amountMinor: number | string | null;
+  confirmedAmountMinor: number | string | null;
+  estimatedAmountMinor: number | string | null;
+  priceType: string;
+  classification: string;
+}
+
+interface SqliteColumnInfo {
+  name: string;
+  notnull: number;
+  dflt_value: unknown;
+}
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null;
@@ -393,6 +413,7 @@ beforeAll(async () => {
   if (service === undefined) throw new Error('TripPlannerService was not started.');
   narrativeService = service;
   originalGatewayFactory = service.createNarrativeGateway;
+  originalPlanningProviderFactory = service.createPlanningProviders;
   service.after('generateNarrative', (_result: unknown, request: Request) => {
     if (request.headers[forceProductRollbackHeader] === 'true') {
       throw new Error('Intentional narrative product rollback.');
@@ -403,10 +424,12 @@ beforeAll(async () => {
 beforeEach(async () => {
   await test.data.reset();
   narrativeService.createNarrativeGateway = originalGatewayFactory;
+  narrativeService.createPlanningProviders = originalPlanningProviderFactory;
 });
 
 afterEach(() => {
   narrativeService.createNarrativeGateway = originalGatewayFactory;
+  narrativeService.createPlanningProviders = originalPlanningProviderFactory;
 });
 
 describe('grounded option narrative CAP use case', () => {
@@ -434,6 +457,100 @@ describe('grounded option narrative CAP use case', () => {
         'remainingBudgetDisplay',
       ].every((field) => String(observation.budgetSummary?.[field]).endsWith(' EUR')),
     ).toBe(true);
+  });
+
+  it('persists mixed additional-fee components and builds a valid grounded narrative', async () => {
+    const providers = originalPlanningProviderFactory.call(narrativeService);
+    narrativeService.createPlanningProviders = (): CandidateEngineProviders => ({
+      ...providers,
+      accommodation: {
+        async search(request) {
+          const stays = await providers.accommodation.search(request);
+          return stays.map((stay) => {
+            if (!isKnownMoney(stay.additionalFees)) return stay;
+            return {
+              ...stay,
+              additionalFees: createMoney(
+                stay.additionalFees.amountMinor,
+                stay.additionalFees.currency,
+                'ESTIMATE',
+                stay.additionalFees.sourceSnapshot,
+              ),
+            };
+          });
+        },
+      },
+    });
+    const { option } = await createPlannedOption();
+    const persistedItems = (await cds.db.run(
+      cds.ql.SELECT.from('trip.planner.BudgetItems').where({
+        rankedOption_ID: option.ID,
+        category: 'ADDITIONAL_FEES',
+      }),
+    )) as PersistedBudgetItem[];
+    const fees = persistedItems[0];
+    if (fees === undefined) throw new Error('Mixed-fee option has no persisted fee category.');
+
+    expect(fees).toMatchObject({
+      priceType: 'ESTIMATE',
+      classification: 'ESTIMATED',
+    });
+    expect(Number(fees.confirmedAmountMinor)).toBeGreaterThan(0);
+    expect(Number(fees.estimatedAmountMinor)).toBeGreaterThan(0);
+    expect(Number(fees.confirmedAmountMinor) + Number(fees.estimatedAmountMinor)).toBe(
+      Number(fees.amountMinor),
+    );
+
+    const observation: NarrativeObservation = { adapterCalls: 0 };
+    narrativeService.createNarrativeGateway = () => createOfflineGateway(observation);
+    await expect(withHardTimeout(POST(narrativeActionUrl(option.ID), {}))).resolves.toMatchObject({
+      data: { status: 'SUCCEEDED' },
+    });
+    expect(observation.adapterCalls).toBe(1);
+    expect(observation.budgetSummary).toMatchObject({
+      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+    });
+  });
+
+  it('keeps the additive schema safe for unversioned legacy PlanningRuns and fails closed', async () => {
+    const columns = (await cds.db.run(
+      "PRAGMA table_info('trip_planner_PlanningRuns')",
+    )) as SqliteColumnInfo[];
+    const currencyVersionColumn = columns.find(
+      (column) => column.name === 'currencyContractVersion',
+    );
+    expect(currencyVersionColumn).toMatchObject({ notnull: 0, dflt_value: null });
+
+    const { planningRunId, option } = await createPlannedOption();
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+        .set({ currencyContractVersion: null })
+        .where({ ID: planningRunId }),
+    );
+    const legacyRun = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: planningRunId }),
+    )) as { ID: string; tripRequest_ID: string; currencyContractVersion: string | null };
+    expect(legacyRun.currencyContractVersion).toBeNull();
+    const replayed = await POST(
+      `/trip-planner/TripRequests(${legacyRun.tripRequest_ID})/TripPlannerService.startPlanning`,
+      {},
+    );
+    expect(replayed.data).toMatchObject({
+      ID: legacyRun.ID,
+      currencyContractVersion: null,
+    });
+
+    let gatewayCreations = 0;
+    narrativeService.createNarrativeGateway = () => {
+      gatewayCreations += 1;
+      return createOfflineGateway({ adapterCalls: 0 });
+    };
+    await expect(POST(narrativeActionUrl(option.ID), {})).rejects.toMatchObject({
+      status: 500,
+      response: { data: { error: { code: 'INVALID_GROUNDED_OPTION_CONTEXT' } } },
+    });
+    expect(gatewayCreations).toBe(0);
+    expect(await readAllInternal('AiRuns')).toHaveLength(0);
   });
 
   it('uses GENERATE outside the product transaction and persists exact narrative linkage', async () => {

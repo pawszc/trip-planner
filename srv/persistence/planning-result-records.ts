@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  BudgetCategoryAmounts,
   BudgetCategory,
   MachineReadableValue,
   PlanningContext,
@@ -8,6 +9,7 @@ import type {
   ScoreBreakdown,
 } from '../domain/candidate.ts';
 import { DomainError } from '../domain/domain-error.ts';
+import { isSupportedCurrencyContractVersion } from '../domain/currency.ts';
 import { classifyMoney, type Money, type SourceSnapshot } from '../domain/money.ts';
 import type { CandidateEngineResult } from '../orchestration/candidate-engine.ts';
 import { SCORE_VERSION } from '../ranking/candidate-scoring.ts';
@@ -16,6 +18,7 @@ export interface PlanningPersistenceInput {
   tripRequestId: string;
   workflowRunId: string;
   requestFingerprint: string;
+  currencyContractVersion: string;
   providerFixtureVersion: string;
   startedAt: string;
   completedAt: string;
@@ -29,6 +32,7 @@ export interface PlanningRunRecord {
   workflowRun_ID: string;
   requestFingerprint: string;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
+  currencyContractVersion: string;
   providerFixtureVersion: string;
   engineVersion: string;
   scoringVersion: string;
@@ -110,6 +114,59 @@ function requireKnownMinor(value: number | null, field: string): number {
     );
   }
   return value;
+}
+
+function requireCategoryAmounts(
+  category: BudgetCategory,
+  money: Money,
+  amounts: BudgetCategoryAmounts | undefined,
+): BudgetCategoryAmounts {
+  if (amounts === undefined) {
+    throw new DomainError(
+      'INVALID_FINAL_OPTION',
+      `Kategoria ${category} nie ma części confirmed/estimated.`,
+    );
+  }
+  const values = [amounts.confirmedAmountMinor, amounts.estimatedAmountMinor];
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new DomainError(
+      'INVALID_FINAL_OPTION',
+      `Kategoria ${category} nie ma bezpiecznych części confirmed/estimated.`,
+    );
+  }
+  const knownSubtotal = amounts.confirmedAmountMinor + amounts.estimatedAmountMinor;
+  if (!Number.isSafeInteger(knownSubtotal)) {
+    throw new DomainError(
+      'INVALID_FINAL_OPTION',
+      `Części kategorii ${category} przekraczają bezpieczny zakres minor units.`,
+    );
+  }
+  if (money.amountMinor !== null && knownSubtotal !== money.amountMinor) {
+    throw new DomainError(
+      'INVALID_FINAL_OPTION',
+      `Części kategorii ${category} nie sumują się do amountMinor.`,
+    );
+  }
+  if (
+    (money.priceType === 'LIVE_PRICE' || money.priceType === 'FIXED_PRICE') &&
+    amounts.estimatedAmountMinor !== 0
+  ) {
+    throw new DomainError(
+      'INVALID_FINAL_OPTION',
+      `Potwierdzona kategoria ${category} zawiera część estimated.`,
+    );
+  }
+  if (
+    money.priceType === 'ESTIMATE' &&
+    money.amountMinor > 0 &&
+    amounts.estimatedAmountMinor === 0
+  ) {
+    throw new DomainError(
+      'INVALID_FINAL_OPTION',
+      `Estymowana kategoria ${category} nie zawiera części estimated.`,
+    );
+  }
+  return amounts;
 }
 
 function serializeMachineValue(value: MachineReadableValue): string {
@@ -312,6 +369,7 @@ function recordsForOption(
       money.sourceSnapshot === null
         ? null
         : (sourceContexts.get(money.sourceSnapshot.id)?.persistenceId ?? null);
+    const amounts = requireCategoryAmounts(category, money, budget.categoryAmounts[category]);
     return {
       ID: randomUUID(),
       ...references,
@@ -323,6 +381,8 @@ function recordsForOption(
       classification: classifyMoney(money),
       currency: money.currency,
       amountMinor: money.amountMinor,
+      confirmedAmountMinor: amounts.confirmedAmountMinor,
+      estimatedAmountMinor: amounts.estimatedAmountMinor,
     };
   });
 
@@ -384,6 +444,12 @@ function rejectionRecords(
 export function buildPlanningPersistenceBundle(
   input: PlanningPersistenceInput,
 ): PlanningPersistenceBundle {
+  if (!isSupportedCurrencyContractVersion(input.currencyContractVersion)) {
+    throw new DomainError(
+      'INVALID_PLANNING_RESULT',
+      'PlanningRun nie ma obsługiwanej wersji kontraktu walut.',
+    );
+  }
   const planningRunId = randomUUID();
   const version = scoringVersion(input.result);
   const shortage = input.result.shortage;
@@ -405,6 +471,7 @@ export function buildPlanningPersistenceBundle(
     workflowRun_ID: input.workflowRunId,
     requestFingerprint: input.requestFingerprint,
     status: succeeded ? 'SUCCEEDED' : 'INSUFFICIENT_OPTIONS',
+    currencyContractVersion: input.currencyContractVersion,
     providerFixtureVersion: input.providerFixtureVersion,
     engineVersion: input.result.configVersion,
     scoringVersion: version,

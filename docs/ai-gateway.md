@@ -238,10 +238,14 @@ są jawnie oznaczone jako wersjonowane `INTERNAL_DETERMINISTIC` derivations.
 
 Minor units pozostają źródłem prawdy. Wspólny `currency-fraction-digits-v1` dopuszcza
 obecnie PLN/EUR z dwiema cyframi i odrzuca JPY/KWD/nieznane kody na wejściu oraz podczas
-budowy grounded context. Kod sprawdza lineage wersji, wszystkie kategorie, klasyfikacje,
-walutę, sumy i status kompletności, a `grounded-money-display-v1` przygotowuje display dla
-limitu, sumy, confirmed, estimated, per-person i remaining. Prompt zabrania modelowi
-dzielenia minor units, ustalania precision i formatowania pieniędzy.
+budowy grounded context. Dokładna wersja jest utrwalana na `PlanningRuns`; reader i formatter
+używają tej wartości i odrzucają brakujące/nieobsługiwane wersje zamiast podstawiać runtime
+default. Każdy `BudgetItem` zachowuje osobne części confirmed/estimated, więc mieszane
+additional fees pozostają odtwarzalne po agregacji. Kod sprawdza lineage wersji, wszystkie
+kategorie, klasyfikacje, walutę, sumy i status kompletności, a
+`grounded-money-display-v1` przygotowuje display dla limitu, sumy, confirmed, estimated,
+per-person i remaining. Prompt zabrania modelowi dzielenia minor units, ustalania precision
+i formatowania pieniędzy.
 Prompt `grounded-option-narrative-prompt-v1` i strict schema
 `grounded-option-narrative-schema-v1` wymagają niepustych referencji w każdym bloku.
 

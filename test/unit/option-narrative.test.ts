@@ -41,6 +41,8 @@ function makeIncompleteBudget(input: GroundedOptionContextInput): void {
   food.classification = 'UNKNOWN';
   food.priceType = 'UNKNOWN';
   food.amountMinor = null;
+  food.confirmedAmountMinor = '0';
+  food.estimatedAmountMinor = '0';
   input.budgetItems = input.budgetItems.filter((item) => item.category !== 'ATTRACTIONS');
   removeSourceContext(input, 'BUDGET:ATTRACTIONS');
   input.rankedOption.confirmedAmountMinor = '218000';

@@ -71,6 +71,12 @@ describe('planning request mapping', () => {
     },
   );
 
+  it('does not substitute the runtime currency contract for an unsupported historical version', () => {
+    expect(() =>
+      majorUnitsToMinorUnits('12.34', 'PLN', 'currency-fraction-digits-v0-legacy'),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_CURRENCY' }));
+  });
+
   it('rejects an unsupported persisted currency before creating a planning context', () => {
     expect(() => createPlanningContext({ ...persistedTripRequest, currency: 'JPY' })).toThrowError(
       expect.objectContaining({ code: 'INVALID_CURRENCY' }),
@@ -90,6 +96,7 @@ describe('planning request mapping', () => {
   it('creates a stable fingerprint that changes with a relevant version', () => {
     const context = createPlanningContext(persistedTripRequest);
     const versions = {
+      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
       providerFixtureVersion: 'fixture-v1',
       engineVersion: 'engine-v1',
       scoringVersion: 'score-v1',
@@ -97,9 +104,14 @@ describe('planning request mapping', () => {
     const first = createPlanningFingerprint(context, versions);
     const repeat = createPlanningFingerprint(context, versions);
     const changed = createPlanningFingerprint(context, { ...versions, scoringVersion: 'score-v2' });
+    const changedCurrencyContract = createPlanningFingerprint(context, {
+      ...versions,
+      currencyContractVersion: 'currency-fraction-digits-v2-test',
+    });
 
     expect(first).toMatch(/^[a-f0-9]{64}$/);
     expect(repeat).toBe(first);
     expect(changed).not.toBe(first);
+    expect(changedCurrencyContract).not.toBe(first);
   });
 });

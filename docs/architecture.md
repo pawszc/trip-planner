@@ -28,9 +28,10 @@ innymi 29 lutego w roku nieprzestępnym oraz nieistniejące dni miesiąca.
 Status `TripRequest` opisuje lifecycle briefu: `DRAFT` oznacza wersję roboczą, a `CONSTRAINTS_CONFIRMED` potwierdzony zestaw ograniczeń. Postęp planowania przechowuje osobna encja `WorkflowRuns`, powiązana jeden-do-jednego z `TripRequest`. Rekord workflow zawiera bieżący stan, kontrolowane informacje o błędzie i znaczniki czasu. Projekcja OData workflow jest tylko do odczytu; klient nie może ominąć maszyny stanów przez bezpośredni zapis. Dzięki temu etap wykonania nie zmienia znaczenia statusu briefu ani zasad jego edycji.
 
 Każde deterministyczne wykonanie ma osobny `PlanningRun`, powiązany z `TripRequest` i
-`WorkflowRun`. Run zapisuje fingerprint pełnego wejścia, wersję fixture providerów, wersję
-silnika i scoringu, liczniki kandydatów oraz kontrolowany status. Unikalność fingerprintu
-zapewnia idempotencję dla nieedytowalnego, potwierdzonego briefu.
+`WorkflowRun`. Run zapisuje fingerprint pełnego wejścia, dokładną wersję kontraktu walut,
+wersję fixture providerów, wersję silnika i scoringu, liczniki kandydatów oraz kontrolowany
+status. Unikalność fingerprintu zapewnia idempotencję dla nieedytowalnego, potwierdzonego
+briefu.
 
 Równoległe wywołania `startPlanning` dla tego samego briefu są koaleskowane przez serwis do
 jednego aktywnego wykonania. Pierwszy request jest właścicielem transakcji, a kolejne czekają
@@ -98,9 +99,11 @@ Zamknięty katalog powodów odrzucenia obejmuje:
 Kalkulator `internal-cost-estimates-v1` używa stawek w minor units na osobę i dzień:
 2 000 na transport lokalny, 8 000 na wyżywienie i 4 000 na atrakcje. Dzień wyjazdu i
 powrotu są wliczone. Bufor wynosi 10% znanego podsumowania i jest zaokrąglany w górę do
-pełnego minor unit. `BudgetBreakdown` osobno sumuje kwoty potwierdzone i estymowane;
-jeśli dowolna wymagana kategoria jest `UNKNOWN` albo ma inną walutę, koszt całkowity,
-koszt na osobę i pozostały budżet mają wartość `null`.
+pełnego minor unit. `BudgetBreakdown` osobno sumuje kwoty potwierdzone i estymowane, a każda
+kategoria zachowuje obie części. Dzięki temu legalne połączenie potwierdzonej i estymowanej
+opłaty dodatkowej pozostaje odtwarzalne po agregacji do jednego `BudgetItem`. Jeśli dowolna
+wymagana kategoria jest `UNKNOWN` albo ma inną walutę, koszt całkowity, koszt na osobę i
+pozostały budżet mają wartość `null`.
 
 Score ma zakres 0–100 i wersję zapisaną w kodzie. Jest ważoną średnią komponentów:
 `budgetFit` 20%, `travelTime` 15%, `effectiveTimeAtDestination` 15%,
@@ -134,7 +137,8 @@ odrzucone. Stabilny wybór to Praga jako `BEST_OVERALL`, Wiedeń jako
 
 Faza 2C integruje ten sam czysty pipeline z CAP i UI bez zmiany zasad rankingu. Surowe
 payloady providerów nie są zapisywane. `RankedOptions` zawierają wyłącznie wybrane fakty
-domenowe i komponenty score; `BudgetItems` zachowują kategorię, price type i klasyfikację;
+domenowe i komponenty score; `BudgetItems` zachowują kategorię, price type, klasyfikację
+oraz części confirmed/estimated;
 `SourceSnapshots` przechowują kontrolowany kontrakt pochodzenia. `OptionNotes` powstają z
 deterministycznych szablonów.
 
@@ -230,13 +234,20 @@ wersjonowane derivations `INTERNAL_DETERMINISTIC`.
 
 Minor units pozostają źródłem prawdy. `grounded-money-display-v1` przygotowuje w kodzie
 human-readable wartości limitu, total, confirmed, estimated, per-person i remaining.
-Precision pochodzi wyłącznie z zamkniętego `currency-fraction-digits-v1`, który przy obecnym
-`Decimal(13, 2)` dopuszcza PLN/EUR i odrzuca JPY/KWD/nieznane kody. Kategorie, klasyfikacje,
-waluta, partial sums, total, per-person, remaining i status kompletności muszą być wzajemnie
-zgodne. `providerFixtureVersion` i `scoringVersion` muszą zgadzać się na PlanningRun,
+Precision pochodzi wyłącznie z wersji kontraktu zapisanej na `PlanningRuns`; obecny
+`currency-fraction-digits-v1` przy `Decimal(13, 2)` dopuszcza PLN/EUR i odrzuca
+JPY/KWD/nieznane kody. Brakująca lub nieobsługiwana wersja historyczna nie jest zastępowana
+stałą runtime. Kategorie, ich części confirmed/estimated, klasyfikacje, waluta, partial sums,
+total, per-person, remaining i status kompletności muszą być wzajemnie zgodne.
+`providerFixtureVersion` i `scoringVersion` muszą zgadzać się na PlanningRun,
 RankedOption, BudgetItems i SourceSnapshots. Każda sprzeczność odrzuca cały kontekst przed AI.
 `UNKNOWN` i `MISSING` nie dostają wymyślonej kwoty. Prompt
 zabrania modelowi dzielenia minor units, ustalania precision i formatowania pieniędzy.
+
+Kolumny `PlanningRuns.currencyContractVersion` oraz części `BudgetItems` są addytywne,
+nullable i nie mają defaultu. Nowe runy wypełniają je zawsze, natomiast wiersze legacy
+pozostają nieoznaczone i są odrzucane fail-closed przy budowie grounded context; kod nie
+wykonuje nieudowodnionego backfillu.
 
 `grounded-option-narrative-prompt-v1` używa wyłącznie profilu `GENERATE`. Strict output
 wymaga exact context fingerprint i niepustych `factReferences` każdego bloku. Lokalny
