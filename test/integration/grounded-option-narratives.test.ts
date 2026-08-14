@@ -38,6 +38,8 @@ interface RankedOptionResponse {
   rank: number;
   role: string;
   destinationCity: string;
+  currency: string;
+  budgetLimitMinor: number | string;
   totalAmountMinor: number | string;
   totalScore: number | string;
 }
@@ -94,6 +96,7 @@ interface NarrativeObservation {
   profileTaskType?: string;
   startedSeenByAdapter?: PersistedAiRun;
   requestFactIds?: readonly string[];
+  budgetSummary?: Readonly<Record<string, unknown>>;
 }
 
 type OfflineMode = 'SUCCESS' | 'INVALID_REFERENCE' | 'PROVIDER_FAILURE';
@@ -114,18 +117,26 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 function readRequestFacts(request: StructuredAiRequest<unknown>): {
   fingerprint: string;
   factIds: readonly string[];
+  budgetSummary: Readonly<Record<string, unknown>>;
 } {
   const input = request.input;
   if (!isRecord(input) || typeof input.fingerprint !== 'string' || !Array.isArray(input.facts)) {
     throw new Error('Offline adapter received no grounded context.');
   }
+  let budgetSummary: Readonly<Record<string, unknown>> | undefined;
   const factIds = input.facts.map((fact) => {
     if (!isRecord(fact) || typeof fact.factId !== 'string') {
       throw new Error('Offline adapter received an invalid grounded fact.');
     }
+    if (fact.key === 'option.budget.summary' && isRecord(fact.value)) {
+      budgetSummary = fact.value;
+    }
     return fact.factId;
   });
-  return { fingerprint: input.fingerprint, factIds };
+  if (budgetSummary === undefined) {
+    throw new Error('Offline adapter received no grounded budget summary.');
+  }
+  return { fingerprint: input.fingerprint, factIds, budgetSummary };
 }
 
 async function readAiRun(ID: string): Promise<PersistedAiRun | undefined> {
@@ -160,6 +171,7 @@ class OfflineNarrativeAdapter implements StructuredAiAdapter {
     this.observation.startedSeenByAdapter = await readAiRunIndependently(request.aiRunId!);
     const grounded = readRequestFacts(request);
     this.observation.requestFactIds = grounded.factIds;
+    this.observation.budgetSummary = grounded.budgetSummary;
 
     if (this.mode === 'PROVIDER_FAILURE') {
       throw new AiError('PROVIDER_UNAVAILABLE', 'Offline provider failure.', {
@@ -334,11 +346,14 @@ async function readAllInternal(entity: string): Promise<unknown[]> {
   return cds.db.run(cds.ql.SELECT.from(`trip.planner.${entity}`)) as Promise<unknown[]>;
 }
 
-async function createPlannedOption(): Promise<{
+async function createPlannedOption(currency = 'PLN'): Promise<{
   planningRunId: string;
   option: RankedOptionResponse;
 }> {
-  const created = await POST('/trip-planner/TripRequests', referenceTripRequestODataPayload);
+  const created = await POST('/trip-planner/TripRequests', {
+    ...referenceTripRequestODataPayload,
+    currency,
+  });
   const tripRequestId = String(created.data.ID);
   await POST(
     `/trip-planner/TripRequests(${tripRequestId})/TripPlannerService.confirmConstraints`,
@@ -395,6 +410,32 @@ afterEach(() => {
 });
 
 describe('grounded option narrative CAP use case', () => {
+  it('carries accepted EUR through planning into code-formatted grounded money', async () => {
+    const { option } = await createPlannedOption('EUR');
+    const observation: NarrativeObservation = { adapterCalls: 0 };
+    narrativeService.createNarrativeGateway = () => createOfflineGateway(observation);
+
+    await withHardTimeout(POST(narrativeActionUrl(option.ID), {}));
+
+    expect(option.currency).toBe('EUR');
+    expect(Number(option.budgetLimitMinor)).toBe(450_000);
+    expect(observation.budgetSummary).toMatchObject({
+      currency: 'EUR',
+      currencyContractVersion: 'currency-fraction-digits-v1',
+      budgetLimitMinor: '450000',
+      budgetLimitDisplay: '4,500.00 EUR',
+    });
+    expect(
+      [
+        'confirmedAmountDisplay',
+        'estimatedAmountDisplay',
+        'totalAmountDisplay',
+        'costPerPersonDisplay',
+        'remainingBudgetDisplay',
+      ].every((field) => String(observation.budgetSummary?.[field]).endsWith(' EUR')),
+    ).toBe(true);
+  });
+
   it('uses GENERATE outside the product transaction and persists exact narrative linkage', async () => {
     const { planningRunId, option } = await createPlannedOption();
     const observation: NarrativeObservation = { adapterCalls: 0 };
@@ -652,6 +693,54 @@ describe('grounded option narrative CAP use case', () => {
     expect(await readAllInternal('OptionNarratives')).toHaveLength(0);
     expect(await readAllInternal('NarrativeFactReferences')).toHaveLength(0);
   });
+
+  it.each([
+    ['PlanningRun scoringVersion', 'PlanningRuns', 'ID', 'planningRun', 'scoringVersion'],
+    [
+      'RankedOption providerFixtureVersion',
+      'RankedOptions',
+      'ID',
+      'rankedOption',
+      'providerFixtureVersion',
+    ],
+    [
+      'BudgetItem scoringVersion',
+      'BudgetItems',
+      'rankedOption_ID',
+      'rankedOption',
+      'scoringVersion',
+    ],
+    [
+      'SourceSnapshot providerFixtureVersion',
+      'SourceSnapshots',
+      'rankedOption_ID',
+      'rankedOption',
+      'providerFixtureVersion',
+    ],
+  ] as const)(
+    'fails closed before the provider for inconsistent %s lineage',
+    async (_case, entity, key, target, field) => {
+      const { planningRunId, option } = await createPlannedOption();
+      const targetId = target === 'planningRun' ? planningRunId : option.ID;
+      await cds.db.run(
+        cds.ql.UPDATE.entity(`trip.planner.${entity}`)
+          .set({ [field]: 'corrupt-lineage-version' })
+          .where({ [key]: targetId }),
+      );
+      let gatewayCreations = 0;
+      narrativeService.createNarrativeGateway = () => {
+        gatewayCreations += 1;
+        return createOfflineGateway({ adapterCalls: 0 });
+      };
+
+      await expect(POST(narrativeActionUrl(option.ID), {})).rejects.toMatchObject({
+        status: 500,
+        response: { data: { error: { code: 'INVALID_GROUNDED_OPTION_CONTEXT' } } },
+      });
+      expect(gatewayCreations).toBe(0);
+      expect(await readAllInternal('AiRuns')).toHaveLength(0);
+    },
+  );
 
   it('maps invalid grounded provenance to HTTP 500 before constructing the gateway', async () => {
     const { option } = await createPlannedOption();

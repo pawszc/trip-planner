@@ -12,7 +12,7 @@ czytelnych źródeł i braku częściowo zapisanych kart przy błędzie.
 ## Decyzja
 
 Każde pełne wejście otrzymuje SHA-256 fingerprint obejmujący potwierdzony brief, profile,
-wersję fixture providerów, engine i scoringu. `PlanningRuns` ma unikalność po briefie i
+wersję zamkniętego kontraktu walut, fixture providerów, engine i scoringu. `PlanningRuns` ma unikalność po briefie i
 fingerprincie. Wszystkie trwałe wyniki wskazują `TripRequest`, `WorkflowRun` oraz
 `PlanningRun`.
 

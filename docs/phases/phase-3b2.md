@@ -61,6 +61,9 @@ pętli Draft PR bez automatycznego startu następnej fazy.
 
 - Kod pozostaje jedynym źródłem prawdy dla constraints, kompletności, workflow, rankingu
   i arytmetyki finansowej. LLM tworzy wyłącznie narrację.
+- Zamknięty `currency-fraction-digits-v1` współdzielony przez walidację briefu, major → minor
+  i grounded display obsługuje wyłącznie PLN/EUR z dwiema cyframi. JPY, KWD i nieznane kody
+  są odrzucane; rozszerzenie precision wymaga osobnej decyzji o modelu budżetowym.
 - Model nie wykonuje obliczeń finansowych, nie zmienia ugruntowanych wartości i nie
   uzupełnia brakujących danych. Kod przygotowuje human-readable display z minor units i
   precision waluty; model nie dzieli minor units ani nie formatuje pieniędzy. `UNKNOWN` i
@@ -87,6 +90,10 @@ pętli Draft PR bez automatycznego startu następnej fazy.
 - Grounded context jest deterministyczny, wersjonowany i zawiera wyłącznie zatwierdzone
   fakty wraz z provenance oraz jawnymi brakami. Każdy referencjonowalny wpis ma
   deterministyczny, unikalny i związany z dokładnym kontekstem `factId`.
+- Kategorie i agregat budżetu są wzajemnie zgodne; `UNKNOWN`/`MISSING` wymuszają niekompletny
+  status agregatu, poprawny count i `null` dla total/per-person/remaining.
+- Lineage wersji fixture i scoringu jest identyczne na PlanningRun, opcji, pozycjach budżetu
+  i źródłach albo cały kontekst jest odrzucany przed AI.
 - Wersjonowany request `GENERATE` zwraca wyłącznie wynik zgodny ze ścisłym schematem Zod,
   ponownie zwalidowany lokalnie przed użyciem.
 - Każdy blok narracji zawiera co najmniej jeden identyfikator w `factReferences`, a każdy
@@ -123,6 +130,10 @@ pętli Draft PR bez automatycznego startu następnej fazy.
   trwałej narracji i nie pozostawia mandatory database association do audytu.
 - Deterministyczne display values pieniędzy, jawne `null` dla `UNKNOWN`/`MISSING` oraz brak
   arytmetyki i formatowania po stronie LLM.
+- End-to-end akceptacja PLN/EUR i odrzucenie JPY/KWD/nieznanych kodów przez wspólny
+  wersjonowany kontrakt walut.
+- Arytmetyka, klasyfikacje, waluty, kompletność, status agregatu i lineage wersji budżetu
+  odrzucają każdą sprzeczność fail-closed.
 - Rozwiązywalne provenance transportu/noclegu i fail-closed dla dangling lub ambiguous
   source-context mappings.
 - `INVALID_GROUNDED_OPTION_CONTEXT` i `INVALID_NARRATIVE_PERSISTENCE` mapowane do HTTP 500.

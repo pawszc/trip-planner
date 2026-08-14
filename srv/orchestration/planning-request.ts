@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { PlanningContext } from '../domain/candidate.ts';
+import {
+  CURRENCY_CONTRACT_VERSION,
+  convertMajorUnitsToMinorUnits,
+  SUPPORTED_CURRENCY_CODES,
+} from '../domain/currency.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import type { PersistedTripRequest } from '../mapping/trip-request-mapper.ts';
 import { normalizeTripRequest } from '../mapping/trip-request-mapper.ts';
@@ -8,26 +13,27 @@ import { normalizeTripRequest } from '../mapping/trip-request-mapper.ts';
  * Konwertuje major units na minor units przez parser dziesiętny i BigInt.
  * Dzięki temu 0,1 nie przechodzi przez arytmetykę binarnego floating point.
  */
-export function majorUnitsToMinorUnits(value: unknown): number {
-  const decimal = String(value).trim();
-  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(decimal);
-  if (!match) {
+export function majorUnitsToMinorUnits(value: unknown, currencyValue: unknown): number {
+  const conversion = convertMajorUnitsToMinorUnits(value, currencyValue);
+  if (!conversion.ok && conversion.reason === 'UNSUPPORTED_CURRENCY') {
     throw new DomainError(
-      'INVALID_TOTAL_BUDGET_PRECISION',
-      'Budżet musi mieć najwyżej dwie cyfry po separatorze dziesiętnym.',
+      'INVALID_CURRENCY',
+      `Waluta nie jest obsługiwana. Dozwolone waluty: ${SUPPORTED_CURRENCY_CODES.join(', ')}.`,
     );
   }
-  const whole = BigInt(match[1] ?? '0');
-  const fraction = BigInt((match[2] ?? '').padEnd(2, '0'));
-  const minor = whole * 100n + fraction;
-  const result = Number(minor);
-  if (!Number.isSafeInteger(result) || result <= 0) {
+  if (!conversion.ok && conversion.reason === 'INVALID_PRECISION') {
+    throw new DomainError(
+      'INVALID_TOTAL_BUDGET_PRECISION',
+      'Budżet musi mieć najwyżej dwie cyfry po separatorze dziesiętnym zgodnie z kontraktem waluty.',
+    );
+  }
+  if (!conversion.ok) {
     throw new DomainError(
       'INVALID_TOTAL_BUDGET_MINOR_UNITS',
       'Budżet przekracza bezpieczny zakres integer minor units.',
     );
   }
-  return result;
+  return conversion.amountMinor;
 }
 
 export function createPlanningContext(tripRequest: PersistedTripRequest): PlanningContext {
@@ -38,7 +44,7 @@ export function createPlanningContext(tripRequest: PersistedTripRequest): Planni
     startDate: normalized.startDate,
     endDate: normalized.endDate,
     adults: normalized.adults,
-    totalBudgetMinor: majorUnitsToMinorUnits(tripRequest.totalBudget),
+    totalBudgetMinor: majorUnitsToMinorUnits(tripRequest.totalBudget, normalized.currency),
     currency: normalized.currency,
     pace: normalized.pace as PlanningContext['pace'],
     hardConstraints: normalized.hardConstraints,
@@ -52,6 +58,7 @@ export function createPlanningFingerprint(
   versions: { providerFixtureVersion: string; engineVersion: string; scoringVersion: string },
 ): string {
   const payload = JSON.stringify({
+    currencyContractVersion: CURRENCY_CONTRACT_VERSION,
     tripRequestId: context.tripRequestId,
     originCity: context.originCity,
     startDate: context.startDate,

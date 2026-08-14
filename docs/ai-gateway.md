@@ -236,10 +236,12 @@ Transport i nocleg otrzymują rozwiązywalne source snapshot IDs z persisted sou
 brak lub wieloznaczność mapowania kończy się fail-closed. Selection, score i agregat budżetu
 są jawnie oznaczone jako wersjonowane `INTERNAL_DETERMINISTIC` derivations.
 
-Minor units pozostają źródłem prawdy, ale kod `grounded-money-display-v1` przygotowuje
-deterministyczne display values z właściwą precision waluty dla limitu, sumy, confirmed,
-estimated, per-person i remaining. Prompt zabrania modelowi dzielenia minor units, ustalania
-precision i formatowania pieniędzy.
+Minor units pozostają źródłem prawdy. Wspólny `currency-fraction-digits-v1` dopuszcza
+obecnie PLN/EUR z dwiema cyframi i odrzuca JPY/KWD/nieznane kody na wejściu oraz podczas
+budowy grounded context. Kod sprawdza lineage wersji, wszystkie kategorie, klasyfikacje,
+walutę, sumy i status kompletności, a `grounded-money-display-v1` przygotowuje display dla
+limitu, sumy, confirmed, estimated, per-person i remaining. Prompt zabrania modelowi
+dzielenia minor units, ustalania precision i formatowania pieniędzy.
 Prompt `grounded-option-narrative-prompt-v1` i strict schema
 `grounded-option-narrative-schema-v1` wymagają niepustych referencji w każdym bloku.
 

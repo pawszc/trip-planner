@@ -1,4 +1,5 @@
 import type { Destination } from '../domain/candidate.ts';
+import { isSupportedCurrency, SUPPORTED_CURRENCY_CODES } from '../domain/currency.ts';
 import type {
   AccommodationSearchRequest,
   PlacesSearchRequest,
@@ -93,11 +94,11 @@ export function validateProviderTripRequest(request: ProviderTripRequest): void 
       `adults must be a positive safe integer; received: ${request.adults}`,
     );
   }
-  if (!/^[A-Z]{3}$/.test(request.currency)) {
+  if (!isSupportedCurrency(request.currency)) {
     throw new ProviderRequestValidationError(
       'INVALID_CURRENCY',
       'currency',
-      `currency must be an uppercase three-letter code; received: ${request.currency}`,
+      `currency must be one of ${SUPPORTED_CURRENCY_CODES.join(', ')}; received: ${request.currency}`,
     );
   }
 }

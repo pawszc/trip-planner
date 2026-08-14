@@ -229,8 +229,13 @@ wieloznaczne mapowanie jest odrzucane. Selection, score i agregaty budżetu są 
 wersjonowane derivations `INTERNAL_DETERMINISTIC`.
 
 Minor units pozostają źródłem prawdy. `grounded-money-display-v1` przygotowuje w kodzie
-human-readable wartości limitu, total, confirmed, estimated, per-person i remaining z
-właściwą precision waluty. `UNKNOWN` i `MISSING` nie dostają wymyślonej kwoty. Prompt
+human-readable wartości limitu, total, confirmed, estimated, per-person i remaining.
+Precision pochodzi wyłącznie z zamkniętego `currency-fraction-digits-v1`, który przy obecnym
+`Decimal(13, 2)` dopuszcza PLN/EUR i odrzuca JPY/KWD/nieznane kody. Kategorie, klasyfikacje,
+waluta, partial sums, total, per-person, remaining i status kompletności muszą być wzajemnie
+zgodne. `providerFixtureVersion` i `scoringVersion` muszą zgadzać się na PlanningRun,
+RankedOption, BudgetItems i SourceSnapshots. Każda sprzeczność odrzuca cały kontekst przed AI.
+`UNKNOWN` i `MISSING` nie dostają wymyślonej kwoty. Prompt
 zabrania modelowi dzielenia minor units, ustalania precision i formatowania pieniędzy.
 
 `grounded-option-narrative-prompt-v1` używa wyłącznie profilu `GENERATE`. Strict output

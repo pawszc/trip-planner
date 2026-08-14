@@ -1,8 +1,15 @@
 import type { GroundedOptionContextInput } from '../../srv/narratives/grounded-option-context.ts';
 
 export const groundedOptionContextInput = {
+  tripRequest: {
+    ID: '00000000-0000-4000-8000-000000000001',
+    adults: 2,
+    totalBudget: '6000.00',
+    currency: 'PLN',
+  },
   planningRun: {
     ID: '10000000-0000-4000-8000-000000000001',
+    tripRequest_ID: '00000000-0000-4000-8000-000000000001',
     status: 'SUCCEEDED',
     requestFingerprint: 'a'.repeat(64),
     providerFixtureVersion: 'europe-reference-v1',
@@ -11,7 +18,10 @@ export const groundedOptionContextInput = {
   },
   rankedOption: {
     ID: '20000000-0000-4000-8000-000000000001',
+    tripRequest_ID: '00000000-0000-4000-8000-000000000001',
     planningRun_ID: '10000000-0000-4000-8000-000000000001',
+    providerFixtureVersion: 'europe-reference-v1',
+    scoringVersion: 'candidate-score-v1:selection-v1',
     rank: 1,
     role: 'BEST_OVERALL',
     destinationCode: 'PRG',
@@ -34,11 +44,11 @@ export const groundedOptionContextInput = {
     currency: 'PLN',
     budgetLimitMinor: '600000',
     confirmedAmountMinor: '218000',
-    estimatedAmountMinor: '168000',
+    estimatedAmountMinor: '262600',
     unknownCategoryCount: 0,
-    totalAmountMinor: '424600',
-    costPerPersonMinor: '212300',
-    remainingBudgetMinor: '175400',
+    totalAmountMinor: '480600',
+    costPerPersonMinor: '240300',
+    remainingBudgetMinor: '119400',
     totalScore: '86.40',
     budgetFitScore: '29.23',
     travelTimeScore: '64.58',
@@ -60,9 +70,12 @@ export const groundedOptionContextInput = {
     ] as const
   ).map(([category, priceType, classification, amountMinor], index) => ({
     ID: `30000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    tripRequest_ID: '00000000-0000-4000-8000-000000000001',
     planningRun_ID: '10000000-0000-4000-8000-000000000001',
     rankedOption_ID: '20000000-0000-4000-8000-000000000001',
     sourceSnapshot_ID: '40000000-0000-4000-8000-000000000001',
+    providerFixtureVersion: 'europe-reference-v1',
+    scoringVersion: 'candidate-score-v1:selection-v1',
     category,
     priceType,
     classification,
@@ -72,8 +85,11 @@ export const groundedOptionContextInput = {
   sourceSnapshots: [
     {
       ID: '40000000-0000-4000-8000-000000000001',
+      tripRequest_ID: '00000000-0000-4000-8000-000000000001',
       planningRun_ID: '10000000-0000-4000-8000-000000000001',
       rankedOption_ID: '20000000-0000-4000-8000-000000000001',
+      providerFixtureVersion: 'europe-reference-v1',
+      scoringVersion: 'candidate-score-v1:selection-v1',
       sourceKey: 'fixture:prague-option',
       provider: 'REFERENCE_FIXTURE',
       externalItemId: 'prague-option',

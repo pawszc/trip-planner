@@ -76,6 +76,8 @@ grounded narrative dla wybranej opcji.
   `RankedOption`, z budżetem, provenance oraz jawnymi `UNKNOWN`/`MISSING`;
 - fail-closed mapowanie source contexts dla transportu/noclegu, jawne wersje wewnętrznych
   derivations oraz kodowo formatowane display values, przy zachowaniu minor units jako źródła;
+- zamknięty kontrakt walut `currency-fraction-digits-v1` dla PLN/EUR, pełna zgodność kategorii
+  z agregatem budżetu i fail-closed lineage wersji fixture/scoringu;
 - unikalne fact IDs związane z wersją i exact context fingerprint;
 - wersjonowany prompt `GENERATE` i strict Zod output, w którym każdy blok wymaga niepustych
   referencji rozwiązywanych lokalnie do dokładnego kontekstu;

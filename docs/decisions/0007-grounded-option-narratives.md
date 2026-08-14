@@ -20,9 +20,15 @@ musi więc zachować granicę odczyt → AI z niezależnym audytem → osobny za
 ### GroundedOptionContext i factId
 
 Akcja pracuje wyłącznie na `PlanningRun` ze statusem `SUCCEEDED` i jednej powiązanej
-`RankedOption`. Krótka transakcja odczytu pobiera także jej `BudgetItems` oraz istniejące
-`SourceSnapshots`, po czym kończy się przed wywołaniem gatewaya. Kontekst nie pobiera
+`RankedOption`. Krótka transakcja odczytu pobiera także finansowe pola powiązanego
+`TripRequest`, jej `BudgetItems` oraz istniejące `SourceSnapshots`, po czym kończy się przed
+wywołaniem gatewaya. Kontekst nie pobiera
 swobodnego tekstu użytkownika ani nie pozwala modelowi zmienić opcji.
+
+Reader fail-closed sprawdza, że `providerFixtureVersion` i `scoringVersion` na każdej
+`RankedOption`, każdym `BudgetItem` i każdym `SourceSnapshot` są identyczne z nadrzędnym
+`PlanningRun`. Sprawdza również lineage identyfikatorów TripRequest/PlanningRun/RankedOption.
+Pusty, obcy albo niespójny marker wersji odrzuca cały kontekst przed utworzeniem gatewaya.
 
 `GroundedOptionContext` ma jawną wersję `grounded-option-context-v1`. Fakty opcji,
 budżetu i provenance są stabilnie sortowane, a canonical JSON bez `factId` otrzymuje
@@ -43,8 +49,20 @@ kontekst. Fakty powstałe w kodzie, w tym selection, score i agregat budżetu, n
 się pod źródło zewnętrzne: mają jawny marker `INTERNAL_DETERMINISTIC` i odpowiednią wersję
 silnika, scoringu lub formatowania.
 
-Minor units pozostają finansowym źródłem prawdy. Kod `grounded-money-display-v1` ustala
-precision waluty i bez floating point tworzy jawne wartości display dla limitu, sumy,
+Minor units pozostają finansowym źródłem prawdy. Zamknięty kontrakt
+`currency-fraction-digits-v1` dopuszcza w obecnym modelu `Decimal(13, 2)` wyłącznie `PLN` i
+`EUR` z dwiema cyframi ułamkowymi. Korzystają z niego walidacja briefu, major → minor i kod
+`grounded-money-display-v1`; formatter nie pyta `Intl` o precision. JPY, KWD i nieznane
+kody są odrzucane zamiast reinterpretowania istniejących minor units.
+
+Przed utworzeniem faktów kod sprawdza siedem kategorii, zgodność `priceType` z
+`classification`, jedną walutę, sumy confirmed/estimated, limit z `TripRequest`, total,
+zaokrąglany w górę koszt na osobę i remaining. `unknownCategoryCount` musi dokładnie liczyć
+pozycje `UNKNOWN` i `MISSING`. Przy choć jednej takiej pozycji status agregatu jest
+odpowiednio `UNKNOWN` albo `MISSING`, a total, cost-per-person i remaining muszą być `null`.
+Kontekst z częściowymi kategoriami i kompletnym agregatem jest odrzucany.
+
+Kod `grounded-money-display-v1` bez floating point tworzy jawne wartości display dla limitu, sumy,
 kwot confirmed/estimated, kosztu na osobę i pozostałego budżetu. Kategorie budżetu również
 mają kodowo przygotowane display albo `null`. Model używa tych tekstów verbatim; nie dzieli
 minor units, nie ustala precision i nie formatuje pieniędzy.

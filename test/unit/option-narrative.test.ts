@@ -35,6 +35,22 @@ function removeSourceContext(input: GroundedOptionContextInput, removedContext: 
   }
 }
 
+function makeIncompleteBudget(input: GroundedOptionContextInput): void {
+  const food = input.budgetItems.find((item) => item.category === 'FOOD');
+  if (food === undefined) throw new Error('Missing FOOD fixture.');
+  food.classification = 'UNKNOWN';
+  food.priceType = 'UNKNOWN';
+  food.amountMinor = null;
+  input.budgetItems = input.budgetItems.filter((item) => item.category !== 'ATTRACTIONS');
+  removeSourceContext(input, 'BUDGET:ATTRACTIONS');
+  input.rankedOption.confirmedAmountMinor = '218000';
+  input.rankedOption.estimatedAmountMinor = '70600';
+  input.rankedOption.unknownCategoryCount = 2;
+  input.rankedOption.totalAmountMinor = null;
+  input.rankedOption.costPerPersonMinor = null;
+  input.rankedOption.remainingBudgetMinor = null;
+}
+
 describe('grounded option narrative contract', () => {
   it('creates a versioned GENERATE request without any routing override', () => {
     const context = groundedContext();
@@ -102,13 +118,7 @@ describe('grounded option narrative contract', () => {
 
   it('allows explicit UNKNOWN and MISSING facts to be cited without inventing values', () => {
     const input = contextInput();
-    const food = input.budgetItems.find((item) => item.category === 'FOOD');
-    if (food === undefined) throw new Error('Missing FOOD fixture.');
-    food.classification = 'UNKNOWN';
-    food.priceType = 'UNKNOWN';
-    food.amountMinor = null;
-    input.budgetItems = input.budgetItems.filter((item) => item.category !== 'ATTRACTIONS');
-    removeSourceContext(input, 'BUDGET:ATTRACTIONS');
+    makeIncompleteBudget(input);
     const context = buildGroundedOptionContext(input);
     const unknownFact = context.facts.find((fact) => fact.key === 'option.budget.category.FOOD');
     if (unknownFact === undefined) throw new Error('Missing UNKNOWN fact.');

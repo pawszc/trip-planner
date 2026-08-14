@@ -17,8 +17,16 @@ export type GroundedFactStatus = 'KNOWN' | 'UNKNOWN' | 'MISSING';
 export type IntegerValue = number | string;
 export type DecimalValue = number | string;
 
+export interface GroundedTripRequestRecord {
+  ID: string;
+  adults: number;
+  totalBudget: DecimalValue;
+  currency: string;
+}
+
 export interface GroundedPlanningRunRecord {
   ID: string;
+  tripRequest_ID: string;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
   requestFingerprint: string;
   providerFixtureVersion: string;
@@ -28,7 +36,10 @@ export interface GroundedPlanningRunRecord {
 
 export interface GroundedRankedOptionRecord {
   ID: string;
+  tripRequest_ID: string;
   planningRun_ID: string;
+  providerFixtureVersion: string;
+  scoringVersion: string;
   rank: number;
   role: 'BEST_OVERALL' | 'MOST_CONVENIENT' | 'BEST_VALUE';
   destinationCode: string;
@@ -53,9 +64,9 @@ export interface GroundedRankedOptionRecord {
   confirmedAmountMinor: IntegerValue;
   estimatedAmountMinor: IntegerValue;
   unknownCategoryCount: number;
-  totalAmountMinor: IntegerValue;
-  costPerPersonMinor: IntegerValue;
-  remainingBudgetMinor: IntegerValue;
+  totalAmountMinor: IntegerValue | null;
+  costPerPersonMinor: IntegerValue | null;
+  remainingBudgetMinor: IntegerValue | null;
   totalScore: DecimalValue;
   budgetFitScore: DecimalValue;
   travelTimeScore: DecimalValue;
@@ -68,9 +79,12 @@ export interface GroundedRankedOptionRecord {
 
 export interface GroundedBudgetItemRecord {
   ID: string;
+  tripRequest_ID: string;
   planningRun_ID: string;
   rankedOption_ID: string;
   sourceSnapshot_ID: string | null;
+  providerFixtureVersion: string;
+  scoringVersion: string;
   category: GroundedBudgetCategory;
   priceType: 'LIVE_PRICE' | 'FIXED_PRICE' | 'ESTIMATE' | 'UNKNOWN';
   classification: 'CONFIRMED' | 'ESTIMATED' | 'UNKNOWN';
@@ -80,8 +94,11 @@ export interface GroundedBudgetItemRecord {
 
 export interface GroundedSourceSnapshotRecord {
   ID: string;
+  tripRequest_ID: string;
   planningRun_ID: string;
   rankedOption_ID: string;
+  providerFixtureVersion: string;
+  scoringVersion: string;
   sourceKey: string;
   provider: string;
   externalItemId: string;
@@ -95,6 +112,7 @@ export interface GroundedSourceSnapshotRecord {
 }
 
 export interface GroundedOptionContextInput {
+  tripRequest: GroundedTripRequestRecord;
   planningRun: GroundedPlanningRunRecord;
   rankedOption: GroundedRankedOptionRecord;
   budgetItems: readonly GroundedBudgetItemRecord[];
@@ -105,6 +123,7 @@ export interface GroundedOptionContextInput {
 export type GroundedContextPlanningRun = JsonObject & {
   readonly id: string;
   readonly requestFingerprint: string;
+  readonly currencyContractVersion: string;
   readonly providerFixtureVersion: string;
   readonly engineVersion: string;
   readonly scoringVersion: string;

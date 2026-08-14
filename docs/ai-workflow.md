@@ -43,15 +43,18 @@ schedulera. Narracje są danymi produktu i nie mają mandatory association do `A
 
 ## Grounded narrative w Fazie 3B2
 
-1. Osobna krótka transakcja odczytu pobiera udany `PlanningRun`, jedną `RankedOption`, jej
-   `BudgetItems` oraz `SourceSnapshots`, a następnie kończy się przed AI.
+1. Osobna krótka transakcja odczytu pobiera udany `PlanningRun`, finansowe pola powiązanego
+   `TripRequest`, jedną `RankedOption`, jej `BudgetItems` oraz `SourceSnapshots`, a następnie
+   kończy się przed AI.
 2. Kod buduje `grounded-option-context-v1`, jawnie materializuje `UNKNOWN`/`MISSING`,
    sortuje fakty i tworzy fingerprint canonical JSON. Transport i nocleg dostają dokładne
    source snapshot IDs z persisted source contexts; brak lub wieloznaczność kończy się
-   fail-closed. Code-derived score, selection i agregat budżetu mają jawne wersje derivation.
+   fail-closed. Lineage fixture/scoringu oraz zgodność kategorii z agregatem budżetu są
+   walidowane przed utworzeniem faktów. Code-derived score, selection i agregat budżetu mają
+   jawne wersje derivation.
 3. Każdy fakt otrzymuje deterministyczny `factId` związany z wersją i dokładnym
-   fingerprintem kontekstu. Kod tworzy też display pieniędzy z minor units i precision
-   waluty; model nie dzieli ani nie formatuje kwot.
+   fingerprintem kontekstu. Kod tworzy też display pieniędzy przez zamknięty dwucyfrowy
+   kontrakt PLN/EUR; model nie dzieli ani nie formatuje kwot.
 4. Gateway wybiera wyłącznie profil `GENERATE`, zapisuje durable `STARTED`, wykonuje
    provider call bez transakcji produktu i zapisuje terminalny audit.
 5. Strict Zod wymaga dokładnego fingerprintu oraz niepustych `factReferences` w każdym

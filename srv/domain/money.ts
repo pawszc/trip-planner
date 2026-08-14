@@ -1,3 +1,5 @@
+import { isSupportedCurrency, SUPPORTED_CURRENCY_CODES } from './currency.ts';
+
 /** Jawne pochodzenie ceny lub faktu użytego przez deterministyczny silnik. */
 export const FRESHNESS_TYPE_VALUES = ['LIVE', 'CACHED', 'FIXTURE', 'INTERNAL_RULE'] as const;
 export type FreshnessType = (typeof FRESHNESS_TYPE_VALUES)[number];
@@ -84,10 +86,10 @@ export interface MoneySummary {
 }
 
 function assertCurrency(currency: string): void {
-  if (!/^[A-Z]{3}$/.test(currency)) {
+  if (!isSupportedCurrency(currency)) {
     throw new MoneyError(
       'INVALID_CURRENCY',
-      `Waluta ${currency || '(pusta)'} nie jest trzyliterowym kodem zapisanym wielkimi literami.`,
+      `Waluta ${currency || '(pusta)'} nie jest obsługiwana; dozwolone: ${SUPPORTED_CURRENCY_CODES.join(', ')}.`,
     );
   }
 }

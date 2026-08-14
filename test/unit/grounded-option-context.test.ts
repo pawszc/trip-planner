@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CURRENCY_CONTRACT_VERSION } from '../../srv/domain/currency.ts';
 import {
   GROUNDED_OPTION_CONTEXT_VERSION,
   buildGroundedOptionContext,
@@ -14,6 +15,10 @@ function contextInput(): GroundedOptionContextInput {
   return structuredClone(groundedOptionContextInput);
 }
 
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function removeSourceContext(input: GroundedOptionContextInput, removedContext: string): void {
   for (const source of input.sourceSnapshots) {
     source.contexts = source.contexts
@@ -22,6 +27,22 @@ function removeSourceContext(input: GroundedOptionContextInput, removedContext: 
       .filter((context) => context !== removedContext)
       .join(', ');
   }
+}
+
+function makeIncompleteBudget(input: GroundedOptionContextInput): void {
+  const food = input.budgetItems.find((item) => item.category === 'FOOD');
+  if (food === undefined) throw new Error('The fixture must contain FOOD.');
+  food.classification = 'UNKNOWN';
+  food.priceType = 'UNKNOWN';
+  food.amountMinor = null;
+  input.budgetItems = input.budgetItems.filter((item) => item.category !== 'ATTRACTIONS');
+  removeSourceContext(input, 'BUDGET:ATTRACTIONS');
+  input.rankedOption.confirmedAmountMinor = '218000';
+  input.rankedOption.estimatedAmountMinor = '70600';
+  input.rankedOption.unknownCategoryCount = 2;
+  input.rankedOption.totalAmountMinor = null;
+  input.rankedOption.costPerPersonMinor = null;
+  input.rankedOption.remainingBudgetMinor = null;
 }
 
 describe('GroundedOptionContext', () => {
@@ -35,6 +56,7 @@ describe('GroundedOptionContext', () => {
       planningRun: {
         id: groundedOptionContextInput.planningRun.ID,
         requestFingerprint: groundedOptionContextInput.planningRun.requestFingerprint,
+        currencyContractVersion: CURRENCY_CONTRACT_VERSION,
         providerFixtureVersion: 'europe-reference-v1',
         engineVersion: 'candidate-engine-v1',
         scoringVersion: 'candidate-score-v1:selection-v1',
@@ -46,7 +68,7 @@ describe('GroundedOptionContext', () => {
       },
     });
     expect(first.fingerprint).toBe(
-      '5a7f35d57f09e6e57a1032b28df4bd59075b4e391eeb8a11f81ca09baf284bfb',
+      '47285ff5164a6534f1cf01a2c54dd1c88d92f1945fd796ff3482adab0b5869ae',
     );
     expect(first.facts.map((fact) => fact.key)).toEqual([
       'option.accommodation',
@@ -89,22 +111,23 @@ describe('GroundedOptionContext', () => {
       sourceSnapshotIds: [],
       internalDerivation: {
         kind: 'INTERNAL_DETERMINISTIC',
-        version: `candidate-engine-v1:${GROUNDED_MONEY_DISPLAY_VERSION}`,
+        version: `candidate-engine-v1:${GROUNDED_MONEY_DISPLAY_VERSION}:${CURRENCY_CONTRACT_VERSION}`,
       },
       value: {
+        currencyContractVersion: CURRENCY_CONTRACT_VERSION,
         moneyDisplayVersion: GROUNDED_MONEY_DISPLAY_VERSION,
         budgetLimitMinor: '600000',
         budgetLimitDisplay: '6,000.00 PLN',
         confirmedAmountMinor: '218000',
         confirmedAmountDisplay: '2,180.00 PLN',
-        estimatedAmountMinor: '168000',
-        estimatedAmountDisplay: '1,680.00 PLN',
-        totalAmountMinor: '424600',
-        totalAmountDisplay: '4,246.00 PLN',
-        costPerPersonMinor: '212300',
-        costPerPersonDisplay: '2,123.00 PLN',
-        remainingBudgetMinor: '175400',
-        remainingBudgetDisplay: '1,754.00 PLN',
+        estimatedAmountMinor: '262600',
+        estimatedAmountDisplay: '2,626.00 PLN',
+        totalAmountMinor: '480600',
+        totalAmountDisplay: '4,806.00 PLN',
+        costPerPersonMinor: '240300',
+        costPerPersonDisplay: '2,403.00 PLN',
+        remainingBudgetMinor: '119400',
+        remainingBudgetDisplay: '1,194.00 PLN',
       },
     });
     expect(score).toMatchObject({
@@ -118,10 +141,17 @@ describe('GroundedOptionContext', () => {
 
   it('formats currency precision deterministically in code without floating-point money', () => {
     expect(formatGroundedMoney('123456', 'PLN', 'test.pln')).toBe('1,234.56 PLN');
-    expect(formatGroundedMoney('1234', 'JPY', 'test.jpy')).toBe('1,234 JPY');
-    expect(formatGroundedMoney('1234', 'KWD', 'test.kwd')).toBe('1.234 KWD');
+    expect(formatGroundedMoney('123456', 'EUR', 'test.eur')).toBe('1,234.56 EUR');
     expect(formatGroundedMoney('-45', 'PLN', 'test.negative')).toBe('-0.45 PLN');
     expect(formatGroundedMoney(null, 'PLN', 'test.unknown')).toBeNull();
+    for (const currency of ['JPY', 'KWD', 'USD', 'ZZZ']) {
+      expect(() => formatGroundedMoney('1234', currency, `test.${currency}`)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_GROUNDED_OPTION_CONTEXT' }),
+      );
+      expect(() => formatGroundedMoney(null, currency, `test.${currency}.unknown`)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_GROUNDED_OPTION_CONTEXT' }),
+      );
+    }
   });
 
   it('changes the fingerprint and every fact ID when the exact context changes', () => {
@@ -152,17 +182,12 @@ describe('GroundedOptionContext', () => {
 
   it('keeps UNKNOWN and missing budget positions explicit and gives each a fact ID', () => {
     const input = contextInput();
-    const food = input.budgetItems.find((item) => item.category === 'FOOD');
-    if (food === undefined) throw new Error('The fixture must contain FOOD.');
-    food.classification = 'UNKNOWN';
-    food.priceType = 'UNKNOWN';
-    food.amountMinor = null;
-    input.budgetItems = input.budgetItems.filter((item) => item.category !== 'ATTRACTIONS');
-    removeSourceContext(input, 'BUDGET:ATTRACTIONS');
+    makeIncompleteBudget(input);
 
     const context = buildGroundedOptionContext(input);
     const unknown = context.facts.find((fact) => fact.key === 'option.budget.category.FOOD');
     const missing = context.facts.find((fact) => fact.key === 'option.budget.category.ATTRACTIONS');
+    const summary = context.facts.find((fact) => fact.key === 'option.budget.summary');
 
     expect(unknown).toMatchObject({
       status: 'UNKNOWN',
@@ -180,8 +205,215 @@ describe('GroundedOptionContext', () => {
       sourceSnapshotIds: [],
       internalDerivation: null,
     });
+    expect(summary).toMatchObject({
+      status: 'MISSING',
+      value: {
+        confirmedAmountMinor: '218000',
+        estimatedAmountMinor: '70600',
+        unknownCategoryCount: 2,
+        totalAmountMinor: null,
+        totalAmountDisplay: null,
+        costPerPersonMinor: null,
+        costPerPersonDisplay: null,
+        remainingBudgetMinor: null,
+        remainingBudgetDisplay: null,
+      },
+    });
     expect(unknown?.factId).toMatch(/^fact_[0-9a-f]{64}$/);
     expect(missing?.factId).toMatch(/^fact_[0-9a-f]{64}$/);
+  });
+
+  it('keeps complete category facts and the aggregate financially self-consistent', () => {
+    const input = contextInput();
+    const context = buildGroundedOptionContext(input);
+    const categoryFacts = context.facts.filter((fact) =>
+      fact.key.startsWith('option.budget.category.'),
+    );
+    const summary = context.facts.find((fact) => fact.key === 'option.budget.summary');
+
+    expect(categoryFacts).toHaveLength(7);
+    expect(categoryFacts.every((fact) => fact.status === 'KNOWN')).toBe(true);
+    expect(
+      categoryFacts.every(
+        (fact) =>
+          isRecord(fact.value) &&
+          fact.value.currency === 'PLN' &&
+          fact.value.currencyContractVersion === CURRENCY_CONTRACT_VERSION,
+      ),
+    ).toBe(true);
+    expect(
+      input.budgetItems.every((item) =>
+        item.priceType === 'ESTIMATE'
+          ? item.classification === 'ESTIMATED'
+          : item.classification === 'CONFIRMED',
+      ),
+    ).toBe(true);
+
+    const confirmed = input.budgetItems
+      .filter((item) => item.classification === 'CONFIRMED')
+      .reduce((sum, item) => sum + BigInt(String(item.amountMinor)), 0n);
+    const estimated = input.budgetItems
+      .filter((item) => item.classification === 'ESTIMATED')
+      .reduce((sum, item) => sum + BigInt(String(item.amountMinor)), 0n);
+    expect(summary).toMatchObject({
+      status: 'KNOWN',
+      value: {
+        confirmedAmountMinor: confirmed.toString(),
+        estimatedAmountMinor: estimated.toString(),
+        unknownCategoryCount: 0,
+        totalAmountMinor: (confirmed + estimated).toString(),
+        costPerPersonMinor: ((confirmed + estimated + 1n) / 2n).toString(),
+        remainingBudgetMinor: (600_000n - confirmed - estimated).toString(),
+      },
+    });
+  });
+
+  it('marks an otherwise complete budget UNKNOWN and nulls complete aggregates', () => {
+    const input = contextInput();
+    const food = input.budgetItems.find((item) => item.category === 'FOOD');
+    if (food === undefined) throw new Error('The fixture must contain FOOD.');
+    food.priceType = 'UNKNOWN';
+    food.classification = 'UNKNOWN';
+    food.amountMinor = null;
+    input.rankedOption.estimatedAmountMinor = '134600';
+    input.rankedOption.unknownCategoryCount = 1;
+    input.rankedOption.totalAmountMinor = null;
+    input.rankedOption.costPerPersonMinor = null;
+    input.rankedOption.remainingBudgetMinor = null;
+
+    const summary = buildGroundedOptionContext(input).facts.find(
+      (fact) => fact.key === 'option.budget.summary',
+    );
+    expect(summary).toMatchObject({
+      status: 'UNKNOWN',
+      value: {
+        estimatedAmountMinor: '134600',
+        unknownCategoryCount: 1,
+        totalAmountMinor: null,
+        costPerPersonMinor: null,
+        remainingBudgetMinor: null,
+      },
+    });
+  });
+
+  it.each([
+    [
+      'category arithmetic',
+      (input: GroundedOptionContextInput) => {
+        input.rankedOption.confirmedAmountMinor = '218001';
+      },
+    ],
+    [
+      'cost-per-person arithmetic',
+      (input: GroundedOptionContextInput) => {
+        input.rankedOption.costPerPersonMinor = '240301';
+      },
+    ],
+    [
+      'remaining-budget arithmetic',
+      (input: GroundedOptionContextInput) => {
+        input.rankedOption.remainingBudgetMinor = '119401';
+      },
+    ],
+    [
+      'price classification',
+      (input: GroundedOptionContextInput) => {
+        input.budgetItems[3]!.classification = 'CONFIRMED';
+      },
+    ],
+    [
+      'category currency',
+      (input: GroundedOptionContextInput) => {
+        input.budgetItems[3]!.currency = 'EUR';
+      },
+    ],
+    [
+      'known aggregates beside UNKNOWN',
+      (input: GroundedOptionContextInput) => {
+        const food = input.budgetItems.find((item) => item.category === 'FOOD')!;
+        food.priceType = 'UNKNOWN';
+        food.classification = 'UNKNOWN';
+        food.amountMinor = null;
+        input.rankedOption.estimatedAmountMinor = '134600';
+        input.rankedOption.unknownCategoryCount = 1;
+      },
+    ],
+    [
+      'incorrect incomplete count',
+      (input: GroundedOptionContextInput) => {
+        makeIncompleteBudget(input);
+        input.rankedOption.unknownCategoryCount = 1;
+      },
+    ],
+    [
+      'request budget limit',
+      (input: GroundedOptionContextInput) => {
+        input.tripRequest.totalBudget = '6000.01';
+      },
+    ],
+  ])('fails closed for inconsistent grounded budget %s', (_case, corrupt) => {
+    const input = contextInput();
+    corrupt(input);
+    expect(() => buildGroundedOptionContext(input)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_GROUNDED_OPTION_CONTEXT' }),
+    );
+  });
+
+  it.each([
+    [
+      'empty PlanningRun provider fixture version',
+      (input: GroundedOptionContextInput) => {
+        input.planningRun.providerFixtureVersion = ' ';
+      },
+    ],
+    [
+      'RankedOption provider fixture version',
+      (input: GroundedOptionContextInput) => {
+        input.rankedOption.providerFixtureVersion = 'other-fixture';
+      },
+    ],
+    [
+      'BudgetItem provider fixture version',
+      (input: GroundedOptionContextInput) => {
+        input.budgetItems[0]!.providerFixtureVersion = 'other-fixture';
+      },
+    ],
+    [
+      'SourceSnapshot provider fixture version',
+      (input: GroundedOptionContextInput) => {
+        input.sourceSnapshots[0]!.providerFixtureVersion = 'other-fixture';
+      },
+    ],
+    [
+      'empty PlanningRun scoring version',
+      (input: GroundedOptionContextInput) => {
+        input.planningRun.scoringVersion = ' ';
+      },
+    ],
+    [
+      'RankedOption scoring version',
+      (input: GroundedOptionContextInput) => {
+        input.rankedOption.scoringVersion = 'other-score';
+      },
+    ],
+    [
+      'BudgetItem scoring version',
+      (input: GroundedOptionContextInput) => {
+        input.budgetItems[0]!.scoringVersion = 'other-score';
+      },
+    ],
+    [
+      'SourceSnapshot scoring version',
+      (input: GroundedOptionContextInput) => {
+        input.sourceSnapshots[0]!.scoringVersion = 'other-score';
+      },
+    ],
+  ])('fails closed for inconsistent version lineage: %s', (_case, corrupt) => {
+    const input = contextInput();
+    corrupt(input);
+    expect(() => buildGroundedOptionContext(input)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_GROUNDED_OPTION_CONTEXT' }),
+    );
   });
 
   it('rejects records linked to another planning context instead of silently dropping them', () => {

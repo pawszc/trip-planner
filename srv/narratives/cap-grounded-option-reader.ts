@@ -7,8 +7,10 @@ import {
   type GroundedPlanningRunRecord,
   type GroundedRankedOptionRecord,
   type GroundedSourceSnapshotRecord,
+  type GroundedTripRequestRecord,
 } from './grounded-option-context.ts';
 
+const TRIP_REQUEST_ENTITY = 'trip.planner.TripRequests';
 const PLANNING_RUN_ENTITY = 'trip.planner.PlanningRuns';
 const RANKED_OPTION_ENTITY = 'trip.planner.RankedOptions';
 const BUDGET_ITEM_ENTITY = 'trip.planner.BudgetItems';
@@ -61,6 +63,16 @@ export class CapGroundedOptionReader {
         );
       }
 
+      const tripRequest = (await transaction.run(
+        cds.ql.SELECT.one.from(TRIP_REQUEST_ENTITY).where({ ID: planningRun.tripRequest_ID }),
+      )) as GroundedTripRequestRecord | undefined;
+      if (tripRequest === undefined) {
+        throw new DomainError(
+          'INVALID_GROUNDED_OPTION_CONTEXT',
+          'PlanningRun nie ma powiązanego briefu do walidacji finansowej.',
+        );
+      }
+
       const budgetItems = (await transaction.run(
         cds.ql.SELECT.from(BUDGET_ITEM_ENTITY).where({
           planningRun_ID: planningRun.ID,
@@ -75,6 +87,7 @@ export class CapGroundedOptionReader {
       )) as GroundedSourceSnapshotRecord[];
 
       return buildGroundedOptionContext({
+        tripRequest,
         planningRun,
         rankedOption,
         budgetItems,

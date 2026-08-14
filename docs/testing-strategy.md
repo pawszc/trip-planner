@@ -13,7 +13,8 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - 13 kodów odrzucenia, wiele powodów, deduplikację i granice buildera;
 - komponenty score, stabilny tie-breaker i diversity selection;
 - kontrolowany niedobór dwóch lub zera opcji;
-- dokładną konwersję major → minor units bez arytmetyki floating point;
+- dokładną konwersję major → minor units przez zamknięty `currency-fraction-digits-v1`,
+  akceptację PLN/EUR i odrzucenie JPY/KWD/nieznanych kodów;
 - mapowanie awarii providera na kontrolowany kod bez ujawnienia jego komunikatu.
 - task-aware profile `DECIDE`/`GENERATE`/`JUDGE`, migrację aliasów, walidację effort,
   task-specific limity, obowiązkowy model po zmianie providera i blokadę `AI_DISABLED`
@@ -28,8 +29,12 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   unikalne fact IDs oraz zmianę wszystkich identyfikatorów po zmianie exact context;
 - jawne fakty `UNKNOWN` i `MISSING` bez uzupełniania wartości oraz ich poprawne użycie jako
   celów referencji;
-- deterministyczne display values z minor units dla precision PLN/JPY/KWD oraz `null` dla
-  kwot `UNKNOWN`/`MISSING`;
+- deterministyczne dwucyfrowe display values z minor units dla PLN/EUR, odrzucenie
+  JPY/KWD/nieznanych kodów oraz `null` dla kwot `UNKNOWN`/`MISSING`;
+- zgodność siedmiu kategorii budżetu z klasyfikacjami, walutą, partial sums,
+  `unknownCategoryCount`, statusem agregatu, total, per-person i remaining;
+- fail-closed lineage `providerFixtureVersion` i `scoringVersion` pomiędzy `PlanningRun`,
+  `RankedOption`, `BudgetItems` i `SourceSnapshots`;
 - rozwiązywalne source snapshot IDs transportu/noclegu, jawne wersje internal derivations i
   fail-closed dla dangling lub ambiguous source-context mappings;
 - strict schema narracji, niepuste `factReferences`, exact context fingerprint i odrzucenie
@@ -59,6 +64,8 @@ sprawdza między innymi:
 - 22 odrzuconych kandydatów, szczegóły i 13 grup kodów;
 - znormalizowane `SourceSnapshots`, `BudgetBreakdowns` i 7 `BudgetItems` na opcję;
 - zgodność sum confirmed/estimated/unknown z agregatem karty;
+- akceptację PLN/EUR przez pełny przepływ CAP i odrzucenie JPY/KWD/nieznanych kodów przed
+  persistence; EUR przechodzi również przez grounded narrative i kodowy display;
 - idempotentne ponowne wywołanie bez duplikatów;
 - dwa równoległe wywołania `startPlanning` koaleskowane do jednego pipeline'u i runu;
 - kontrolowany niedobór z diagnostyką i zerem częściowych opcji;

@@ -5,6 +5,7 @@ import type {
   RejectionReason,
   TripCandidate,
 } from '../domain/candidate.ts';
+import { isSupportedCurrency } from '../domain/currency.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import { PACE_VALUES } from '../domain/trip-request.ts';
 import type {
@@ -69,7 +70,7 @@ export function assertPlanningContext(context: PlanningContext): void {
     context.adults > 0 &&
     Number.isSafeInteger(context.totalBudgetMinor) &&
     context.totalBudgetMinor > 0 &&
-    /^[A-Z]{3}$/.test(context.currency) &&
+    isSupportedCurrency(context.currency) &&
     start !== null &&
     end !== null &&
     end > start &&

@@ -67,7 +67,11 @@ udanej opcji, jej kategorii budżetu i źródeł. Każdy fakt — także jawny `
 `MISSING` — ma deterministyczny identyfikator związany z dokładnym fingerprintem kontekstu.
 Transport i nocleg wskazują rozwiązywalne `SourceSnapshot`, a code-derived score, selection
 i agregaty budżetu mają jawne wersje `INTERNAL_DETERMINISTIC`. Kod przygotowuje też display
-kwot z minor units i precision waluty; model nie dzieli ani nie formatuje pieniędzy.
+kwot z minor units. Zamknięty `currency-fraction-digits-v1` współdzielony przez walidację,
+major → minor i display dopuszcza obecnie PLN/EUR z dwiema cyframi; JPY, KWD i nieznane kody
+są odrzucane. Kategorie budżetu, klasyfikacje, sumy i status agregatu są walidowane
+fail-closed, podobnie jak lineage wersji fixture/scoringu na wszystkich rekordach opcji.
+Model nie dzieli ani nie formatuje pieniędzy.
 Strict output wymaga exact context fingerprint i niepustych `factReferences` każdego bloku;
 nieznany, pusty, nieaktualny albo obcy identyfikator odrzuca cały output przed persistence.
 
