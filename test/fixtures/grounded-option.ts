@@ -82,7 +82,8 @@ export const groundedOptionContextInput = {
       freshnessType: 'FIXTURE',
       currency: 'PLN',
       fixtureVersion: 'europe-reference-v1',
-      contexts: 'TRANSPORT_FACT, ACCOMMODATION_FACT, BUDGET:TRANSPORT',
+      contexts:
+        'TRANSPORT_FACT, ACCOMMODATION_FACT, BUDGET:TRANSPORT, BUDGET:ACCOMMODATION, BUDGET:LOCAL_TRANSPORT, BUDGET:FOOD, BUDGET:ATTRACTIONS, BUDGET:ADDITIONAL_FEES, BUDGET:BUFFER',
       demonstrationData: true,
     },
   ],

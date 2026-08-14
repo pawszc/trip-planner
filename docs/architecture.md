@@ -167,7 +167,8 @@ Projekcje tylko do odczytu: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions
 `tripRequest_ID` albo `planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników.
 
 `NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences` są projekcjami tylko do
-odczytu. Pokazują bezpieczny `aiRunId`, ale nie publikują wewnętrznej encji `AiRuns`.
+odczytu. `NarrativeRuns` pokazuje bezpieczny historyczny `aiRunId`, a rekordy potomne
+dziedziczą linkage przez `NarrativeRuns`; serwis nie publikuje wewnętrznej encji `AiRuns`.
 
 ## Deterministyczny rdzeń i AI execution
 
@@ -202,16 +203,19 @@ niezależnej transakcji CAP. Brak zapisu blokuje wykonanie albo zwrot wyniku i k
 Recorder jest obowiązkową zależnością `AiGateway`; jawna factory persistent składa oba
 adaptery, `PersistentAiRunRecorder` i `CapAiRunStore`. Test CAP + SQLite wykazał circular
 wait, gdy niezależny audit był uruchamiany po rozpoczęciu requestowej transakcji DB.
-Store odrzuca taki układ przed adapterem. Przyszły use case 3B2 musi zakończyć krótki odczyt,
-wykonać `STARTED → adapter → terminalny audit` bez otwartej transakcji DB, a dopiero potem
-otworzyć osobny krótki zapis produktu. Test potwierdza committed `STARTED` przed adapterem
+Store odrzuca taki układ przed adapterem. Use case 3B2 kończy krótki odczyt,
+wykonuje `STARTED → adapter → terminalny audit` bez otwartej transakcji DB, a dopiero potem
+otwiera osobny krótki zapis produktu. Test potwierdza committed `STARTED` przed adapterem
 oraz przetrwanie terminalnego audytu po rollbacku późniejszego zapisu produktu.
 
 Wewnętrzne `AiRuns` przechowuje provider/task, oba modele, wersje, fingerprint, timestamps,
 usage, latency, attempts, refusal i kontrolowany błąd. Nie zapisuje promptów, wejść, wyjść,
 raw responses, raw errors, nagłówków ani sekretów i nie jest publikowane w
 `TripPlannerService`. Domyślny `expiresAt` wynosi 30 dni. Cleanup ma kontrakt
-`deleteExpired(now)`, ale Faza 3B1 nie dodaje schedulera.
+`deleteExpired(now)`, ale nie ma schedulera. `AiRuns` jest efemerycznym audytem. Narracje są
+danymi produktu i po dokładnej walidacji terminalnego audytu przechowują tylko scalar UUID,
+bez foreign key blokującego cleanup. Test CAP/SQLite potwierdza usunięcie wygasłego `AiRun`
+oraz dalszą spójność i czytelność narracji.
 
 ### Grounded option narratives
 
@@ -219,7 +223,15 @@ Krótki root transaction odczytuje udany `PlanningRun`, jedną `RankedOption`, j
 `BudgetItems` i `SourceSnapshots`, po czym kończy się przed AI. Kontekst
 `grounded-option-context-v1` stabilnie sortuje fakty i tworzy fingerprint canonical JSON.
 Każdy fakt, w tym jawny `UNKNOWN` lub `MISSING`, otrzymuje deterministyczny
-`fact_<sha256>` związany z wersją i dokładnym fingerprintem.
+`fact_<sha256>` związany z wersją i dokładnym fingerprintem. Transport i nocleg wskazują
+dokładne `SourceSnapshot` znalezione przez persisted source contexts; dangling lub
+wieloznaczne mapowanie jest odrzucane. Selection, score i agregaty budżetu są oznaczone jako
+wersjonowane derivations `INTERNAL_DETERMINISTIC`.
+
+Minor units pozostają źródłem prawdy. `grounded-money-display-v1` przygotowuje w kodzie
+human-readable wartości limitu, total, confirmed, estimated, per-person i remaining z
+właściwą precision waluty. `UNKNOWN` i `MISSING` nie dostają wymyślonej kwoty. Prompt
+zabrania modelowi dzielenia minor units, ustalania precision i formatowania pieniędzy.
 
 `grounded-option-narrative-prompt-v1` używa wyłącznie profilu `GENERATE`. Strict output
 wymaga exact context fingerprint i niepustych `factReferences` każdego bloku. Lokalny
@@ -227,10 +239,13 @@ validator odrzuca cały output z pustym, nieznanym, nieaktualnym lub obcym fact 
 nie filtruje częściowo. Referencja zapewnia traceability, ale bez `JUDGE` nie jest jeszcze
 semantycznym dowodem zgodności tekstu z faktem.
 
-Po trwałym `SUCCEEDED` gatewaya osobna transakcja zapisuje `NarrativeRuns`, bloki
-`OptionNarratives` i znormalizowane `NarrativeFactReferences`. Każdy rekord ma linkage do
-`PlanningRun`, `RankedOption` i dokładnego `AiRun`. Awaria AI, audytu, walidacji albo zapisu
-nie zmienia deterministycznych opcji. Rollback product write nie usuwa audytu.
+Po trwałym `SUCCEEDED` gatewaya writer jeszcze raz sprawdza istnienie audytu, terminalny
+status oraz exact planning run/task/prompt/schema/input fingerprint. Osobna transakcja
+zapisuje `NarrativeRuns`, bloki `OptionNarratives` i znormalizowane
+`NarrativeFactReferences`. `NarrativeRuns.aiRunId` jest niezmiennym historycznym scalarem;
+potomkowie nie duplikują powiązania. Awaria AI, audytu, walidacji albo zapisu nie zmienia
+deterministycznych opcji. Rollback product write nie usuwa audytu, a cleanup audytu nie
+usuwa danych produktu.
 
 Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline i evale.
 

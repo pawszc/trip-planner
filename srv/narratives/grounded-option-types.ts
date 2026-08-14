@@ -130,12 +130,18 @@ export type GroundedSourceSnapshot = JsonObject & {
   readonly demonstrationData: boolean;
 };
 
+export type GroundedInternalDerivation = JsonObject & {
+  readonly kind: 'INTERNAL_DETERMINISTIC';
+  readonly version: string;
+};
+
 export type GroundedFact = JsonObject & {
   readonly factId: string;
   readonly key: string;
   readonly status: GroundedFactStatus;
   readonly value: JsonValue;
   readonly sourceSnapshotIds: readonly string[];
+  readonly internalDerivation: GroundedInternalDerivation | null;
 };
 
 export type GroundedFactDraft = JsonObject & {
@@ -143,6 +149,7 @@ export type GroundedFactDraft = JsonObject & {
   readonly status: GroundedFactStatus;
   readonly value: JsonValue;
   readonly sourceSnapshotIds: readonly string[];
+  readonly internalDerivation: GroundedInternalDerivation | null;
 };
 
 export type GroundedOptionContext = JsonObject & {

@@ -25,6 +25,16 @@ function contextInput(): GroundedOptionContextInput {
   return structuredClone(groundedOptionContextInput);
 }
 
+function removeSourceContext(input: GroundedOptionContextInput, removedContext: string): void {
+  for (const source of input.sourceSnapshots) {
+    source.contexts = source.contexts
+      .split(',')
+      .map((context) => context.trim())
+      .filter((context) => context !== removedContext)
+      .join(', ');
+  }
+}
+
 describe('grounded option narrative contract', () => {
   it('creates a versioned GENERATE request without any routing override', () => {
     const context = groundedContext();
@@ -42,6 +52,8 @@ describe('grounded option narrative contract', () => {
     expect(request).not.toHaveProperty('model');
     expect(request).not.toHaveProperty('effort');
     expect(request.instructions).toContain('Never calculate');
+    expect(request.instructions).toContain('Never divide minor units');
+    expect(request.instructions).toContain('display values');
     expect(request.instructions).toContain('UNKNOWN and MISSING');
   });
 
@@ -96,6 +108,7 @@ describe('grounded option narrative contract', () => {
     food.priceType = 'UNKNOWN';
     food.amountMinor = null;
     input.budgetItems = input.budgetItems.filter((item) => item.category !== 'ATTRACTIONS');
+    removeSourceContext(input, 'BUDGET:ATTRACTIONS');
     const context = buildGroundedOptionContext(input);
     const unknownFact = context.facts.find((fact) => fact.key === 'option.budget.category.FOOD');
     if (unknownFact === undefined) throw new Error('Missing UNKNOWN fact.');
@@ -237,7 +250,7 @@ describe('grounded option narrative contract', () => {
       ID: '50000000-0000-4000-8000-000000000001',
       planningRun_ID: context.planningRun.id,
       rankedOption_ID: context.rankedOption.id,
-      aiRun_ID: aiRunId,
+      aiRunId,
       status: 'SUCCEEDED',
       contextVersion: context.version,
       contextFingerprint: context.fingerprint,
@@ -247,8 +260,10 @@ describe('grounded option narrative contract', () => {
     });
     expect(bundle.optionNarratives).toHaveLength(1);
     expect(bundle.factReferences).toMatchObject([
-      { sequence: 1, factId: firstFact.factId, aiRun_ID: aiRunId },
-      { sequence: 2, factId: secondFact.factId, aiRun_ID: aiRunId },
+      { sequence: 1, factId: firstFact.factId },
+      { sequence: 2, factId: secondFact.factId },
     ]);
+    expect(bundle.optionNarratives[0]).not.toHaveProperty('aiRun_ID');
+    expect(bundle.factReferences.every((reference) => !('aiRun_ID' in reference))).toBe(true);
   });
 });

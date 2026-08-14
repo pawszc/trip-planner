@@ -13,7 +13,7 @@ export interface NarrativeRunRecord {
   ID: string;
   planningRun_ID: string;
   rankedOption_ID: string;
-  aiRun_ID: string;
+  aiRunId: string;
   status: 'SUCCEEDED';
   contextVersion: string;
   contextFingerprint: string;
@@ -28,7 +28,6 @@ export interface OptionNarrativeRecord {
   narrativeRun_ID: string;
   planningRun_ID: string;
   rankedOption_ID: string;
-  aiRun_ID: string;
   sequence: number;
   kind: 'SUMMARY' | 'ADVANTAGE' | 'TRADEOFF' | 'RISK';
   text: string;
@@ -40,7 +39,6 @@ export interface NarrativeFactReferenceRecord {
   optionNarrative_ID: string;
   planningRun_ID: string;
   rankedOption_ID: string;
-  aiRun_ID: string;
   sequence: number;
   factId: string;
 }
@@ -96,7 +94,6 @@ export function buildNarrativePersistenceBundle(
     narrativeRun_ID: narrativeRunId,
     planningRun_ID: input.context.planningRun.id,
     rankedOption_ID: input.context.rankedOption.id,
-    aiRun_ID: input.aiRunId,
   } as const;
 
   const optionNarratives: OptionNarrativeRecord[] = [];
@@ -135,7 +132,7 @@ export function buildNarrativePersistenceBundle(
       ID: narrativeRunId,
       planningRun_ID: input.context.planningRun.id,
       rankedOption_ID: input.context.rankedOption.id,
-      aiRun_ID: input.aiRunId,
+      aiRunId: input.aiRunId,
       status: 'SUCCEEDED',
       contextVersion: input.context.version,
       contextFingerprint: input.context.fingerprint,

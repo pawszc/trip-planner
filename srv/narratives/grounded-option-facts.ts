@@ -9,17 +9,24 @@ import {
   type GroundedContextRankedOption,
   type GroundedFactDraft,
   type GroundedFactStatus,
+  type GroundedInternalDerivation,
   type GroundedOptionContextInput,
   type GroundedRankedOptionRecord,
   type GroundedSourceSnapshot,
   type IntegerValue,
 } from './grounded-option-types.ts';
+import { formatGroundedMoney, GROUNDED_MONEY_DISPLAY_VERSION } from './grounded-money-display.ts';
 
 export interface GroundedContextComponents {
   planningRun: GroundedContextPlanningRun;
   rankedOption: GroundedContextRankedOption;
   sourceSnapshots: readonly GroundedSourceSnapshot[];
   factDrafts: readonly GroundedFactDraft[];
+}
+
+interface NormalizedSources {
+  sourceSnapshots: readonly GroundedSourceSnapshot[];
+  sourceIdsByContext: ReadonlyMap<string, readonly string[]>;
 }
 
 export function invalidGroundedContext(message: string): never {
@@ -60,15 +67,37 @@ function requireNonNegativeInteger(value: number, field: string): number {
 function knownFact(
   key: string,
   value: JsonValue,
-  sourceSnapshotIds: readonly string[] = [],
+  options: {
+    sourceSnapshotIds?: readonly string[];
+    internalDerivation?: GroundedInternalDerivation;
+  } = {},
 ): GroundedFactDraft {
-  return { key, status: 'KNOWN', value, sourceSnapshotIds };
+  return {
+    key,
+    status: 'KNOWN',
+    value,
+    sourceSnapshotIds: options.sourceSnapshotIds ?? [],
+    internalDerivation: options.internalDerivation ?? null,
+  };
 }
 
-function normalizeSources(input: GroundedOptionContextInput): readonly GroundedSourceSnapshot[] {
+function normalizeSourceContexts(value: string, field: string): readonly string[] {
+  const contexts = value
+    .split(',')
+    .map((context) => context.trim())
+    .filter((context) => context.length > 0)
+    .sort((left, right) => left.localeCompare(right, 'en'));
+  if (contexts.length === 0 || new Set(contexts).size !== contexts.length) {
+    invalidGroundedContext(`Grounded context field ${field} has invalid source contexts.`);
+  }
+  return contexts;
+}
+
+function normalizeSources(input: GroundedOptionContextInput): NormalizedSources {
   const seenIds = new Set<string>();
   const seenKeys = new Set<string>();
-  return [...input.sourceSnapshots]
+  const sourceContexts = new Map<string, string[]>();
+  const sourceSnapshots = [...input.sourceSnapshots]
     .sort(
       (left, right) =>
         left.sourceKey.localeCompare(right.sourceKey, 'en') ||
@@ -90,6 +119,15 @@ function normalizeSources(input: GroundedOptionContextInput): readonly GroundedS
       }
       seenIds.add(id);
       seenKeys.add(sourceKey);
+      const contexts = normalizeSourceContexts(
+        requireGroundedText(source.contexts, 'sourceSnapshots.contexts'),
+        `sourceSnapshots.${sourceKey}.contexts`,
+      );
+      for (const context of contexts) {
+        const sourceIds = sourceContexts.get(context) ?? [];
+        sourceIds.push(id);
+        sourceContexts.set(context, sourceIds);
+      }
       return {
         id,
         sourceKey,
@@ -106,18 +144,88 @@ function normalizeSources(input: GroundedOptionContextInput): readonly GroundedS
           source.fixtureVersion,
           'sourceSnapshots.fixtureVersion',
         ),
-        contexts: requireGroundedText(source.contexts, 'sourceSnapshots.contexts'),
+        contexts: contexts.join(', '),
         demonstrationData: source.demonstrationData,
       } satisfies GroundedSourceSnapshot;
     });
+  const sourceIdsByContext = new Map(
+    [...sourceContexts.entries()].map(([context, sourceIds]) => [
+      context,
+      [...sourceIds].sort((left, right) => left.localeCompare(right, 'en')),
+    ]),
+  );
+  return { sourceSnapshots, sourceIdsByContext };
 }
 
-function createOptionFacts(option: GroundedRankedOptionRecord): readonly GroundedFactDraft[] {
+function internalDerivation(version: string, field: string): GroundedInternalDerivation {
+  return {
+    kind: 'INTERNAL_DETERMINISTIC',
+    version: requireGroundedText(version, field),
+  };
+}
+
+function requireSingleExternalSource(
+  sources: NormalizedSources,
+  context: 'TRANSPORT_FACT' | 'ACCOMMODATION_FACT',
+): string {
+  const sourceIds = sources.sourceIdsByContext.get(context) ?? [];
+  if (sourceIds.length !== 1) {
+    invalidGroundedContext(
+      sourceIds.length === 0
+        ? `Grounded context has no source snapshot for ${context}.`
+        : `Grounded context has ambiguous source snapshots for ${context}.`,
+    );
+  }
+  const sourceId = sourceIds[0]!;
+  const source = sources.sourceSnapshots.find((candidate) => candidate.id === sourceId);
+  if (source === undefined || source.freshnessType === 'INTERNAL_RULE') {
+    invalidGroundedContext(`Grounded context has no external source snapshot for ${context}.`);
+  }
+  return sourceId;
+}
+
+function createOptionFacts(
+  option: GroundedRankedOptionRecord,
+  planningRun: GroundedContextPlanningRun,
+  sources: NormalizedSources,
+): readonly GroundedFactDraft[] {
+  const currency = requireGroundedText(option.currency, 'rankedOption.currency');
+  const budgetLimitMinor = normalizeInteger(
+    option.budgetLimitMinor,
+    'rankedOption.budgetLimitMinor',
+  );
+  const confirmedAmountMinor = normalizeInteger(
+    option.confirmedAmountMinor,
+    'rankedOption.confirmedAmountMinor',
+  );
+  const estimatedAmountMinor = normalizeInteger(
+    option.estimatedAmountMinor,
+    'rankedOption.estimatedAmountMinor',
+  );
+  const totalAmountMinor = normalizeInteger(
+    option.totalAmountMinor,
+    'rankedOption.totalAmountMinor',
+  );
+  const costPerPersonMinor = normalizeInteger(
+    option.costPerPersonMinor,
+    'rankedOption.costPerPersonMinor',
+  );
+  const remainingBudgetMinor = normalizeInteger(
+    option.remainingBudgetMinor,
+    'rankedOption.remainingBudgetMinor',
+  );
+  const transportSourceId = requireSingleExternalSource(sources, 'TRANSPORT_FACT');
+  const accommodationSourceId = requireSingleExternalSource(sources, 'ACCOMMODATION_FACT');
+
   return [
-    knownFact('option.selection', {
-      rank: requireNonNegativeInteger(option.rank, 'rankedOption.rank'),
-      role: option.role,
-    }),
+    knownFact(
+      'option.selection',
+      {
+        rank: requireNonNegativeInteger(option.rank, 'rankedOption.rank'),
+        role: option.role,
+      },
+      { internalDerivation: internalDerivation(planningRun.scoringVersion, 'scoringVersion') },
+    ),
     knownFact('option.destination', {
       code: requireGroundedText(option.destinationCode, 'rankedOption.destinationCode'),
       city: requireGroundedText(option.destinationCity, 'rankedOption.destinationCity'),
@@ -126,99 +234,149 @@ function createOptionFacts(option: GroundedRankedOptionRecord): readonly Grounde
         'rankedOption.destinationCountryCode',
       ),
     }),
-    knownFact('option.transport', {
-      mode: option.transportMode,
-      outboundDepartureAt: requireGroundedText(
-        option.outboundDepartureAt,
-        'rankedOption.outboundDepartureAt',
-      ),
-      outboundArrivalAt: requireGroundedText(
-        option.outboundArrivalAt,
-        'rankedOption.outboundArrivalAt',
-      ),
-      returnDepartureAt: requireGroundedText(
-        option.returnDepartureAt,
-        'rankedOption.returnDepartureAt',
-      ),
-      returnArrivalAt: requireGroundedText(option.returnArrivalAt, 'rankedOption.returnArrivalAt'),
-      outboundTravelMinutes: requireNonNegativeInteger(
-        option.outboundTravelMinutes,
-        'rankedOption.outboundTravelMinutes',
-      ),
-      returnTravelMinutes: requireNonNegativeInteger(
-        option.returnTravelMinutes,
-        'rankedOption.returnTravelMinutes',
-      ),
-      maximumConnections: requireNonNegativeInteger(
-        option.maximumConnections,
-        'rankedOption.maximumConnections',
-      ),
-      effectiveTimeAtDestinationMinutes: requireNonNegativeInteger(
-        option.effectiveTimeAtDestinationMinutes,
-        'rankedOption.effectiveTimeAtDestinationMinutes',
-      ),
-    }),
-    knownFact('option.accommodation', {
-      name: requireGroundedText(option.stayName, 'rankedOption.stayName'),
-      checkInDate: requireGroundedText(option.checkInDate, 'rankedOption.checkInDate'),
-      checkOutDate: requireGroundedText(option.checkOutDate, 'rankedOption.checkOutDate'),
-      nights: requireNonNegativeInteger(option.nights, 'rankedOption.nights'),
-      centralityScore: normalizeDecimal(
-        option.accommodationCentralityScore,
-        'rankedOption.accommodationCentralityScore',
-      ),
-    }),
-    knownFact('option.budget.summary', {
-      currency: requireGroundedText(option.currency, 'rankedOption.currency'),
-      budgetLimitMinor: normalizeInteger(option.budgetLimitMinor, 'rankedOption.budgetLimitMinor'),
-      confirmedAmountMinor: normalizeInteger(
-        option.confirmedAmountMinor,
-        'rankedOption.confirmedAmountMinor',
-      ),
-      estimatedAmountMinor: normalizeInteger(
-        option.estimatedAmountMinor,
-        'rankedOption.estimatedAmountMinor',
-      ),
-      unknownCategoryCount: requireNonNegativeInteger(
-        option.unknownCategoryCount,
-        'rankedOption.unknownCategoryCount',
-      ),
-      totalAmountMinor: normalizeInteger(option.totalAmountMinor, 'rankedOption.totalAmountMinor'),
-      costPerPersonMinor: normalizeInteger(
-        option.costPerPersonMinor,
-        'rankedOption.costPerPersonMinor',
-      ),
-      remainingBudgetMinor: normalizeInteger(
-        option.remainingBudgetMinor,
-        'rankedOption.remainingBudgetMinor',
-      ),
-    }),
-    knownFact('option.score', {
-      total: normalizeDecimal(option.totalScore, 'rankedOption.totalScore'),
-      budgetFit: normalizeDecimal(option.budgetFitScore, 'rankedOption.budgetFitScore'),
-      travelTime: normalizeDecimal(option.travelTimeScore, 'rankedOption.travelTimeScore'),
-      effectiveTime: normalizeDecimal(option.effectiveTimeScore, 'rankedOption.effectiveTimeScore'),
-      accommodationLocation: normalizeDecimal(
-        option.accommodationLocationScore,
-        'rankedOption.accommodationLocationScore',
-      ),
-      dataCompleteness: normalizeDecimal(
-        option.dataCompletenessScore,
-        'rankedOption.dataCompletenessScore',
-      ),
-      priceConfidence: normalizeDecimal(
-        option.priceConfidenceScore,
-        'rankedOption.priceConfidenceScore',
-      ),
-      preferenceFit: normalizeDecimal(option.preferenceFitScore, 'rankedOption.preferenceFitScore'),
-    }),
+    knownFact(
+      'option.transport',
+      {
+        mode: option.transportMode,
+        outboundDepartureAt: requireGroundedText(
+          option.outboundDepartureAt,
+          'rankedOption.outboundDepartureAt',
+        ),
+        outboundArrivalAt: requireGroundedText(
+          option.outboundArrivalAt,
+          'rankedOption.outboundArrivalAt',
+        ),
+        returnDepartureAt: requireGroundedText(
+          option.returnDepartureAt,
+          'rankedOption.returnDepartureAt',
+        ),
+        returnArrivalAt: requireGroundedText(
+          option.returnArrivalAt,
+          'rankedOption.returnArrivalAt',
+        ),
+        outboundTravelMinutes: requireNonNegativeInteger(
+          option.outboundTravelMinutes,
+          'rankedOption.outboundTravelMinutes',
+        ),
+        returnTravelMinutes: requireNonNegativeInteger(
+          option.returnTravelMinutes,
+          'rankedOption.returnTravelMinutes',
+        ),
+        maximumConnections: requireNonNegativeInteger(
+          option.maximumConnections,
+          'rankedOption.maximumConnections',
+        ),
+        effectiveTimeAtDestinationMinutes: requireNonNegativeInteger(
+          option.effectiveTimeAtDestinationMinutes,
+          'rankedOption.effectiveTimeAtDestinationMinutes',
+        ),
+      },
+      { sourceSnapshotIds: [transportSourceId] },
+    ),
+    knownFact(
+      'option.accommodation',
+      {
+        name: requireGroundedText(option.stayName, 'rankedOption.stayName'),
+        checkInDate: requireGroundedText(option.checkInDate, 'rankedOption.checkInDate'),
+        checkOutDate: requireGroundedText(option.checkOutDate, 'rankedOption.checkOutDate'),
+        nights: requireNonNegativeInteger(option.nights, 'rankedOption.nights'),
+        centralityScore: normalizeDecimal(
+          option.accommodationCentralityScore,
+          'rankedOption.accommodationCentralityScore',
+        ),
+      },
+      { sourceSnapshotIds: [accommodationSourceId] },
+    ),
+    knownFact(
+      'option.budget.summary',
+      {
+        currency,
+        moneyDisplayVersion: GROUNDED_MONEY_DISPLAY_VERSION,
+        budgetLimitMinor,
+        budgetLimitDisplay: formatGroundedMoney(
+          budgetLimitMinor,
+          currency,
+          'rankedOption.budgetLimit',
+        ),
+        confirmedAmountMinor,
+        confirmedAmountDisplay: formatGroundedMoney(
+          confirmedAmountMinor,
+          currency,
+          'rankedOption.confirmedAmount',
+        ),
+        estimatedAmountMinor,
+        estimatedAmountDisplay: formatGroundedMoney(
+          estimatedAmountMinor,
+          currency,
+          'rankedOption.estimatedAmount',
+        ),
+        unknownCategoryCount: requireNonNegativeInteger(
+          option.unknownCategoryCount,
+          'rankedOption.unknownCategoryCount',
+        ),
+        totalAmountMinor,
+        totalAmountDisplay: formatGroundedMoney(
+          totalAmountMinor,
+          currency,
+          'rankedOption.totalAmount',
+        ),
+        costPerPersonMinor,
+        costPerPersonDisplay: formatGroundedMoney(
+          costPerPersonMinor,
+          currency,
+          'rankedOption.costPerPerson',
+        ),
+        remainingBudgetMinor,
+        remainingBudgetDisplay: formatGroundedMoney(
+          remainingBudgetMinor,
+          currency,
+          'rankedOption.remainingBudget',
+        ),
+      },
+      {
+        internalDerivation: internalDerivation(
+          `${planningRun.engineVersion}:${GROUNDED_MONEY_DISPLAY_VERSION}`,
+          'budgetDerivationVersion',
+        ),
+      },
+    ),
+    knownFact(
+      'option.score',
+      {
+        total: normalizeDecimal(option.totalScore, 'rankedOption.totalScore'),
+        budgetFit: normalizeDecimal(option.budgetFitScore, 'rankedOption.budgetFitScore'),
+        travelTime: normalizeDecimal(option.travelTimeScore, 'rankedOption.travelTimeScore'),
+        effectiveTime: normalizeDecimal(
+          option.effectiveTimeScore,
+          'rankedOption.effectiveTimeScore',
+        ),
+        accommodationLocation: normalizeDecimal(
+          option.accommodationLocationScore,
+          'rankedOption.accommodationLocationScore',
+        ),
+        dataCompleteness: normalizeDecimal(
+          option.dataCompletenessScore,
+          'rankedOption.dataCompletenessScore',
+        ),
+        priceConfidence: normalizeDecimal(
+          option.priceConfidenceScore,
+          'rankedOption.priceConfidenceScore',
+        ),
+        preferenceFit: normalizeDecimal(
+          option.preferenceFitScore,
+          'rankedOption.preferenceFitScore',
+        ),
+      },
+      { internalDerivation: internalDerivation(planningRun.scoringVersion, 'scoringVersion') },
+    ),
   ];
 }
 
 function createBudgetFacts(
   input: GroundedOptionContextInput,
-  knownSourceIds: ReadonlySet<string>,
+  sources: NormalizedSources,
 ): readonly GroundedFactDraft[] {
+  const knownSourceIds = new Set(sources.sourceSnapshots.map((source) => source.id));
   const itemsByCategory = new Map<GroundedBudgetCategory, GroundedBudgetItemRecord>();
   for (const item of input.budgetItems) {
     if (
@@ -235,6 +393,17 @@ function createBudgetFacts(
         `Budget category ${item.category} references an unknown source snapshot.`,
       );
     }
+    const sourceContext = `BUDGET:${item.category}`;
+    const mappedSourceIds = sources.sourceIdsByContext.get(sourceContext) ?? [];
+    if (
+      (item.sourceSnapshot_ID === null && mappedSourceIds.length > 0) ||
+      (item.sourceSnapshot_ID !== null &&
+        (mappedSourceIds.length !== 1 || mappedSourceIds[0] !== item.sourceSnapshot_ID))
+    ) {
+      invalidGroundedContext(
+        `Budget category ${item.category} has a dangling or ambiguous source context mapping.`,
+      );
+    }
     itemsByCategory.set(item.category, item);
   }
 
@@ -242,18 +411,33 @@ function createBudgetFacts(
     const key = `option.budget.category.${category}`;
     const item = itemsByCategory.get(category);
     if (item === undefined) {
-      return { key, status: 'MISSING', value: null, sourceSnapshotIds: [] };
+      if ((sources.sourceIdsByContext.get(`BUDGET:${category}`) ?? []).length > 0) {
+        invalidGroundedContext(
+          `Budget category ${category} has source provenance but no persisted budget item.`,
+        );
+      }
+      return {
+        key,
+        status: 'MISSING',
+        value: null,
+        sourceSnapshotIds: [],
+        internalDerivation: null,
+      };
     }
 
     const sourceSnapshotIds =
       item.sourceSnapshot_ID === null ? [] : ([item.sourceSnapshot_ID] as const);
+    const currency = requireGroundedText(item.currency, `budgetItems.${category}.currency`);
+    const amountMinor =
+      item.amountMinor === null
+        ? null
+        : normalizeInteger(item.amountMinor, `budgetItems.${category}.amountMinor`);
     const value = {
       category,
-      amountMinor:
-        item.amountMinor === null
-          ? null
-          : normalizeInteger(item.amountMinor, `budgetItems.${category}.amountMinor`),
-      currency: requireGroundedText(item.currency, `budgetItems.${category}.currency`),
+      amountMinor,
+      amountDisplay: formatGroundedMoney(amountMinor, currency, `budgetItems.${category}`),
+      moneyDisplayVersion: GROUNDED_MONEY_DISPLAY_VERSION,
+      currency,
       classification: item.classification,
       priceType: item.priceType,
       sourceSnapshotId: item.sourceSnapshot_ID,
@@ -264,7 +448,7 @@ function createBudgetFacts(
         : item.amountMinor === null
           ? 'MISSING'
           : 'KNOWN';
-    return { key, status, value, sourceSnapshotIds };
+    return { key, status, value, sourceSnapshotIds, internalDerivation: null };
   });
 }
 
@@ -286,7 +470,7 @@ function createSourceFacts(
         contexts: source.contexts,
         demonstrationData: source.demonstrationData,
       },
-      [source.id],
+      { sourceSnapshotIds: [source.id] },
     ),
   );
 }
@@ -325,11 +509,11 @@ export function buildGroundedContextComponents(
     rank: requireNonNegativeInteger(input.rankedOption.rank, 'rankedOption.rank'),
     role: input.rankedOption.role,
   };
-  const sourceSnapshots = normalizeSources(input);
-  const knownSourceIds = new Set(sourceSnapshots.map((source) => source.id));
+  const sources = normalizeSources(input);
+  const sourceSnapshots = sources.sourceSnapshots;
   const factDrafts = [
-    ...createOptionFacts(input.rankedOption),
-    ...createBudgetFacts(input, knownSourceIds),
+    ...createOptionFacts(input.rankedOption, planningRun, sources),
+    ...createBudgetFacts(input, sources),
     ...createSourceFacts(sourceSnapshots),
   ].sort((left, right) => left.key.localeCompare(right.key, 'en'));
 
@@ -339,6 +523,12 @@ export function buildGroundedContextComponents(
       invalidGroundedContext(`Duplicate grounded fact key ${fact.key}.`);
     }
     factKeys.add(fact.key);
+    if (
+      new Set(fact.sourceSnapshotIds).size !== fact.sourceSnapshotIds.length ||
+      fact.sourceSnapshotIds.some((sourceId) => !sourceSnapshots.some(({ id }) => id === sourceId))
+    ) {
+      invalidGroundedContext(`Grounded fact ${fact.key} has invalid source provenance.`);
+    }
   }
 
   return { planningRun, rankedOption, sourceSnapshots, factDrafts };

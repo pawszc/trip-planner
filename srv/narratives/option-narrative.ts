@@ -9,7 +9,9 @@ export const OPTION_NARRATIVE_SCHEMA_NAME = 'grounded_option_narrative';
 
 export const OPTION_NARRATIVE_INSTRUCTIONS = `You write concise narrative blocks for one already-selected travel option.
 Use only facts in the supplied GroundedOptionContext. Never change ranking, constraints, dates,
-times, scores, currency, or monetary values. Never calculate or infer a missing monetary value.
+times, scores, currency, or monetary values. Use the code-generated monetary display values
+verbatim. Never calculate. Never divide minor units, infer currency precision, format money, or
+infer a missing monetary value.
 UNKNOWN and MISSING facts must remain explicit and must not be completed. Every block must cite
 one or more exact facts from this context through factReferences. A fact reference provides
 traceability only; do not claim that it proves anything beyond the referenced structured fact.

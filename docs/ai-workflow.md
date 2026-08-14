@@ -37,24 +37,32 @@ trwałego `SUCCEEDED` blokuje użycie poprawnego outputu.
 
 `AiRuns` przechowuje tylko metadane wykonania i retencję. Prompt, instrukcje, wejście,
 output i surowe błędy nigdy nie są utrwalane. Encja jest wewnętrzna i nie ma endpointu
-OData. Cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze schedulera.
+OData. Jest efemeryczna: default retencji wynosi 30 dni, konfiguracja zachowuje zakres
+1–365 dni, a cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze
+schedulera. Narracje są danymi produktu i nie mają mandatory association do `AiRuns`.
 
 ## Grounded narrative w Fazie 3B2
 
 1. Osobna krótka transakcja odczytu pobiera udany `PlanningRun`, jedną `RankedOption`, jej
    `BudgetItems` oraz `SourceSnapshots`, a następnie kończy się przed AI.
 2. Kod buduje `grounded-option-context-v1`, jawnie materializuje `UNKNOWN`/`MISSING`,
-   sortuje fakty i tworzy fingerprint canonical JSON.
+   sortuje fakty i tworzy fingerprint canonical JSON. Transport i nocleg dostają dokładne
+   source snapshot IDs z persisted source contexts; brak lub wieloznaczność kończy się
+   fail-closed. Code-derived score, selection i agregat budżetu mają jawne wersje derivation.
 3. Każdy fakt otrzymuje deterministyczny `factId` związany z wersją i dokładnym
-   fingerprintem kontekstu.
+   fingerprintem kontekstu. Kod tworzy też display pieniędzy z minor units i precision
+   waluty; model nie dzieli ani nie formatuje kwot.
 4. Gateway wybiera wyłącznie profil `GENERATE`, zapisuje durable `STARTED`, wykonuje
    provider call bez transakcji produktu i zapisuje terminalny audit.
 5. Strict Zod wymaga dokładnego fingerprintu oraz niepustych `factReferences` w każdym
    bloku. Nieznany, nieaktualny albo obcy identyfikator odrzuca cały output.
-6. Wynik jest ponownie walidowany lokalnie. Dopiero potem osobna krótka transakcja zapisuje
-   `NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences`.
+6. Wynik jest ponownie walidowany lokalnie. Writer odczytuje `AiRun` i wymaga dokładnego
+   terminalnego `SUCCEEDED` dla planu, tasku, promptu, schematu i input fingerprint.
+   Dopiero potem osobna krótka transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i
+   `NarrativeFactReferences`; tylko `NarrativeRuns` zachowuje historyczny scalar `aiRunId`.
 7. Awaria dowolnej fazy nie zmienia opcji, rankingu, constraints ani budżetu. Rollback
-   product write nie usuwa wcześniej zatwierdzonego `AiRun`.
+   product write nie usuwa wcześniej zatwierdzonego `AiRun`, a późniejszy cleanup `AiRuns`
+   nie usuwa ani nie osieraca obowiązkowych associations danych narracji.
 
 Poprawna referencja daje traceability, ale bez `JUDGE` nie dowodzi semantycznie, że tekst
 rzeczywiście wynika z faktu. Safety pipeline i taka kontrola należą do Fazy 3B3.

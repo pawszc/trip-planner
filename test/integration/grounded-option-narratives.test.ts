@@ -12,6 +12,7 @@ import type {
   StructuredAiRequest,
 } from '../../srv/ai/contracts.ts';
 import { AiError } from '../../srv/ai/errors.ts';
+import { CapAiRunStore } from '../../srv/ai/persistence/cap-ai-run-store.ts';
 import type { AiRunStore } from '../../srv/ai/persistence/ai-run-store.ts';
 import { referenceTripRequestODataPayload } from '../fixtures/trip-request.ts';
 
@@ -59,7 +60,6 @@ interface OptionNarrativeResponse {
   narrativeRun_ID: string;
   planningRun_ID: string;
   rankedOption_ID: string;
-  aiRunId: string;
   sequence: number;
   kind: string;
   text: string;
@@ -70,7 +70,6 @@ interface FactReferenceResponse {
   optionNarrative_ID: string;
   planningRun_ID: string;
   rankedOption_ID: string;
-  aiRunId: string;
   sequence: number;
   factId: string;
 }
@@ -84,6 +83,7 @@ interface PersistedAiRun {
   promptVersion: string;
   schemaVersion: string;
   inputFingerprint: string;
+  expiresAt: string;
   responseModel: string | null;
   errorCode: string | null;
 }
@@ -291,6 +291,35 @@ function createMismatchedAuditGateway(): { gateway: AiGateway; aiRunId: string }
   return { gateway, aiRunId };
 }
 
+function createInvalidPersistenceGateway(): AiGateway {
+  return {
+    async call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>> {
+      const grounded = readRequestFacts(request);
+      return {
+        aiRunId: 'not-a-valid-ai-run-uuid',
+        output: request.outputSchema.parse({
+          contextFingerprint: grounded.fingerprint,
+          blocks: [
+            {
+              kind: 'SUMMARY',
+              text: 'Valid structured output with an invalid persistence identifier.',
+              factReferences: [grounded.factIds[0]],
+            },
+          ],
+        }),
+        provider: AiProvider.ANTHROPIC,
+        configuredModel: 'claude-sonnet-5',
+        responseModel: 'claude-sonnet-5-fake-snapshot',
+        taskType: AiTaskType.GENERATE,
+        promptVersion: request.promptVersion,
+        schemaVersion: request.schemaVersion,
+        inputFingerprint: createInputFingerprint(request.input),
+        refusal: { refused: false },
+      };
+    },
+  } as AiGateway;
+}
+
 function narrativeActionUrl(rankedOptionId: string): string {
   return `/trip-planner/RankedOptions(${rankedOptionId})/TripPlannerService.generateNarrative`;
 }
@@ -406,7 +435,7 @@ describe('grounded option narrative CAP use case', () => {
     });
     expect(narrativeRun.contextFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(blocks).toHaveLength(2);
-    expect(blocks.every((block) => block.aiRunId === narrativeRun.aiRunId)).toBe(true);
+    expect(blocks.every((block) => block.narrativeRun_ID === narrativeRun.ID)).toBe(true);
     expect(references).toHaveLength(2);
     expect(
       references.every((reference) => observation.requestFactIds?.includes(reference.factId)),
@@ -420,6 +449,63 @@ describe('grounded option narrative CAP use case', () => {
       responseModel: 'claude-sonnet-5-offline-snapshot',
       errorCode: null,
     });
+  });
+
+  it('deletes an expired AiRun while keeping durable narrative product data consistent', async () => {
+    const { planningRunId, option } = await createPlannedOption();
+    const observation: NarrativeObservation = { adapterCalls: 0 };
+    narrativeService.createNarrativeGateway = () => createOfflineGateway(observation);
+    const created = await withHardTimeout(POST(narrativeActionUrl(option.ID), {}));
+    const narrativeRun = created.data as NarrativeRunResponse;
+
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.AiRuns')
+        .set({ expiresAt: '2026-01-01T00:00:00.000Z' })
+        .where({ ID: narrativeRun.aiRunId }),
+    );
+    const deleted = await new CapAiRunStore().deleteExpired('2026-01-02T00:00:00.000Z');
+
+    expect(deleted).toBe(1);
+    expect(await readAiRun(narrativeRun.aiRunId)).toBeUndefined();
+    const persistedRun = await GET(`/trip-planner/NarrativeRuns(${narrativeRun.ID})`);
+    const blocks = await readCollection<OptionNarrativeResponse>(
+      'OptionNarratives',
+      'narrativeRun_ID',
+      narrativeRun.ID,
+    );
+    const references = await readCollection<FactReferenceResponse>(
+      'NarrativeFactReferences',
+      'narrativeRun_ID',
+      narrativeRun.ID,
+    );
+    expect(persistedRun.data).toMatchObject({
+      ID: narrativeRun.ID,
+      planningRun_ID: planningRunId,
+      rankedOption_ID: option.ID,
+      aiRunId: narrativeRun.aiRunId,
+      status: 'SUCCEEDED',
+      blockCount: blocks.length,
+    });
+    expect(blocks).toHaveLength(2);
+    expect(references).toHaveLength(2);
+    expect(
+      references.every(
+        (reference) =>
+          reference.narrativeRun_ID === narrativeRun.ID &&
+          blocks.some((block) => block.ID === reference.optionNarrative_ID),
+      ),
+    ).toBe(true);
+
+    const internalRuns = (await readAllInternal('NarrativeRuns')) as Record<string, unknown>[];
+    const internalBlocks = (await readAllInternal('OptionNarratives')) as Record<string, unknown>[];
+    const internalReferences = (await readAllInternal('NarrativeFactReferences')) as Record<
+      string,
+      unknown
+    >[];
+    expect(internalRuns[0]).toMatchObject({ aiRunId: narrativeRun.aiRunId });
+    expect(internalRuns[0]).not.toHaveProperty('aiRun_ID');
+    expect(internalBlocks.every((block) => !('aiRun_ID' in block))).toBe(true);
+    expect(internalReferences.every((reference) => !('aiRun_ID' in reference))).toBe(true);
   });
 
   it('rejects an invalid cross-context reference and leaves every deterministic option unchanged', async () => {
@@ -561,6 +647,50 @@ describe('grounded option narrative CAP use case', () => {
       status: 'SUCCEEDED',
       taskType: 'GENERATE',
       planningRun_ID: null,
+    });
+    expect(await readAllInternal('NarrativeRuns')).toHaveLength(0);
+    expect(await readAllInternal('OptionNarratives')).toHaveLength(0);
+    expect(await readAllInternal('NarrativeFactReferences')).toHaveLength(0);
+  });
+
+  it('maps invalid grounded provenance to HTTP 500 before constructing the gateway', async () => {
+    const { option } = await createPlannedOption();
+    const sourceSnapshots = (await readAllInternal('SourceSnapshots')) as Array<{
+      ID: string;
+      rankedOption_ID: string;
+      contexts: string;
+    }>;
+    const source = sourceSnapshots.find(
+      (candidate) =>
+        candidate.rankedOption_ID === option.ID && candidate.contexts.includes('TRANSPORT_FACT'),
+    );
+    if (source === undefined) throw new Error('Planning fixture has no transport source context.');
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.SourceSnapshots')
+        .set({ contexts: source.contexts.replace('TRANSPORT_FACT', 'REMOVED_TRANSPORT_FACT') })
+        .where({ ID: source.ID }),
+    );
+    let gatewayCreations = 0;
+    narrativeService.createNarrativeGateway = () => {
+      gatewayCreations += 1;
+      return createOfflineGateway({ adapterCalls: 0 });
+    };
+
+    await expect(POST(narrativeActionUrl(option.ID), {})).rejects.toMatchObject({
+      status: 500,
+      response: { data: { error: { code: 'INVALID_GROUNDED_OPTION_CONTEXT' } } },
+    });
+    expect(gatewayCreations).toBe(0);
+    expect(await readAllInternal('AiRuns')).toHaveLength(0);
+  });
+
+  it('maps invalid narrative persistence to HTTP 500', async () => {
+    const { option } = await createPlannedOption();
+    narrativeService.createNarrativeGateway = createInvalidPersistenceGateway;
+
+    await expect(POST(narrativeActionUrl(option.ID), {})).rejects.toMatchObject({
+      status: 500,
+      response: { data: { error: { code: 'INVALID_NARRATIVE_PERSISTENCE' } } },
     });
     expect(await readAllInternal('NarrativeRuns')).toHaveLength(0);
     expect(await readAllInternal('OptionNarratives')).toHaveLength(0);

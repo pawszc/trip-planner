@@ -80,7 +80,11 @@ function rejectNarrativeError(request: Request, error: unknown): never {
   if (error instanceof DomainError) {
     const status = ['RANKED_OPTION_NOT_FOUND', 'PLANNING_RUN_NOT_FOUND'].includes(error.code)
       ? 404
-      : error.code === 'INVALID_NARRATIVE_AUDIT_LINK'
+      : [
+            'INVALID_NARRATIVE_AUDIT_LINK',
+            'INVALID_GROUNDED_OPTION_CONTEXT',
+            'INVALID_NARRATIVE_PERSISTENCE',
+          ].includes(error.code)
         ? 500
         : 409;
     return request.reject({ status, code: error.code, message: error.message });

@@ -227,12 +227,14 @@ entity AiRuns : cuid, managed {
 }
 
 // Produktowy wynik narracji powstaje dopiero po lokalnej walidacji i trwałym SUCCEEDED
-// właściwego AiRun. Prompt, ugruntowane wejście i raw output nie są tu przechowywane.
-@assert.unique.narrativeAiRun: [aiRun]
+// właściwego AiRun. Audyt jest efemeryczny, więc produkt zachowuje tylko historyczny UUID.
+// Prompt, ugruntowane wejście i raw output nie są tu przechowywane.
+@assert.unique.narrativeAiRun: [aiRunId]
 entity NarrativeRuns : cuid, managed {
   planningRun : Association to one PlanningRuns not null;
   rankedOption : Association to one RankedOptions not null;
-  aiRun : Association to one AiRuns not null;
+  // Niezmienny historyczny UUID; cleanup efemerycznego AiRuns nie narusza produktu.
+  aiRunId : UUID not null;
   status : NarrativeRunStatus not null;
   contextVersion : String(120) not null;
   contextFingerprint : String(64) not null;
@@ -249,7 +251,6 @@ entity OptionNarratives : cuid, managed {
   narrativeRun : Association to one NarrativeRuns not null;
   planningRun : Association to one PlanningRuns not null;
   rankedOption : Association to one RankedOptions not null;
-  aiRun : Association to one AiRuns not null;
   sequence : Integer not null;
   kind : NarrativeBlockKind not null;
   text : String(1200) not null;
@@ -264,7 +265,6 @@ entity NarrativeFactReferences : cuid, managed {
   optionNarrative : Association to one OptionNarratives not null;
   planningRun : Association to one PlanningRuns not null;
   rankedOption : Association to one RankedOptions not null;
-  aiRun : Association to one AiRuns not null;
   sequence : Integer not null;
   factId : String(80) not null;
 }

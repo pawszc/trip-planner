@@ -28,11 +28,15 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   unikalne fact IDs oraz zmianę wszystkich identyfikatorów po zmianie exact context;
 - jawne fakty `UNKNOWN` i `MISSING` bez uzupełniania wartości oraz ich poprawne użycie jako
   celów referencji;
+- deterministyczne display values z minor units dla precision PLN/JPY/KWD oraz `null` dla
+  kwot `UNKNOWN`/`MISSING`;
+- rozwiązywalne source snapshot IDs transportu/noclegu, jawne wersje internal derivations i
+  fail-closed dla dangling lub ambiguous source-context mappings;
 - strict schema narracji, niepuste `factReferences`, exact context fingerprint i odrzucenie
   brakujących, pustych, obcych, nieaktualnych, powtórzonych lub częściowo błędnych referencji;
 - offline konwersję tego samego schematu przez helpery structured output obu SDK;
-- atomowy mapper `NarrativeRuns`/`OptionNarratives`/`NarrativeFactReferences` z dokładnym
-  linkage do planning runu, opcji i audytu AI;
+- atomowy mapper `NarrativeRuns`/`OptionNarratives`/`NarrativeFactReferences` z walidacją
+  dokładnego audytu AI oraz historycznym scalar `NarrativeRuns.aiRunId`;
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
 - structured outputs, ponowną lokalną walidację, refusal i brak poprawnej treści;
 - timeout, retry, zamknięty katalog błędów oraz redakcję kluczy i nagłówków;
@@ -71,6 +75,10 @@ sprawdza między innymi:
 - bound action `RankedOptions.generateNarrative()` z realnym CAP i SQLite: profil
   `GENERATE`, committed `STARTED` przed adapterem, ścisłe linkage narracji oraz atomowy
   product write po terminalnym audycie;
+- realny cleanup wygasłego `AiRun` udanej narracji, po którym produkt pozostaje czytelny,
+  spójny i nie ma dangling mandatory database associations;
+- regresyjne HTTP 500 dla `INVALID_GROUNDED_OPTION_CONTEXT` i
+  `INVALID_NARRATIVE_PERSISTENCE`;
 - brak narracji i brak zmiany deterministycznej opcji po `AI_DISABLED`, błędzie providera,
   niepoprawnej referencji albo awarii durable `STARTED`;
 - przetrwanie `SUCCEEDED` po wymuszonym rollbacku późniejszego zapisu narracji bez
@@ -124,3 +132,5 @@ Testy narracji 3B2 wstrzykują adapter `GENERATE` działający wyłącznie w pam
 credentiali, nie uruchamiają `JUDGE` i nie kontaktują się z providerem. Ten adapter również
 ponownie używa requestowego schematu, dlatego przypadek obcej referencji kończy się
 `INVALID_STRUCTURED_OUTPUT` i terminalnym `FAILED`, zanim powstanie persistence produktu.
+Osobny test lifecycle wygasza terminalny audyt, uruchamia prawdziwy
+`CapAiRunStore.deleteExpired()` i czyta zachowane rekordy produktu po usunięciu `AiRun`.

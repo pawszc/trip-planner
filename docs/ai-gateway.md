@@ -172,10 +172,11 @@ Nie ma opcji fail-open.
 
 ## Wewnętrzne AiRuns
 
-`AiRuns.ID` jest UUID gatewaya. Opcjonalne `planningRun` wiąże produktowe wykonanie narracji
-z planem i nadal pozwala zachować runy smoke/eval bez planu. Encja ma status/provider/task, oba modele,
-wersje, fingerprint, timestamps, `expiresAt`, token usage, latency, attempts, provider
-request ID, refusal oraz kontrolowany error code/retryability.
+`AiRuns.ID` jest UUID gatewaya. Opcjonalne `planningRun` wiąże wykonanie narracji z planem w
+czasie walidacji przed product write i nadal pozwala zachować runy smoke/eval bez planu.
+Encja ma status/provider/task, oba modele, wersje, fingerprint, timestamps, `expiresAt`, token
+usage, latency, attempts, provider request ID, refusal oraz kontrolowany error
+code/retryability. Jest efemerycznym audytem wykonania, a nie danymi produktu.
 
 Encja celowo nie ma pól na prompt, instrukcje, wejście, output, raw response, raw error,
 nagłówki ani credentiale. Nie jest projektowana w publicznym `TripPlannerService`; endpoint
@@ -196,6 +197,14 @@ transakcja zapisu produktu. Realny test-only handler CAP potwierdza widoczność
 `expiresAt` używa `AI_RUN_RETENTION_DAYS` (default 30). `deleteExpired(now)` usuwa wyłącznie
 `expiresAt < now`. Kontrakt cleanup jest zaimplementowany i testowany, ale 3B1 nie dodaje
 schedulera. Deployment lub kolejna faza operacyjna musi podłączyć jego wywołanie.
+
+Narracje mają niezależny lifecycle produktu. Przed ich zapisem writer wymaga istniejącego,
+terminalnego `SUCCEEDED` z dokładnym `planningRun`, taskiem `GENERATE`, `promptVersion`,
+`schemaVersion` i `inputFingerprint`. Następnie `NarrativeRuns` zapisuje UUID jako niezmienny
+scalar `aiRunId`, bez association/foreign key do `AiRuns`; bloki i fact references dziedziczą
+to linkage przez `NarrativeRuns`. Dzięki temu cleanup audytu nie jest blokowany przez produkt.
+Realny test CAP/SQLite wygasza audyt udanej narracji, wykonuje `deleteExpired(now)`, potwierdza
+usunięcie `AiRun` oraz dalszą czytelność i spójność wszystkich rekordów narracji.
 
 ## Offline testy i ręczny smoke
 
@@ -223,13 +232,22 @@ bez wartości, fragmentów lub długości kluczy.
 `RankedOptions.generateNarrative()` buduje `grounded-option-context-v1` wyłącznie z udanego
 `PlanningRun`, wybranej opcji, kategorii budżetu i istniejących source snapshots. Każdy fakt,
 również `UNKNOWN` i `MISSING`, ma `factId` związany z dokładnym fingerprintem kontekstu.
+Transport i nocleg otrzymują rozwiązywalne source snapshot IDs z persisted source contexts;
+brak lub wieloznaczność mapowania kończy się fail-closed. Selection, score i agregat budżetu
+są jawnie oznaczone jako wersjonowane `INTERNAL_DETERMINISTIC` derivations.
+
+Minor units pozostają źródłem prawdy, ale kod `grounded-money-display-v1` przygotowuje
+deterministyczne display values z właściwą precision waluty dla limitu, sumy, confirmed,
+estimated, per-person i remaining. Prompt zabrania modelowi dzielenia minor units, ustalania
+precision i formatowania pieniędzy.
 Prompt `grounded-option-narrative-prompt-v1` i strict schema
 `grounded-option-narrative-schema-v1` wymagają niepustych referencji w każdym bloku.
 
 Nieznana, pusta, nieaktualna albo pochodząca z innego kontekstu referencja odrzuca cały
-output. Po ponownej lokalnej walidacji osobna transakcja zapisuje `NarrativeRuns`,
-`OptionNarratives` i znormalizowane `NarrativeFactReferences` powiązane z dokładnym
-`AiRun`. Szczegółową decyzję opisuje ADR 0007.
+output. Po ponownej lokalnej walidacji i sprawdzeniu dokładnego terminalnego `AiRun` osobna
+transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i znormalizowane
+`NarrativeFactReferences`. Trwałe linkage używa historycznego scalar `aiRunId`, więc
+30-dniowy domyślny cleanup audytu nie narusza produktu. Szczegółową decyzję opisuje ADR 0007.
 
 ## Znane ograniczenia i następne fazy
 

@@ -36,12 +36,25 @@ Każda z siedmiu kategorii budżetu występuje jako osobny fakt. Brak rekordu ot
 wymyślonej wartości i oba otrzymują normalny `factId`. Istniejące źródła są osobnymi
 faktami provenance, a dangling source reference odrzuca cały kontekst.
 
+Transport i nocleg wskazują dokładnie jeden istniejący `SourceSnapshot` wyznaczony przez
+persisted contexts `TRANSPORT_FACT` i `ACCOMMODATION_FACT`. Brak mapowania, więcej niż jedno
+mapowanie albo kontekst budżetowy niezgodny z `BudgetItems.sourceSnapshot` odrzuca cały
+kontekst. Fakty powstałe w kodzie, w tym selection, score i agregat budżetu, nie podszywają
+się pod źródło zewnętrzne: mają jawny marker `INTERNAL_DETERMINISTIC` i odpowiednią wersję
+silnika, scoringu lub formatowania.
+
+Minor units pozostają finansowym źródłem prawdy. Kod `grounded-money-display-v1` ustala
+precision waluty i bez floating point tworzy jawne wartości display dla limitu, sumy,
+kwot confirmed/estimated, kosztu na osobę i pozostałego budżetu. Kategorie budżetu również
+mają kodowo przygotowane display albo `null`. Model używa tych tekstów verbatim; nie dzieli
+minor units, nie ustala precision i nie formatuje pieniędzy.
+
 ### Prompt i output
 
 Use case zawsze wybiera profil `GENERATE`. Request nie ma provider/model/effort override.
-Prompt `grounded-option-narrative-prompt-v1` zabrania obliczeń, zmiany wartości i
-uzupełniania `UNKNOWN`/`MISSING`. Schemat `grounded-option-narrative-schema-v1` jest strict i
-wymaga:
+Prompt `grounded-option-narrative-prompt-v1` zabrania obliczeń, dzielenia minor units,
+ustalania precision waluty, formatowania pieniędzy, zmiany wartości i uzupełniania
+`UNKNOWN`/`MISSING`. Schemat `grounded-option-narrative-schema-v1` jest strict i wymaga:
 
 - dokładnego `contextFingerprint`;
 - od jednego do ośmiu bloków `SUMMARY`, `ADVANTAGE`, `TRADEOFF` lub `RISK`;
@@ -65,11 +78,19 @@ faktu. Taka ocena, safety pipeline i wykonywanie `JUDGE` pozostają w Fazie 3B3.
    produktu i utrwala `SUCCEEDED` albo `FAILED`;
 3. dopiero po terminalnym `SUCCEEDED` osobna transakcja requestu atomowo zapisuje wynik.
 
-`NarrativeRuns` łączy wynik z `PlanningRun`, `RankedOption`, dokładnym `AiRun`, wersjami i
-fingerprintem kontekstu. `OptionNarratives` przechowuje zwalidowane bloki, a
-`NarrativeFactReferences` normalizuje kolejność i dokładne `factId`. `AiRuns` pozostaje
-wewnętrzne i nadal nie przechowuje promptu, wejścia, wyjścia ani raw error. Publiczne
-projekcje narracji pokazują tylko bezpieczny `aiRunId`, nie publikują encji `AiRuns`.
+Przed pierwszym zapisem produktu writer ponownie odczytuje wskazany `AiRun` i wymaga
+terminalnego `SUCCEEDED` oraz dokładnej zgodności `PlanningRun`, tasku `GENERATE`, wersji
+promptu, wersji schematu i input fingerprint. Dopiero po tej walidacji `NarrativeRuns`
+utrwala niezmienny historyczny `aiRunId` jako scalar UUID wraz z bezpiecznymi wersjami i
+fingerprintem kontekstu. Nie ma foreign key ani mandatory association z produktu do
+`AiRuns`.
+
+`OptionNarratives` przechowuje zwalidowane bloki, a `NarrativeFactReferences` normalizuje
+kolejność i dokładne `factId`; oba dziedziczą linkage audytu przez `NarrativeRuns` i nie
+duplikują `AiRun`. `AiRuns` jest efemerycznym wewnętrznym audytem z konfigurowalną retencją
+i defaultem 30 dni. `NarrativeRuns`, bloki i referencje są danymi produktu i przeżywają
+`deleteExpired(now)`. Żadna z tych encji nadal nie przechowuje promptu, grounded input,
+raw output, raw error ani credentiali, a publiczny serwis nie publikuje encji `AiRuns`.
 
 Awaria konfiguracji, providera, schematu, referencji, audytu albo product write nie zmienia
 `RankedOptions`, rankingu, constraints ani budżetu. Rollback późniejszego zapisu narracji
@@ -89,6 +110,11 @@ Pierwszy produktowy tekst AI ma odtwarzalny kontekst, dokładne linkage i lokaln
 sprawdzalne referencje. Jawne braki nie mogą zostać cicho usunięte przez mapper ani
 validator. Rozdzielenie transakcji zapobiega deadlockowi SQLite i zachowuje fail-closed
 audyt.
+
+Rozdzielenie lifecycle pozwala usuwać przeterminowane `AiRuns` bez kasowania produktu i bez
+dangling mandatory associations. Historyczny UUID nie jest po cleanup rozwiązywalnym
+foreign key, ale nadal jednoznacznie identyfikuje audyt, który został sprawdzony przed
+persistence.
 
 Kosztem jest większy model persistence, osobne identyfikatory faktów i brak semantycznej
 gwarancji bez `JUDGE`. Akcja generuje narrację pojedynczej opcji na żądanie; nie jest

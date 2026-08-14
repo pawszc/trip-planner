@@ -74,13 +74,17 @@ grounded narrative dla wybranej opcji.
 
 - deterministyczny `grounded-option-context-v1` dla udanego `PlanningRun` i jednej
   `RankedOption`, z budżetem, provenance oraz jawnymi `UNKNOWN`/`MISSING`;
+- fail-closed mapowanie source contexts dla transportu/noclegu, jawne wersje wewnętrznych
+  derivations oraz kodowo formatowane display values, przy zachowaniu minor units jako źródła;
 - unikalne fact IDs związane z wersją i exact context fingerprint;
 - wersjonowany prompt `GENERATE` i strict Zod output, w którym każdy blok wymaga niepustych
   referencji rozwiązywanych lokalnie do dokładnego kontekstu;
 - addytywna akcja `RankedOptions.generateNarrative()` wykonywana w fazach read → audited AI
   → product write bez aktywnej transakcji podczas provider call;
-- trwałe `NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences` powiązane z
-  planem, opcją i dokładnym `AiRun`;
+- dokładna walidacja terminalnego `AiRun` przed persistence, a potem trwały historyczny
+  scalar `NarrativeRuns.aiRunId` bez foreign key blokującego 30-dniowy cleanup audytu;
+- trwałe `NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences` powiązane z planem
+  i opcją; rekordy potomne dziedziczą linkage audytu przez `NarrativeRuns`;
 - brak zmiany rankingu, constraints, budżetu lub opcji po błędzie AI, audytu, walidacji albo
   zapisu produktu;
 - domyślny brak live calls przez `AI_ENABLED=false` i pełne testy offline.

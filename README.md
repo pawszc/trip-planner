@@ -65,17 +65,23 @@ jest odrzucana przed adapterem, zamiast wejść w circular wait.
 Bound action `RankedOptions.generateNarrative()` buduje `grounded-option-context-v1` z
 udanej opcji, jej kategorii budżetu i źródeł. Każdy fakt — także jawny `UNKNOWN` albo
 `MISSING` — ma deterministyczny identyfikator związany z dokładnym fingerprintem kontekstu.
+Transport i nocleg wskazują rozwiązywalne `SourceSnapshot`, a code-derived score, selection
+i agregaty budżetu mają jawne wersje `INTERNAL_DETERMINISTIC`. Kod przygotowuje też display
+kwot z minor units i precision waluty; model nie dzieli ani nie formatuje pieniędzy.
 Strict output wymaga exact context fingerprint i niepustych `factReferences` każdego bloku;
 nieznany, pusty, nieaktualny albo obcy identyfikator odrzuca cały output przed persistence.
 
-Po trwałym `SUCCEEDED` osobna transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i
-`NarrativeFactReferences` powiązane z planem, opcją i audytem. Błąd AI, audytu, walidacji
-lub tego zapisu nie zmienia deterministycznej opcji, rankingu, constraints ani budżetu.
+Po trwałym `SUCCEEDED` writer sprawdza exact plan/task/prompt/schema/input fingerprint, a
+osobna transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i
+`NarrativeFactReferences`. Produkt zachowuje historyczny scalar `aiRunId`, nie mandatory
+association do audytu. Błąd AI, audytu, walidacji lub tego zapisu nie zmienia
+deterministycznej opcji, rankingu, constraints ani budżetu.
 Akcja nie jest automatycznie wywoływana przez `startPlanning` ani obecne UI.
 
 Wewnętrzne `AiRuns` nie jest publikowane przez OData. Przechowuje wyłącznie bezpieczne
 metadane i domyślny `expiresAt` po 30 dniach — bez promptów, wejść, wyjść i surowych błędów.
-Cleanup ma zaimplementowany kontrakt, ale nie ma jeszcze schedulera.
+Jest efemerycznym audytem: cleanup nie narusza trwałych narracji produktu. Kontrakt cleanup
+jest zaimplementowany i przetestowany, ale nie ma jeszcze schedulera.
 
 `AI_ENABLED=false` wyłącza gateway dla produktu, a `AI_LIVE_SMOKE_ENABLED=false` blokuje
 ręczne testy live. Przed włączeniem produktu trzeba zatwierdzić retencję organizacji
