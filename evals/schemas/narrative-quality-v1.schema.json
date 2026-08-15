@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pawszc/trip-planner/evals/schemas/narrative-quality-v1.schema.json",
+  "title": "Trip Planner narrative quality dataset v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "datasetVersion",
+    "synthetic",
+    "rubricVersion",
+    "publicationPolicyVersion",
+    "description",
+    "contexts",
+    "cases",
+    "endToEndCases"
+  ],
+  "properties": {
+    "datasetVersion": { "const": "narrative-quality-v1" },
+    "synthetic": { "const": true },
+    "rubricVersion": { "const": "narrative-quality-rubric-v1" },
+    "publicationPolicyVersion": { "const": "narrative-publication-policy-v1" },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "contexts": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/context" }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 32,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/case" }
+    },
+    "endToEndCases": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/endToEndCase" }
+    }
+  },
+  "$defs": {
+    "dimension": {
+      "enum": [
+        "FACTUAL_ENTAILMENT",
+        "REFERENCE_RELEVANCE",
+        "UNKNOWN_MISSING_DISCIPLINE",
+        "CONSTRAINT_RANKING_FIDELITY",
+        "MONEY_DATE_TIME_FIDELITY",
+        "PROVENANCE_INTEGRITY",
+        "SAFETY_INSTRUCTION_INTEGRITY",
+        "RELEVANCE_AND_BLOCK_KIND"
+      ]
+    },
+    "reasonCode": {
+      "enum": [
+        "REFERENCE_DOES_NOT_SUPPORT_CLAIM",
+        "UNSUPPORTED_CLAIM",
+        "CONTRADICTS_GROUNDED_FACT",
+        "CLAIM_MISSING_SUPPORT",
+        "FILLS_UNKNOWN_OR_MISSING",
+        "MONEY_VALUE_MISMATCH",
+        "MONEY_CALCULATION_OR_REFORMAT",
+        "DATE_TIME_MISMATCH",
+        "RANKING_ROLE_MISMATCH",
+        "HARD_CONSTRAINT_RELAXATION",
+        "PROVENANCE_OVERSTATED",
+        "AVAILABILITY_OR_BOOKING_GUARANTEE",
+        "UNSUPPORTED_LEGAL_VISA_HEALTH_OR_ACCESSIBILITY_ADVICE",
+        "UNSAFE_OR_ILLEGAL_GUIDANCE",
+        "PROMPT_INJECTION_FOLLOWED",
+        "UNTRUSTED_CONTENT_EXPOSED",
+        "PII_OR_SECRET_EXPOSURE",
+        "IRRELEVANT_OR_WRONG_BLOCK_KIND",
+        "CROSS_BLOCK_CONTRADICTION"
+      ]
+    },
+    "constraintSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startDate",
+        "endDate",
+        "adults",
+        "currency",
+        "hardBudgetLimit",
+        "maxConnections",
+        "maxTravelMinutes",
+        "allowFlight",
+        "allowTrain",
+        "allowBus"
+      ],
+      "properties": {
+        "startDate": { "type": "string", "format": "date" },
+        "endDate": { "type": "string", "format": "date" },
+        "adults": { "type": "integer", "minimum": 1 },
+        "currency": { "enum": ["PLN", "EUR"] },
+        "hardBudgetLimit": { "type": "boolean" },
+        "maxConnections": { "type": "integer", "minimum": 0 },
+        "maxTravelMinutes": { "type": "integer", "minimum": 1 },
+        "allowFlight": { "type": "boolean" },
+        "allowTrain": { "type": "boolean" },
+        "allowBus": { "type": "boolean" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "fixtureBuilder", "summary", "constraintSnapshot"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+        "fixtureBuilder": { "type": "string", "pattern": "^[a-z0-9-]+-v1$" },
+        "summary": {
+          "type": "object",
+          "minProperties": 4,
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "constraintSnapshot": { "$ref": "#/$defs/constraintSnapshot" }
+      }
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "text", "factKeys"],
+      "properties": {
+        "kind": { "enum": ["SUMMARY", "ADVANTAGE", "TRADEOFF", "RISK"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1200 },
+        "factKeys": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "stage",
+        "critical",
+        "failedDimensions",
+        "requiredReasonCodes"
+      ],
+      "properties": {
+        "decision": { "enum": ["PUBLISH", "REJECT"] },
+        "stage": { "enum": ["PRECHECK", "JUDGE"] },
+        "critical": { "type": "boolean" },
+        "failedDimensions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/dimension" }
+        },
+        "requiredReasonCodes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reasonCode" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "decision": { "const": "PUBLISH" } } },
+          "then": {
+            "properties": {
+              "stage": { "const": "JUDGE" },
+              "critical": { "const": false },
+              "failedDimensions": { "maxItems": 0 },
+              "requiredReasonCodes": { "maxItems": 0 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "decision": { "const": "REJECT" } } },
+          "then": {
+            "properties": {
+              "failedDimensions": { "minItems": 1 },
+              "requiredReasonCodes": { "minItems": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "contextId", "title", "tags", "sentinel", "candidate", "expected"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[PR][0-9]{2}$" },
+        "contextId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "tags": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9-]+$" }
+        },
+        "sentinel": { "type": "boolean" },
+        "candidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["blocks"],
+          "properties": {
+            "blocks": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": { "$ref": "#/$defs/block" }
+            }
+          }
+        },
+        "expected": { "$ref": "#/$defs/expected" }
+      }
+    },
+    "endToEndCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "contextId", "expectedDecision", "requiredProperties"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^E[0-9]{2}$" },
+        "contextId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+        "expectedDecision": { "const": "PUBLISH" },
+        "requiredProperties": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9-]+$" }
+        }
+      }
+    }
+  }
+}
