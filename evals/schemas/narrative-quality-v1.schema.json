@@ -137,13 +137,7 @@
     "expected": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "decision",
-        "stage",
-        "critical",
-        "failedDimensions",
-        "requiredReasonCodes"
-      ],
+      "required": ["decision", "stage", "critical", "failedDimensions", "requiredReasonCodes"],
       "properties": {
         "decision": { "enum": ["PUBLISH", "REJECT"] },
         "stage": { "enum": ["PRECHECK", "JUDGE"] },

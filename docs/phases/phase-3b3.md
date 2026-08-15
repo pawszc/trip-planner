@@ -131,7 +131,7 @@ contract change, not a test fix.
 
 - Preserve the transaction boundary:
   `short product read → GENERATE audit/provider/audit → local precheck → JUDGE
-  audit/provider/audit → short product write`.
+audit/provider/audit → short product write`.
 - No DB transaction remains active during either provider call.
 - Add internal `NarrativeReviewRuns` and normalized `NarrativeReviewFindings`. They store
   planning/option linkage; scalar generate and optional judge `AiRun` IDs; context/model-view
@@ -388,4 +388,3 @@ Stop and escalate before:
 - ADR and workflow/testing/config/MVP documentation are consistent.
 - No unresolved strategic escalation remains.
 - The implementation is manually merged and verified on `main`; only then is 3B3 `DONE`.
-

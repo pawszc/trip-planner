@@ -137,4 +137,3 @@ Standard verification performs zero live calls and costs USD 0. One separately a
 final live baseline is capped at 48 logical calls, 56 provider attempts including retries,
 and USD 3.00 estimated cost. Reports contain safe labels, reason codes, versions, model and
 usage metadata, latency, attempts, refusal state, and estimated cost, but no raw content.
-
