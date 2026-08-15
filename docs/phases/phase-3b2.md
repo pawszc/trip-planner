@@ -8,11 +8,13 @@ constraints, budżetu lub rankingu.
 
 ## Status
 
-`REVIEW`
+`DONE`
 
-Implementacja rozpoczęła się po zmergowaniu bootstrap PR ustanawiającego workflow Level 2
-i tę wersjonowaną specyfikację. `REVIEW` oznacza przekazanie kompletnej implementacji do
-pętli Draft PR bez automatycznego startu następnej fazy.
+Faza została zmergowana do `main` w [PR #8](https://github.com/pawszc/trip-planner/pull/8)
+jako commit [`ac643b3`](https://github.com/pawszc/trip-planner/commit/ac643b3a055eb723a2fc43fed9ada28890e79146).
+[CI #46](https://github.com/pawszc/trip-planner/actions/runs/31876295834) dla tego commitu
+zakończyło się sukcesem. `DONE` nie uruchamia automatycznie następnej fazy; Faza 3B3
+pozostaje `PLANNED` do osobnego checkpointu i jawnej zmiany statusu na `READY`.
 
 ## Preconditions
 
