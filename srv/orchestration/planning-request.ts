@@ -59,6 +59,45 @@ export interface PlanningVersions {
   scoringVersion: string;
 }
 
+/**
+ * Zamrożone lineage historycznego fingerprintu zapisywanego przez main@1b8a852.
+ * Te literały nie mogą śledzić bieżących stałych pipeline'u, bo v0 jest wyłącznie
+ * kontraktem kompatybilności odczytu dla już utrwalonych runów.
+ */
+export const LEGACY_PLANNING_FINGERPRINT_V0_VERSIONS = Object.freeze({
+  providerFixtureVersion: 'europe-reference-v1',
+  engineVersion: 'candidate-engine-v1',
+  scoringVersion: 'candidate-score-v1',
+});
+
+/** Lineage faktycznie utrwalane na udanym PlanningRun przez main@1b8a852. */
+export const LEGACY_PLANNING_RUN_V0_LINEAGE = Object.freeze({
+  providerFixtureVersion: 'europe-reference-v1',
+  engineVersion: 'candidate-engine-v1',
+  scoringVersion: 'candidate-score-v1:candidate-engine-v1',
+});
+
+/**
+ * Read-only fingerprint v0 odtwarza literalny payload main@1b8a852.
+ * Jest celowo osobną implementacją: v0 nie jest wariantem bieżącego generatora v1.
+ */
+export function createLegacyPlanningFingerprintV0(context: PlanningContext): string {
+  const payload = JSON.stringify({
+    tripRequestId: context.tripRequestId,
+    originCity: context.originCity,
+    startDate: context.startDate,
+    endDate: context.endDate,
+    adults: context.adults,
+    totalBudgetMinor: context.totalBudgetMinor,
+    currency: context.currency,
+    pace: context.pace,
+    hardConstraints: context.hardConstraints,
+    softPreferences: context.softPreferences,
+    versions: LEGACY_PLANNING_FINGERPRINT_V0_VERSIONS,
+  });
+  return createHash('sha256').update(payload, 'utf8').digest('hex');
+}
+
 /** Stabilny fingerprint obejmuje pełny, potwierdzony input oraz wersje pipeline'u. */
 export function createPlanningFingerprint(
   context: PlanningContext,

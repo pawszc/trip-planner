@@ -16,7 +16,12 @@ import { CapAiRunStore } from '../../srv/ai/persistence/cap-ai-run-store.ts';
 import type { AiRunStore } from '../../srv/ai/persistence/ai-run-store.ts';
 import { CURRENCY_CONTRACT_VERSION } from '../../srv/domain/currency.ts';
 import { createMoney, isKnownMoney } from '../../srv/domain/money.ts';
+import type { PersistedTripRequest } from '../../srv/mapping/trip-request-mapper.ts';
 import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
+import {
+  createLegacyPlanningFingerprintV0,
+  createPlanningContext,
+} from '../../srv/orchestration/planning-request.ts';
 import { referenceTripRequestODataPayload } from '../fixtures/trip-request.ts';
 
 process.env.CDS_TYPESCRIPT = 'true';
@@ -122,6 +127,19 @@ interface PersistedBudgetItem {
   estimatedAmountMinor: number | string | null;
   priceType: string;
   classification: string;
+}
+
+interface LegacyPlanningRunRecord {
+  ID: string;
+  tripRequest_ID: string;
+  workflowRun_ID: string;
+  requestFingerprint: string;
+  status: string;
+  currencyContractVersion: string | null;
+  providerFixtureVersion: string;
+  engineVersion: string;
+  scoringVersion: string;
+  selectedOptionCount: number;
 }
 
 interface SqliteColumnInfo {
@@ -367,6 +385,7 @@ async function readAllInternal(entity: string): Promise<unknown[]> {
 }
 
 async function createPlannedOption(currency = 'PLN'): Promise<{
+  tripRequestId: string;
   planningRunId: string;
   option: RankedOptionResponse;
 }> {
@@ -389,7 +408,65 @@ async function createPlannedOption(currency = 'PLN'): Promise<{
   const options = (optionsResponse.data as ODataCollection<RankedOptionResponse>).value;
   const option = options[0];
   if (option === undefined) throw new Error('Planning fixture produced no ranked option.');
-  return { planningRunId, option };
+  return { tripRequestId, planningRunId, option };
+}
+
+const REPLAY_SNAPSHOT_ENTITIES = [
+  'TripRequests',
+  'WorkflowRuns',
+  'PlanningRuns',
+  'WorkflowTransitions',
+  'RankedOptions',
+  'SourceSnapshots',
+  'BudgetItems',
+  'OptionNotes',
+  'RejectionReasons',
+  'RejectionSummaries',
+  'AiRuns',
+  'NarrativeRuns',
+  'OptionNarratives',
+  'NarrativeFactReferences',
+] as const;
+
+async function readReplayPersistenceSnapshot(): Promise<Record<string, unknown[]>> {
+  const entries = await Promise.all(
+    REPLAY_SNAPSHOT_ENTITIES.map(async (entity) => {
+      const rows = await readAllInternal(entity);
+      const normalizedRows = rows
+        .map((row) => (isRecord(row) ? { ...row } : row))
+        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+      return [entity, normalizedRows] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
+}
+
+async function convertPlanningRunToLegacyV0(
+  tripRequestId: string,
+  planningRunId: string,
+): Promise<{ legacyFingerprint: string; previousFingerprint: string }> {
+  const tripRequest = (await cds.db.run(
+    cds.ql.SELECT.one.from('trip.planner.TripRequests').where({ ID: tripRequestId }),
+  )) as PersistedTripRequest | undefined;
+  const planningRun = (await cds.db.run(
+    cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: planningRunId }),
+  )) as LegacyPlanningRunRecord | undefined;
+  if (tripRequest === undefined || planningRun === undefined) {
+    throw new Error('Planning fixture is missing records required for legacy conversion.');
+  }
+
+  const legacyFingerprint = createLegacyPlanningFingerprintV0(createPlanningContext(tripRequest));
+  await cds.db.run(
+    cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+      .set({ requestFingerprint: legacyFingerprint, currencyContractVersion: null })
+      .where({ ID: planningRunId }),
+  );
+  await cds.db.run(
+    cds.ql.UPDATE.entity('trip.planner.BudgetItems')
+      .set({ confirmedAmountMinor: null, estimatedAmountMinor: null })
+      .where({ planningRun_ID: planningRunId }),
+  );
+  return { legacyFingerprint, previousFingerprint: planningRun.requestFingerprint };
 }
 
 async function withHardTimeout<T>(operation: Promise<T>, timeoutMs = 5_000): Promise<T> {
@@ -512,33 +589,89 @@ describe('grounded option narrative CAP use case', () => {
     });
   });
 
-  it('keeps the additive schema safe for unversioned legacy PlanningRuns and fails closed', async () => {
-    const columns = (await cds.db.run(
+  it('replays an exact post-upgrade PlanningRun v0 without writes or backfill', async () => {
+    const planningRunColumns = (await cds.db.run(
       "PRAGMA table_info('trip_planner_PlanningRuns')",
     )) as SqliteColumnInfo[];
-    const currencyVersionColumn = columns.find(
+    const budgetItemColumns = (await cds.db.run(
+      "PRAGMA table_info('trip_planner_BudgetItems')",
+    )) as SqliteColumnInfo[];
+    const currencyVersionColumn = planningRunColumns.find(
       (column) => column.name === 'currencyContractVersion',
     );
     expect(currencyVersionColumn).toMatchObject({ notnull: 0, dflt_value: null });
+    for (const columnName of ['confirmedAmountMinor', 'estimatedAmountMinor']) {
+      expect(budgetItemColumns.find((column) => column.name === columnName)).toMatchObject({
+        notnull: 0,
+        dflt_value: null,
+      });
+    }
 
-    const { planningRunId, option } = await createPlannedOption();
-    await cds.db.run(
-      cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
-        .set({ currencyContractVersion: null })
-        .where({ ID: planningRunId }),
+    const { tripRequestId, planningRunId, option } = await createPlannedOption();
+    const { legacyFingerprint, previousFingerprint } = await convertPlanningRunToLegacyV0(
+      tripRequestId,
+      planningRunId,
     );
     const legacyRun = (await cds.db.run(
       cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: planningRunId }),
-    )) as { ID: string; tripRequest_ID: string; currencyContractVersion: string | null };
-    expect(legacyRun.currencyContractVersion).toBeNull();
-    const replayed = await POST(
-      `/trip-planner/TripRequests(${legacyRun.tripRequest_ID})/TripPlannerService.startPlanning`,
-      {},
+    )) as LegacyPlanningRunRecord;
+    const legacyBudgetItems = (await cds.db.run(
+      cds.ql.SELECT.from('trip.planner.BudgetItems').where({ planningRun_ID: planningRunId }),
+    )) as PersistedBudgetItem[];
+    expect(legacyFingerprint).not.toBe(previousFingerprint);
+    expect(legacyRun).toMatchObject({
+      ID: planningRunId,
+      tripRequest_ID: tripRequestId,
+      requestFingerprint: legacyFingerprint,
+      status: 'SUCCEEDED',
+      currencyContractVersion: null,
+      providerFixtureVersion: 'europe-reference-v1',
+      engineVersion: 'candidate-engine-v1',
+      scoringVersion: 'candidate-score-v1:candidate-engine-v1',
+      selectedOptionCount: 3,
+    });
+    expect(legacyBudgetItems).toHaveLength(21);
+    expect(
+      legacyBudgetItems.every(
+        (item) => item.confirmedAmountMinor === null && item.estimatedAmountMinor === null,
+      ),
+    ).toBe(true);
+
+    const beforeReplay = await readReplayPersistenceSnapshot();
+    expect(beforeReplay.PlanningRuns).toHaveLength(1);
+    expect(beforeReplay.WorkflowRuns).toMatchObject([{ state: 'OPTIONS_READY' }]);
+    expect(beforeReplay.RankedOptions).toHaveLength(3);
+    expect(beforeReplay.WorkflowTransitions).toHaveLength(3);
+    let planningProviderFactoryCalls = 0;
+    narrativeService.createPlanningProviders = () => {
+      planningProviderFactoryCalls += 1;
+      return originalPlanningProviderFactory();
+    };
+
+    const replayed = await withHardTimeout(
+      POST(`/trip-planner/TripRequests(${tripRequestId})/TripPlannerService.startPlanning`, {}),
     );
     expect(replayed.data).toMatchObject({
-      ID: legacyRun.ID,
+      ID: planningRunId,
+      requestFingerprint: legacyFingerprint,
       currencyContractVersion: null,
     });
+    expect(planningProviderFactoryCalls).toBe(0);
+    expect(await readReplayPersistenceSnapshot()).toEqual(beforeReplay);
+
+    const replayedRun = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: planningRunId }),
+    )) as LegacyPlanningRunRecord;
+    const replayedBudgetItems = (await cds.db.run(
+      cds.ql.SELECT.from('trip.planner.BudgetItems').where({ planningRun_ID: planningRunId }),
+    )) as PersistedBudgetItem[];
+    expect(replayedRun.requestFingerprint).toBe(legacyFingerprint);
+    expect(replayedRun.currencyContractVersion).toBeNull();
+    expect(
+      replayedBudgetItems.every(
+        (item) => item.confirmedAmountMinor === null && item.estimatedAmountMinor === null,
+      ),
+    ).toBe(true);
 
     let gatewayCreations = 0;
     narrativeService.createNarrativeGateway = () => {
@@ -550,8 +683,131 @@ describe('grounded option narrative CAP use case', () => {
       response: { data: { error: { code: 'INVALID_GROUNDED_OPTION_CONTEXT' } } },
     });
     expect(gatewayCreations).toBe(0);
-    expect(await readAllInternal('AiRuns')).toHaveLength(0);
+    expect(await readReplayPersistenceSnapshot()).toEqual(beforeReplay);
+    for (const entity of [
+      'AiRuns',
+      'NarrativeRuns',
+      'OptionNarratives',
+      'NarrativeFactReferences',
+    ]) {
+      expect(await readAllInternal(entity)).toHaveLength(0);
+    }
   });
+
+  it('returns current v1 before inspecting an inconsistent exact v0 row', async () => {
+    const { tripRequestId, planningRunId } = await createPlannedOption();
+    const tripRequest = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.TripRequests').where({ ID: tripRequestId }),
+    )) as PersistedTripRequest | undefined;
+    const currentRun = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: planningRunId }),
+    )) as Readonly<Record<string, unknown>> | undefined;
+    if (tripRequest === undefined || currentRun === undefined) {
+      throw new Error('Planning fixture is missing records required for v1 precedence.');
+    }
+    const legacyFingerprint = createLegacyPlanningFingerprintV0(createPlanningContext(tripRequest));
+    expect(currentRun.requestFingerprint).not.toBe(legacyFingerprint);
+    await cds.db.run(
+      cds.ql.INSERT.into('trip.planner.PlanningRuns').entries({
+        ...currentRun,
+        ID: randomUUID(),
+        requestFingerprint: legacyFingerprint,
+        currencyContractVersion: null,
+        engineVersion: 'candidate-engine-v0-corrupt',
+      }),
+    );
+    const beforeReplay = await readReplayPersistenceSnapshot();
+    expect(beforeReplay.PlanningRuns).toHaveLength(2);
+    let planningProviderFactoryCalls = 0;
+    narrativeService.createPlanningProviders = () => {
+      planningProviderFactoryCalls += 1;
+      return originalPlanningProviderFactory();
+    };
+
+    const replayed = await POST(
+      `/trip-planner/TripRequests(${tripRequestId})/TripPlannerService.startPlanning`,
+      {},
+    );
+    expect(replayed.data).toMatchObject({
+      ID: planningRunId,
+      requestFingerprint: currentRun.requestFingerprint,
+      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+    });
+    expect(planningProviderFactoryCalls).toBe(0);
+    expect(await readReplayPersistenceSnapshot()).toEqual(beforeReplay);
+  });
+
+  it.each(['MISSING_OPTION', 'WRONG_VERSION', 'INSUFFICIENT_OPTIONS'] as const)(
+    'rejects an exact PlanningRun v0 replay for %s without calls or writes',
+    async (inconsistency) => {
+      const { tripRequestId, planningRunId } = await createPlannedOption();
+      const { legacyFingerprint } = await convertPlanningRunToLegacyV0(
+        tripRequestId,
+        planningRunId,
+      );
+      if (inconsistency === 'MISSING_OPTION') {
+        const options = (await cds.db.run(
+          cds.ql.SELECT.from('trip.planner.RankedOptions').where({
+            planningRun_ID: planningRunId,
+          }),
+        )) as Array<{ ID: string }>;
+        const removedOption = options.at(-1);
+        if (removedOption === undefined) throw new Error('Missing option to corrupt.');
+        for (const entity of ['BudgetItems', 'OptionNotes', 'SourceSnapshots']) {
+          await cds.db.run(
+            cds.ql.DELETE.from(`trip.planner.${entity}`).where({
+              rankedOption_ID: removedOption.ID,
+            }),
+          );
+        }
+        await cds.db.run(
+          cds.ql.DELETE.from('trip.planner.RankedOptions').where({ ID: removedOption.ID }),
+        );
+      } else if (inconsistency === 'WRONG_VERSION') {
+        await cds.db.run(
+          cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+            .set({ engineVersion: 'candidate-engine-v0-corrupt' })
+            .where({ ID: planningRunId }),
+        );
+      } else {
+        await cds.db.run(
+          cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+            .set({
+              status: 'INSUFFICIENT_OPTIONS',
+              errorCode: 'INSUFFICIENT_OPTIONS',
+              errorMessage: 'Legacy shortage must not use the v0 replay fallback.',
+            })
+            .where({ ID: planningRunId }),
+        );
+      }
+
+      const corruptedRun = (await cds.db.run(
+        cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: planningRunId }),
+      )) as LegacyPlanningRunRecord;
+      expect(corruptedRun).toMatchObject({
+        requestFingerprint: legacyFingerprint,
+        currencyContractVersion: null,
+      });
+      const beforeReplay = await readReplayPersistenceSnapshot();
+      expect(beforeReplay.PlanningRuns).toHaveLength(1);
+      expect(beforeReplay.RankedOptions).toHaveLength(inconsistency === 'MISSING_OPTION' ? 2 : 3);
+      let planningProviderFactoryCalls = 0;
+      narrativeService.createPlanningProviders = () => {
+        planningProviderFactoryCalls += 1;
+        return originalPlanningProviderFactory();
+      };
+
+      await expect(
+        POST(`/trip-planner/TripRequests(${tripRequestId})/TripPlannerService.startPlanning`, {}),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      expect(planningProviderFactoryCalls).toBe(0);
+      expect(await readReplayPersistenceSnapshot()).toEqual(beforeReplay);
+      expect(await readAllInternal('AiRuns')).toHaveLength(0);
+    },
+  );
 
   it('uses GENERATE outside the product transaction and persists exact narrative linkage', async () => {
     const { planningRunId, option } = await createPlannedOption();

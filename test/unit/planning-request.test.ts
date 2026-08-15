@@ -6,6 +6,7 @@ import {
 } from '../../srv/domain/currency.ts';
 import type { PersistedTripRequest } from '../../srv/mapping/trip-request-mapper.js';
 import {
+  createLegacyPlanningFingerprintV0,
   createPlanningContext,
   createPlanningFingerprint,
   majorUnitsToMinorUnits,
@@ -91,6 +92,22 @@ describe('planning request mapping', () => {
       hardConstraints: { allowFlight: false, maxTravelMinutes: 480 },
       softPreferences: { food: 5, nature: 5 },
     });
+  });
+
+  it('reproduces the independently calculated main@1b8a852 fingerprint v0 golden', () => {
+    const context = createPlanningContext(persistedTripRequest);
+    const legacyFingerprint = createLegacyPlanningFingerprintV0(context);
+    const currentFingerprint = createPlanningFingerprint(context, {
+      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+      providerFixtureVersion: 'europe-reference-v1',
+      engineVersion: 'candidate-engine-v1',
+      scoringVersion: 'candidate-score-v1',
+    });
+
+    expect(legacyFingerprint).toBe(
+      '4ddf742558a4ca13d0f039cc9ab7e52a7adebccc326d2ad91442186c5def7257',
+    );
+    expect(legacyFingerprint).not.toBe(currentFingerprint);
   });
 
   it('creates a stable fingerprint that changes with a relevant version', () => {

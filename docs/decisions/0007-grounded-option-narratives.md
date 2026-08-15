@@ -76,9 +76,16 @@ odtwarzalne i zgodne z deterministycznym kalkulatorem.
 Zmiana schematu jest addytywna i bezpieczna dla istniejących baz: nowe pola składowych oraz
 `PlanningRuns.currencyContractVersion` są nullable bez defaultu, a każdy nowy zapis podaje
 je jawnie. Wiersz legacy pozostaje `null`; migracja nie przypisuje mu automatycznie wersji
-ani części, których nie da się udowodnić. Próba zbudowania narracji z takiego wiersza kończy
-się `INVALID_GROUNDED_OPTION_CONTEXT`; potrzebny jest nowy, jawnie wersjonowany run albo
-osobna udowodniona migracja, a nie backfill na podstawie bieżącego kodu.
+ani części, których nie da się udowodnić. Dokładny, udany fingerprint v0 z `main@1b8a852`
+może zostać zwrócony read-only przez `startPlanning` wyłącznie jako ograniczony replay
+kompatybilności dla spójnego `OPTIONS_READY` z trzema opcjami i zamrożonym historycznym
+lineage. Nie wykonuje to UPDATE, backfillu ani provider call i nie obejmuje
+`INSUFFICIENT_OPTIONS`.
+
+Replay nie uzdatnia rekordu do grounded narrative. Próba zbudowania narracji z takim
+wierszem kończy się HTTP 500 `INVALID_GROUNDED_OPTION_CONTEXT` przed gatewayem, `AiRun` i
+zapisem produktu. Uzdatnienie wymaga osobnej, udowodnionej migracji albo przyszłej jawnej
+ścieżki domenowej, a nie backfillu na podstawie bieżącego kodu.
 
 Kod `grounded-money-display-v1` bez floating point tworzy jawne wartości display dla limitu, sumy,
 kwot confirmed/estimated, kosztu na osobę i pozostałego budżetu. Kategorie budżetu również

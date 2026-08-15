@@ -66,6 +66,11 @@ pętli Draft PR bez automatycznego startu następnej fazy.
   są odrzucane; rozszerzenie precision wymaga osobnej decyzji o modelu budżetowym.
 - Wersja kontraktu walut jest częścią fingerprintu i trwałego `PlanningRun`. Grounded reader
   nie może zastąpić brakującej lub nieobsługiwanej wersji historycznej bieżącą stałą runtime.
+- Nowe `PlanningRuns` są zapisywane wyłącznie fingerprintem v1. Ograniczony dual-read może po
+  braku v1 rozpoznać dokładny, zamrożony fingerprint v0 z `main@1b8a852` tylko dla spójnego
+  `SUCCEEDED`/`OPTIONS_READY`, historycznego lineage i dokładnie trzech opcji. Taki replay jest
+  read-only, bez backfillu i provider call; nie dotyczy `INSUFFICIENT_OPTIONS` i nie nadaje
+  legacy row brakującego lineage narracji.
 - Każda trwała kategoria budżetu zachowuje części confirmed/estimated. Legalne mieszane
   `ADDITIONAL_FEES` zachowuje obie części, które sumują się do znanego `amountMinor`.
 - Model nie wykonuje obliczeń finansowych, nie zmienia ugruntowanych wartości i nie
@@ -109,6 +114,9 @@ pętli Draft PR bez automatycznego startu następnej fazy.
   referencyjnie i nie może zostać pomylona z nieznanym identyfikatorem.
 - Trwały wynik narracji jest jednoznacznie powiązany z planning runem, opcją i właściwym
   audytem AI, a historyczny `aiRunId` pozostaje po dozwolonym cleanup audytu.
+- Dokładny historyczny run v0 może być zwrócony wyłącznie przez fail-closed replay zgodny z
+  zamrożonym kontraktem; każda niespójność daje 409, a brak currency lineage nadal blokuje
+  narrację błędem 500 przed gatewayem i persistence.
 - Jawny CAP use case respektuje fazową granicę transakcji i nie odtwarza SQLite deadlocku
   wykrytego w 3B1.
 - Awaria AI, walidacji albo audytu nie zmienia deterministycznych opcji, rankingu,
@@ -142,6 +150,15 @@ pętli Draft PR bez automatycznego startu następnej fazy.
   persistence, grounded reader i realny przepływ CAP bez zmiany semantyki budżetu.
 - Addytywny upgrade schematu nie backfilluje wersji kontraktu ani części kategorii dla legacy
   rows; brakujące lub nieobsługiwane lineage jest odrzucane fail-closed przed AI.
+- Golden test zamraża literalny SHA-256 fingerprintu v0 z `main@1b8a852` i potwierdza, że v0
+  różni się od v1.
+- Realny CAP/SQLite stan post-upgrade z exact v0, `currencyContractVersion: null`, nullowymi
+  częściami `BudgetItems`, `OPTIONS_READY` i trzema opcjami replayuje ten sam run bez zapisu,
+  backfillu i provider call. Narracja kończy się 500 przed gatewayem i pozostawia zero
+  `AiRuns` oraz rekordów produktu narracji.
+- Istniejący v1 ma pierwszeństwo przed równoczesnym v0. Exact v0 z brakującą opcją,
+  niezgodnym historycznym lineage albo `INSUFFICIENT_OPTIONS` kończy się 409
+  `PLANNING_STATE_INCONSISTENT` bez wywołań i bez zmian w bazie.
 - Rozwiązywalne provenance transportu/noclegu i fail-closed dla dangling lub ambiguous
   source-context mappings.
 - `INVALID_GROUNDED_OPTION_CONTEXT` i `INVALID_NARRATIVE_PERSISTENCE` mapowane do HTTP 500.

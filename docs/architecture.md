@@ -28,10 +28,18 @@ innymi 29 lutego w roku nieprzestępnym oraz nieistniejące dni miesiąca.
 Status `TripRequest` opisuje lifecycle briefu: `DRAFT` oznacza wersję roboczą, a `CONSTRAINTS_CONFIRMED` potwierdzony zestaw ograniczeń. Postęp planowania przechowuje osobna encja `WorkflowRuns`, powiązana jeden-do-jednego z `TripRequest`. Rekord workflow zawiera bieżący stan, kontrolowane informacje o błędzie i znaczniki czasu. Projekcja OData workflow jest tylko do odczytu; klient nie może ominąć maszyny stanów przez bezpośredni zapis. Dzięki temu etap wykonania nie zmienia znaczenia statusu briefu ani zasad jego edycji.
 
 Każde deterministyczne wykonanie ma osobny `PlanningRun`, powiązany z `TripRequest` i
-`WorkflowRun`. Run zapisuje fingerprint pełnego wejścia, dokładną wersję kontraktu walut,
-wersję fixture providerów, wersję silnika i scoringu, liczniki kandydatów oraz kontrolowany
-status. Unikalność fingerprintu zapewnia idempotencję dla nieedytowalnego, potwierdzonego
-briefu.
+`WorkflowRun`. Każdy nowy run zapisuje fingerprint v1 pełnego wejścia, dokładną wersję
+kontraktu walut, wersję fixture providerów, wersję silnika i scoringu, liczniki kandydatów
+oraz kontrolowany status. Unikalność fingerprintu zapewnia idempotencję dla
+nieedytowalnego, potwierdzonego briefu.
+
+Replay stosuje dual-read/single-write. Najpierw szuka v1. Dopiero po jego braku i wyłącznie
+dla `OPTIONS_READY` oblicza osobnym, zamrożonym algorytmem exact v0 z `main@1b8a852`.
+Historyczny run jest zwracany tylko wtedy, gdy pozostaje nieoznaczony
+`currencyContractVersion: null`, ma `SUCCEEDED`, dokładne linkage i historyczne wersje,
+`selectedOptionCount: 3` oraz dokładnie trzy spójne `RankedOptions`. Nie ma UPDATE,
+backfillu ani provider call. `INSUFFICIENT_OPTIONS` nie korzysta z fallbacku, a każda
+niespójność kończy się 409 `PLANNING_STATE_INCONSISTENT`.
 
 Równoległe wywołania `startPlanning` dla tego samego briefu są koaleskowane przez serwis do
 jednego aktywnego wykonania. Pierwszy request jest właścicielem transakcji, a kolejne czekają
@@ -57,6 +65,8 @@ minor units, wywołuje providery przez interfejsy 2B i uruchamia pipeline. Provi
 wywoływani przed pierwszym zapisem. Udany wynik zapisuje atomowo run, przejścia, dokładnie
 trzy opcje, budżety, źródła, notatki i odrzucenia. Awaria providera zwraca kontrolowane
 `PROVIDER_SEARCH_FAILED` i pozostawia workflow w `CONSTRAINTS_CONFIRMED` bez wyników.
+Zaakceptowany replay v1 albo exact v0 kończy się przed konstrukcją providerów i nie wykonuje
+żadnego zapisu.
 
 ## Deterministyczny silnik kandydatów
 
@@ -246,8 +256,9 @@ zabrania modelowi dzielenia minor units, ustalania precision i formatowania pien
 
 Kolumny `PlanningRuns.currencyContractVersion` oraz części `BudgetItems` są addytywne,
 nullable i nie mają defaultu. Nowe runy wypełniają je zawsze, natomiast wiersze legacy
-pozostają nieoznaczone i są odrzucane fail-closed przy budowie grounded context; kod nie
-wykonuje nieudowodnionego backfillu.
+pozostają nieoznaczone. Exact v0 może być odczytany jedynie przez ograniczony replay
+`startPlanning`, lecz przy budowie grounded context nadal jest odrzucany fail-closed przed
+gatewayem i `AiRun`; kod nie wykonuje nieudowodnionego backfillu.
 
 `grounded-option-narrative-prompt-v1` używa wyłącznie profilu `GENERATE`. Strict output
 wymaga exact context fingerprint i niepustych `factReferences` każdego bloku. Lokalny

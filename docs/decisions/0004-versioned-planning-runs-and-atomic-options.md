@@ -11,7 +11,7 @@ czytelnych źródeł i braku częściowo zapisanych kart przy błędzie.
 
 ## Decyzja
 
-Każde pełne wejście otrzymuje SHA-256 fingerprint obejmujący potwierdzony brief, profile,
+Każdy nowy zapis otrzymuje SHA-256 fingerprint v1 obejmujący potwierdzony brief, profile,
 wersję zamkniętego kontraktu walut, fixture providerów, engine i scoringu. Dokładna wersja
 kontraktu walut jest również utrwalana na `PlanningRuns`. `PlanningRuns` ma unikalność po
 briefie i fingerprincie. Wszystkie trwałe wyniki wskazują `TripRequest`, `WorkflowRun` oraz
@@ -32,8 +32,17 @@ requestu. Awaria providera zwraca kontrolowany błąd i nie pozostawia `Planning
 wyników. Niedobór trzech opcji jest innym przypadkiem: zapisuje atomowo wersjonowany run i
 odrzucenia ze statusem `INSUFFICIENT_OPTIONS`, ale nie zapisuje żadnej finalnej opcji.
 
-Ponowne wywołanie z tym samym fingerprintem zwraca istniejący run. Potwierdzony brief jest
-nieedytowalny, więc nie ma ryzyka, że ten sam fingerprint ukryje zmianę wejścia.
+Ponowne wywołanie najpierw szuka bieżącego fingerprintu v1. Jeżeli go nie ma, workflow jest
+`OPTIONS_READY`, a baza zawiera dokładny fingerprint v0 zapisany przez `main@1b8a852`, reader
+może zwrócić ten historyczny run wyłącznie po fail-closed sprawdzeniu: `currencyContractVersion`
+pozostaje `null`, status to `SUCCEEDED`, linkage briefu i workflow jest dokładne, lineage
+provider/engine/scoring odpowiada zamrożonym wersjom historycznym, `selectedOptionCount` wynosi
+3 i istnieją dokładnie trzy tak samo powiązane `RankedOptions`. Replay wykonuje tylko odczyt:
+nie aktualizuje rekordu, nie backfilluje lineage i nie wywołuje providerów. Każda niespójność
+kończy się `PLANNING_STATE_INCONSISTENT`; fallback v0 nie dotyczy `INSUFFICIENT_OPTIONS`.
+
+Wszystkie nowe zapisy pozostają single-write v1. Potwierdzony brief jest nieedytowalny, więc
+nie ma ryzyka, że ten sam fingerprint ukryje zmianę wejścia.
 
 ## Konsekwencje
 

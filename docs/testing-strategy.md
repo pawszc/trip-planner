@@ -15,6 +15,8 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - kontrolowany niedobór dwóch lub zera opcji;
 - dokładną konwersję major → minor units przez zamknięty `currency-fraction-digits-v1`,
   akceptację PLN/EUR i odrzucenie JPY/KWD/nieznanych kodów;
+- literalny golden SHA-256 zamrożonego fingerprintu v0 z `main@1b8a852` oraz jego różnicę
+  względem bieżącego fingerprintu v1;
 - mapowanie awarii providera na kontrolowany kod bez ujawnienia jego komunikatu.
 - task-aware profile `DECIDE`/`GENERATE`/`JUDGE`, migrację aliasów, walidację effort,
   task-specific limity, obowiązkowy model po zmianie providera i blokadę `AI_DISABLED`
@@ -92,6 +94,12 @@ sprawdza między innymi:
   `INVALID_NARRATIVE_PERSISTENCE`;
 - realną persistence mieszanego `ADDITIONAL_FEES` z niezerowymi częściami confirmed/estimated
   oraz bezpieczny nullable/no-default upgrade dla nieoznaczonych `PlanningRuns` legacy;
+- realny post-upgrade replay exact v0 przy `OPTIONS_READY`: ten sam ID, jeden run, trzy opcje,
+  trzy przejścia, nullowe nowe pola, zero provider calls, zero zapisów i zero backfillu;
+- pierwszeństwo istniejącego v1 nawet przy równoczesnym niespójnym exact v0;
+- fail-closed 409 bez wywołań i zmian dla exact v0 z brakującą opcją, błędną wersją albo
+  `INSUFFICIENT_OPTIONS` oraz 500 `INVALID_GROUNDED_OPTION_CONTEXT` przed gatewayem/AiRun dla
+  narracji z legacy runu;
 - brak narracji i brak zmiany deterministycznej opcji po `AI_DISABLED`, błędzie providera,
   niepoprawnej referencji albo awarii durable `STARTED`;
 - przetrwanie `SUCCEEDED` po wymuszonym rollbacku późniejszego zapisu narracji bez

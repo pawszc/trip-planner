@@ -20,8 +20,10 @@ import {
   type CandidateEngineProviders,
 } from './orchestration/candidate-engine.ts';
 import {
+  createLegacyPlanningFingerprintV0,
   createPlanningContext,
   createPlanningFingerprint,
+  LEGACY_PLANNING_RUN_V0_LINEAGE,
 } from './orchestration/planning-request.ts';
 import { buildPlanningPersistenceBundle } from './persistence/planning-result-records.ts';
 import { CapGroundedOptionReader } from './narratives/cap-grounded-option-reader.ts';
@@ -51,9 +53,63 @@ interface PersistedPlanningRun {
   workflowRun_ID: string;
   requestFingerprint: string;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
+  currencyContractVersion: string | null;
+  providerFixtureVersion: string;
+  engineVersion: string;
+  scoringVersion: string;
   selectedOptionCount: number;
   errorCode: string | null;
   errorMessage: string | null;
+}
+
+interface PersistedRankedOptionLineage {
+  ID: string;
+  tripRequest_ID: string;
+  workflowRun_ID: string;
+  planningRun_ID: string;
+  providerFixtureVersion: string;
+  scoringVersion: string;
+}
+
+function assertLegacyPlanningReplay(
+  tripRequestId: string,
+  workflowRun: PersistedWorkflowRun,
+  planningRun: PersistedPlanningRun,
+  expectedFingerprint: string,
+  rankedOptions: readonly PersistedRankedOptionLineage[],
+): void {
+  const optionsHaveExactHistoricalLineage =
+    rankedOptions.length === 3 &&
+    rankedOptions.every(
+      (option) =>
+        option.tripRequest_ID === tripRequestId &&
+        option.workflowRun_ID === workflowRun.ID &&
+        option.planningRun_ID === planningRun.ID &&
+        option.providerFixtureVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.providerFixtureVersion &&
+        option.scoringVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.scoringVersion,
+    );
+  const runHasExactHistoricalLineage =
+    planningRun.tripRequest_ID === tripRequestId &&
+    planningRun.workflowRun_ID === workflowRun.ID &&
+    planningRun.requestFingerprint === expectedFingerprint &&
+    planningRun.currencyContractVersion === null &&
+    planningRun.status === 'SUCCEEDED' &&
+    planningRun.providerFixtureVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.providerFixtureVersion &&
+    planningRun.engineVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.engineVersion &&
+    planningRun.scoringVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.scoringVersion &&
+    planningRun.selectedOptionCount === 3;
+
+  if (
+    workflowRun.tripRequest_ID !== tripRequestId ||
+    workflowRun.state !== 'OPTIONS_READY' ||
+    !runHasExactHistoricalLineage ||
+    !optionsHaveExactHistoricalLineage
+  ) {
+    throw new DomainError(
+      'PLANNING_STATE_INCONSISTENT',
+      'Historyczny wynik planowania v0 nie spełnia zamrożonego kontraktu replay.',
+    );
+  }
 }
 
 /** Tłumaczy błąd domenowy na kontrolowaną odpowiedź HTTP 400 bez gubienia jego kodu. */
@@ -399,6 +455,33 @@ export default class TripPlannerService extends cds.ApplicationService {
           return transaction.run(
             SELECT.one.from(PersistedPlanningRuns).where({ ID: existingRun.ID }),
           );
+        }
+
+        // Dual-read jest ograniczony do dokładnego, udanego v0 z main@1b8a852. Nowe zapisy
+        // nadal używają wyłącznie v1. Replay nie aktualizuje ani nie backfilluje legacy row.
+        if (workflowRun.state === 'OPTIONS_READY') {
+          const legacyFingerprint = createLegacyPlanningFingerprintV0(context);
+          const legacyRun = (await transaction.run(
+            SELECT.one.from(PersistedPlanningRuns).where({
+              tripRequest_ID: ID,
+              requestFingerprint: legacyFingerprint,
+            }),
+          )) as PersistedPlanningRun | undefined;
+          if (legacyRun) {
+            const legacyOptions = (await transaction.run(
+              SELECT.from(PersistedRankedOptions).where({ planningRun_ID: legacyRun.ID }),
+            )) as PersistedRankedOptionLineage[];
+            assertLegacyPlanningReplay(
+              ID,
+              workflowRun,
+              legacyRun,
+              legacyFingerprint,
+              legacyOptions,
+            );
+            return transaction.run(
+              SELECT.one.from(PersistedPlanningRuns).where({ ID: legacyRun.ID }),
+            );
+          }
         }
 
         if (workflowRun.state !== 'CONSTRAINTS_CONFIRMED') {
