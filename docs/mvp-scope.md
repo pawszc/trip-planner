@@ -12,7 +12,8 @@
 ## Stan realizacji
 
 Faza 2 — od domeny do Planning API and Options UI — jest zakończona. Faza 3B1 dodaje
-nieaktywny jeszcze w produkcie fundament task-aware execution i trwałego audytu LLM.
+fundament task-aware execution i trwałego audytu LLM, a Faza 3B2 pierwszy jawny use case
+grounded narrative dla wybranej opcji.
 
 ### Faza 2A — Domain and Workflow Core
 
@@ -69,11 +70,31 @@ nieaktywny jeszcze w produkcie fundament task-aware execution i trwałego audytu
 - 30-dniowa domyślna retencja, `expiresAt` i testowalny cleanup bez schedulera;
 - pełne testy offline CAP/SQLite; brak akcji CAP lub UI wykonującej AI.
 
+### Faza 3B2 — Grounded Option Narratives
+
+- deterministyczny `grounded-option-context-v1` dla udanego `PlanningRun` i jednej
+  `RankedOption`, z budżetem, provenance oraz jawnymi `UNKNOWN`/`MISSING`;
+- fail-closed mapowanie source contexts dla transportu/noclegu, jawne wersje wewnętrznych
+  derivations oraz kodowo formatowane display values, przy zachowaniu minor units jako źródła;
+- zamknięty kontrakt walut `currency-fraction-digits-v1` dla PLN/EUR, pełna zgodność kategorii
+  z agregatem budżetu i fail-closed lineage wersji fixture/scoringu;
+- unikalne fact IDs związane z wersją i exact context fingerprint;
+- wersjonowany prompt `GENERATE` i strict Zod output, w którym każdy blok wymaga niepustych
+  referencji rozwiązywanych lokalnie do dokładnego kontekstu;
+- addytywna akcja `RankedOptions.generateNarrative()` wykonywana w fazach read → audited AI
+  → product write bez aktywnej transakcji podczas provider call;
+- dokładna walidacja terminalnego `AiRun` przed persistence, a potem trwały historyczny
+  scalar `NarrativeRuns.aiRunId` bez foreign key blokującego 30-dniowy cleanup audytu;
+- trwałe `NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences` powiązane z planem
+  i opcją; rekordy potomne dziedziczą linkage audytu przez `NarrativeRuns`;
+- brak zmiany rankingu, constraints, budżetu lub opcji po błędzie AI, audytu, walidacji albo
+  zapisu produktu;
+- domyślny brak live calls przez `AI_ENABLED=false` i pełne testy offline.
+
 ## Poza zakresem obecnego MVP
 
-- podłączenie LLM Gateway do produktu, prompty produkcyjne i konwersacyjne pytania;
-- grounded narratives (Faza 3B2), wykonywanie judge, evale i automatyczne safety checks
-  (Faza 3B3);
+- automatyczne wywołania AI w `startPlanning`, UI narracji i konwersacyjne pytania;
+- wykonywanie judge, evale i automatyczne safety checks (Faza 3B3);
 - prawdziwi providerzy, live search, kursy walut i aktualna dostępność;
 - itinerary dzień po dniu i wybór wariantu;
 - rezerwacje, płatności oraz uwierzytelnianie;

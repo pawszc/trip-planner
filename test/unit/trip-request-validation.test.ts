@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SUPPORTED_CURRENCY_CODES } from '../../srv/domain/currency.ts';
 import {
   confirmTripRequestStatus,
   createDefaultHardConstraints,
@@ -64,11 +65,24 @@ describe('TripRequest domain validation', () => {
     );
   });
 
-  it.each(['pln', 'PL', 'PLNN'])('rejects an invalid currency code (%s)', (currency) => {
-    expect(() => validateTripRequest({ ...validFullTripRequest, currency })).toThrowError(
-      /trzyliterowym kodem/,
-    );
+  it('rejects budget precision that the two-decimal currency contract cannot persist', () => {
+    expect(() =>
+      validateTripRequest({ ...validFullTripRequest, totalBudget: 12.345 }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_TOTAL_BUDGET_PRECISION' }));
   });
+
+  it.each(SUPPORTED_CURRENCY_CODES)('accepts supported currency %s', (currency) => {
+    expect(() => validateTripRequest({ ...validFullTripRequest, currency })).not.toThrow();
+  });
+
+  it.each(['pln', 'PL', 'PLNN', 'USD', 'JPY', 'KWD', 'ZZZ'])(
+    'rejects an unsupported currency code (%s)',
+    (currency) => {
+      expect(() => validateTripRequest({ ...validFullTripRequest, currency })).toThrowError(
+        /nie jest obsługiwana/,
+      );
+    },
+  );
 
   it('rejects an unsupported pace', () => {
     expect(() => validateTripRequest({ ...validFullTripRequest, pace: 'EXTREME' })).toThrowError(

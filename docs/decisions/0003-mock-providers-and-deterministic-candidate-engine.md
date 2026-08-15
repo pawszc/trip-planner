@@ -35,6 +35,14 @@ Kwoty zapisujemy jako całkowite minor units wraz z walutą i `PriceType`. Dla P
 oznacza 12,50 PLN. Znana kwota musi być nieujemną bezpieczną liczbą całkowitą. Cena
 `UNKNOWN` ma `amountMinor: null`; silnik nie podkłada pod nią zera ani estymacji.
 
+Model wejścia i persistence używa `Decimal(13, 2)`, dlatego zamknięty kontrakt
+`currency-fraction-digits-v1` obsługuje wyłącznie jawnie wymienione waluty dwucyfrowe:
+`PLN` i `EUR`, obie z `fractionDigits: 2`. Ten sam kontrakt jest używany przez walidację
+`TripRequest`, konwersję major → minor, domenę `Money`, provider requesty i późniejsze
+formatowanie grounded display. Poprawny składniowo, ale niewymieniony kod jest odrzucany.
+Obsługa JPY, KWD lub innej liczby cyfr ułamkowych wymaga najpierw szerszej zmiany modelu
+budżetowego, a nie lokalnego wyjątku w formatterze.
+
 Każda cena i każdy fakt providera wskazują `SourceSnapshot`. Wewnętrzne estymacje
 również otrzymują snapshot z nazwą i wersją reguły oraz oznaczeniem
 `INTERNAL_FIXTURE`. Pozwala to odróżnić cenę potwierdzoną, estymowaną i nieznaną oraz
@@ -94,6 +102,6 @@ wyniki oraz kolejność. Jawne źródła pozwalają później zastąpić mocki a
 zmiany reguł domenowych.
 
 Kosztem jest konieczność utrzymywania wersji fixture'ów, reguł estymacji i scoringu.
-Dodanie waluty, kategorii kosztu, kodu odrzucenia lub komponentu score wymaga jawnej
-zmiany kontraktu i testów. Faza 2B nie dodaje endpointu uruchamiającego planowanie,
+Dodanie waluty, zwłaszcza o innej precision, kategorii kosztu, kodu odrzucenia lub komponentu
+score wymaga jawnej zmiany kontraktu i testów. Faza 2B nie dodaje endpointu uruchamiającego planowanie,
 persystencji kandydatów ani interfejsu ich wyboru.

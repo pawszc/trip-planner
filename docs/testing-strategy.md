@@ -13,7 +13,10 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - 13 kodów odrzucenia, wiele powodów, deduplikację i granice buildera;
 - komponenty score, stabilny tie-breaker i diversity selection;
 - kontrolowany niedobór dwóch lub zera opcji;
-- dokładną konwersję major → minor units bez arytmetyki floating point;
+- dokładną konwersję major → minor units przez zamknięty `currency-fraction-digits-v1`,
+  akceptację PLN/EUR i odrzucenie JPY/KWD/nieznanych kodów;
+- literalny golden SHA-256 zamrożonego fingerprintu v0 z `main@1b8a852` oraz jego różnicę
+  względem bieżącego fingerprintu v1;
 - mapowanie awarii providera na kontrolowany kod bez ujawnienia jego komunikatu.
 - task-aware profile `DECIDE`/`GENERATE`/`JUDGE`, migrację aliasów, walidację effort,
   task-specific limity, obowiązkowy model po zmianie providera i blokadę `AI_DISABLED`
@@ -24,6 +27,27 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   w eventach;
 - mapowanie persistent recordera, retencję i `expiresAt`, duplicate/state transitions oraz
   kontrakt cleanup store;
+- dokładną, deterministyczną konstrukcję `grounded-option-context-v1`, jego fingerprint,
+  unikalne fact IDs oraz zmianę wszystkich identyfikatorów po zmianie exact context;
+- jawne fakty `UNKNOWN` i `MISSING` bez uzupełniania wartości oraz ich poprawne użycie jako
+  celów referencji;
+- deterministyczne dwucyfrowe display values z minor units dla PLN/EUR, odrzucenie
+  JPY/KWD/nieznanych kodów oraz `null` dla kwot `UNKNOWN`/`MISSING`;
+- zgodność siedmiu kategorii budżetu z klasyfikacjami, walutą, partial sums,
+  `unknownCategoryCount`, statusem agregatu, total, per-person i remaining;
+- zachowanie części confirmed/estimated każdej kategorii, w tym mieszanego
+  `ADDITIONAL_FEES`, przez kalkulator, mapper persistence i grounded context;
+- odczyt utrwalonej `PlanningRuns.currencyContractVersion` oraz fail-closed dla brakującej lub
+  nieobsługiwanej wersji historycznej bez runtime backfillu;
+- fail-closed lineage `providerFixtureVersion` i `scoringVersion` pomiędzy `PlanningRun`,
+  `RankedOption`, `BudgetItems` i `SourceSnapshots`;
+- rozwiązywalne source snapshot IDs transportu/noclegu, jawne wersje internal derivations i
+  fail-closed dla dangling lub ambiguous source-context mappings;
+- strict schema narracji, niepuste `factReferences`, exact context fingerprint i odrzucenie
+  brakujących, pustych, obcych, nieaktualnych, powtórzonych lub częściowo błędnych referencji;
+- offline konwersję tego samego schematu przez helpery structured output obu SDK;
+- atomowy mapper `NarrativeRuns`/`OptionNarratives`/`NarrativeFactReferences` z walidacją
+  dokładnego audytu AI oraz historycznym scalar `NarrativeRuns.aiRunId`;
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
 - structured outputs, ponowną lokalną walidację, refusal i brak poprawnej treści;
 - timeout, retry, zamknięty katalog błędów oraz redakcję kluczy i nagłówków;
@@ -46,6 +70,8 @@ sprawdza między innymi:
 - 22 odrzuconych kandydatów, szczegóły i 13 grup kodów;
 - znormalizowane `SourceSnapshots`, `BudgetBreakdowns` i 7 `BudgetItems` na opcję;
 - zgodność sum confirmed/estimated/unknown z agregatem karty;
+- akceptację PLN/EUR przez pełny przepływ CAP i odrzucenie JPY/KWD/nieznanych kodów przed
+  persistence; EUR przechodzi również przez grounded narrative i kodowy display;
 - idempotentne ponowne wywołanie bez duplikatów;
 - dwa równoległe wywołania `startPlanning` koaleskowane do jednego pipeline'u i runu;
 - kontrolowany niedobór z diagnostyką i zerem częściowych opcji;
@@ -59,6 +85,25 @@ sprawdza między innymi:
   który potwierdza fail-closed zamiast circular wait;
 - fazową granicę wykonania, committed `STARTED` widoczny w niezależnym odczycie adaptera
   oraz przetrwanie `SUCCEEDED` po rollbacku późniejszego product write.
+- bound action `RankedOptions.generateNarrative()` z realnym CAP i SQLite: profil
+  `GENERATE`, committed `STARTED` przed adapterem, ścisłe linkage narracji oraz atomowy
+  product write po terminalnym audycie;
+- realny cleanup wygasłego `AiRun` udanej narracji, po którym produkt pozostaje czytelny,
+  spójny i nie ma dangling mandatory database associations;
+- regresyjne HTTP 500 dla `INVALID_GROUNDED_OPTION_CONTEXT` i
+  `INVALID_NARRATIVE_PERSISTENCE`;
+- realną persistence mieszanego `ADDITIONAL_FEES` z niezerowymi częściami confirmed/estimated
+  oraz bezpieczny nullable/no-default upgrade dla nieoznaczonych `PlanningRuns` legacy;
+- realny post-upgrade replay exact v0 przy `OPTIONS_READY`: ten sam ID, jeden run, trzy opcje,
+  trzy przejścia, nullowe nowe pola, zero provider calls, zero zapisów i zero backfillu;
+- pierwszeństwo istniejącego v1 nawet przy równoczesnym niespójnym exact v0;
+- fail-closed 409 bez wywołań i zmian dla exact v0 z brakującą opcją, błędną wersją albo
+  `INSUFFICIENT_OPTIONS` oraz 500 `INVALID_GROUNDED_OPTION_CONTEXT` przed gatewayem/AiRun dla
+  narracji z legacy runu;
+- brak narracji i brak zmiany deterministycznej opcji po `AI_DISABLED`, błędzie providera,
+  niepoprawnej referencji albo awarii durable `STARTED`;
+- przetrwanie `SUCCEEDED` po wymuszonym rollbacku późniejszego zapisu narracji bez
+  odtworzenia circular wait.
 
 ### Playwright
 
@@ -103,3 +148,10 @@ niezależne transakcje i nie utrzymuje transakcji podczas call providera. Aktywn
 DB requestu jest jawnie niedozwolona i testowana, ponieważ przy pojedynczym połączeniu
 SQLite prowadziłaby do circular wait. Kontrakt cleanup jest testowany, ale testy nie
 uruchamiają schedulera, bo nie istnieje on w Fazie 3B1.
+
+Testy narracji 3B2 wstrzykują adapter `GENERATE` działający wyłącznie w pamięci. Nie czytają
+credentiali, nie uruchamiają `JUDGE` i nie kontaktują się z providerem. Ten adapter również
+ponownie używa requestowego schematu, dlatego przypadek obcej referencji kończy się
+`INVALID_STRUCTURED_OUTPUT` i terminalnym `FAILED`, zanim powstanie persistence produktu.
+Osobny test lifecycle wygasza terminalny audyt, uruchamia prawdziwy
+`CapAiRunStore.deleteExpired()` i czyta zachowane rekordy produktu po usunięciu `AiRun`.

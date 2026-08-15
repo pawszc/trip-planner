@@ -1,10 +1,11 @@
 # Przepływ AI
 
-## Stan Fazy 3B1
+## Stan po Fazie 3B2
 
-Faza 3B1 przygotowuje bezpieczny fundament wykonania, ale nadal nie podłącza LLM do
-`startPlanning`, żadnej akcji CAP ani UI. `AI_ENABLED=false` jest defaultem. Nie ma
-produkcyjnych promptów, automatycznych wywołań ani ręcznego wywołania AI z produktu.
+Faza 3B2 dodaje pierwszy jawny use case produktu: bound action
+`RankedOptions.generateNarrative()`. Akcja opisuje pojedynczą opcję już wybraną przez kod i
+nie jest automatycznie wywoływana przez `startPlanning` ani UI. `AI_ENABLED=false` pozostaje
+defaultem, więc bez jawnego opt-in nie powstaje audit ani request do providera.
 
 Każdy normalny request wskazuje `DECIDE`, `GENERATE` lub `JUDGE`. Gateway wybiera wyłącznie
 skonfigurowany profil zadania; request nie może zmienić providera, modelu ani effort i może
@@ -19,8 +20,8 @@ override w requestcie produktu.
 4. Asynchroniczny recorder utrwala `STARTED` w krótkiej transakcji CAP.
 5. Dopiero po sukcesie `STARTED` adapter wykonuje request bez otwartej transakcji bazy.
 6. Adapter lokalnie waliduje structured output i zwraca oba identyfikatory modelu.
-7. Gateway waliduje provider, configured model, task, wersje, fingerprint, UUID i response
-   model.
+7. Gateway ponownie waliduje output oraz provider, configured model, task, wersje,
+   fingerprint, UUID i response model.
 8. Recorder aktualizuje ten sam rekord do `SUCCEEDED`; dopiero wtedy output może wrócić.
 9. Po błędzie adaptera recorder aktualizuje ten sam rekord do `FAILED`; dopiero wtedy wraca
    znormalizowany błąd.
@@ -36,7 +37,40 @@ trwałego `SUCCEEDED` blokuje użycie poprawnego outputu.
 
 `AiRuns` przechowuje tylko metadane wykonania i retencję. Prompt, instrukcje, wejście,
 output i surowe błędy nigdy nie są utrwalane. Encja jest wewnętrzna i nie ma endpointu
-OData. Cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze schedulera.
+OData. Jest efemeryczna: default retencji wynosi 30 dni, konfiguracja zachowuje zakres
+1–365 dni, a cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze
+schedulera. Narracje są danymi produktu i nie mają mandatory association do `AiRuns`.
+
+## Grounded narrative w Fazie 3B2
+
+1. Osobna krótka transakcja odczytu pobiera udany `PlanningRun`, finansowe pola powiązanego
+   `TripRequest`, jedną `RankedOption`, jej `BudgetItems` oraz `SourceSnapshots`, a następnie
+   kończy się przed AI.
+2. Kod buduje `grounded-option-context-v1`, jawnie materializuje `UNKNOWN`/`MISSING`,
+   sortuje fakty i tworzy fingerprint canonical JSON. Transport i nocleg dostają dokładne
+   source snapshot IDs z persisted source contexts; brak lub wieloznaczność kończy się
+   fail-closed. Lineage fixture/scoringu oraz zgodność kategorii z agregatem budżetu są
+   walidowane przed utworzeniem faktów. Reader używa utrwalonej wersji kontraktu walut i
+   wymaga części confirmed/estimated każdej kategorii; nie odtwarza ich ani wersji z
+   bieżących stałych. Code-derived score, selection i agregat budżetu mają jawne wersje
+   derivation.
+3. Każdy fakt otrzymuje deterministyczny `factId` związany z wersją i dokładnym
+   fingerprintem kontekstu. Kod tworzy też display pieniędzy przez zamknięty dwucyfrowy
+   kontrakt PLN/EUR; model nie dzieli ani nie formatuje kwot.
+4. Gateway wybiera wyłącznie profil `GENERATE`, zapisuje durable `STARTED`, wykonuje
+   provider call bez transakcji produktu i zapisuje terminalny audit.
+5. Strict Zod wymaga dokładnego fingerprintu oraz niepustych `factReferences` w każdym
+   bloku. Nieznany, nieaktualny albo obcy identyfikator odrzuca cały output.
+6. Wynik jest ponownie walidowany lokalnie. Writer odczytuje `AiRun` i wymaga dokładnego
+   terminalnego `SUCCEEDED` dla planu, tasku, promptu, schematu i input fingerprint.
+   Dopiero potem osobna krótka transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i
+   `NarrativeFactReferences`; tylko `NarrativeRuns` zachowuje historyczny scalar `aiRunId`.
+7. Awaria dowolnej fazy nie zmienia opcji, rankingu, constraints ani budżetu. Rollback
+   product write nie usuwa wcześniej zatwierdzonego `AiRun`, a późniejszy cleanup `AiRuns`
+   nie usuwa ani nie osieraca obowiązkowych associations danych narracji.
+
+Poprawna referencja daje traceability, ale bez `JUDGE` nie dowodzi semantycznie, że tekst
+rzeczywiście wynika z faktu. Safety pipeline i taka kontrola należą do Fazy 3B3.
 
 ## Docelowy przepływ produktu
 
@@ -50,6 +84,6 @@ OData. Cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze s
 8. Osobna krótka transakcja zapisuje wynik produktowy; jej rollback nie usuwa audytu.
 9. Plan dzień po dniu powstaje dopiero po wyborze wariantu.
 
-Faza 3B2 doda grounded option context, wersjonowane prompty i narracje do wybranych opcji.
-Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline oraz offline/płatne opt-in evale. Żaden z
-tych elementów nie jest wykonywany w 3B1.
+Faza 3B2 implementuje dla narracji kroki 1, 3, 5, 7 i 8 tego docelowego przepływu. Nie
+wykonuje `DECIDE` ani `JUDGE`. Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline oraz
+offline/płatne opt-in evale.

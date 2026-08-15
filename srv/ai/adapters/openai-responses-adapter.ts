@@ -217,12 +217,19 @@ function validateRequestMetadata<TOutput>(request: StructuredAiRequest<TOutput>)
 
 export class OpenAiResponsesAdapter implements StructuredAiAdapter {
   readonly provider = AiProvider.OPENAI;
+  private readonly config: AiConfig;
+  private readonly clientFactory: OpenAiClientFactory;
+  private readonly now: () => number;
 
   constructor(
-    private readonly config: AiConfig,
-    private readonly clientFactory: OpenAiClientFactory = createOpenAiSdkClient,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
+    config: AiConfig,
+    clientFactory: OpenAiClientFactory = createOpenAiSdkClient,
+    now: () => number = () => Date.now(),
+  ) {
+    this.config = config;
+    this.clientFactory = clientFactory;
+    this.now = now;
+  }
 
   async call<TOutput>(
     request: StructuredAiRequest<TOutput>,

@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import cds from '@sap/cds';
 import type { Request } from '@sap/cds';
+import type { AiGateway } from './ai/ai-gateway.ts';
+import { loadAiConfig } from './ai/config.ts';
+import { createPersistentAiGateway } from './ai/create-persistent-ai-gateway.ts';
+import { AI_ERROR_CODE_VALUES, AiError, type AiErrorCode } from './ai/errors.ts';
+import { CURRENCY_CONTRACT_VERSION } from './domain/currency.ts';
 import { confirmTripRequestStatus, DomainError } from './domain/trip-request.ts';
 import { transitionWorkflowState } from './domain/workflow-run.ts';
 import {
@@ -15,10 +20,16 @@ import {
   type CandidateEngineProviders,
 } from './orchestration/candidate-engine.ts';
 import {
+  createLegacyPlanningFingerprintV0,
   createPlanningContext,
   createPlanningFingerprint,
+  LEGACY_PLANNING_RUN_V0_LINEAGE,
 } from './orchestration/planning-request.ts';
 import { buildPlanningPersistenceBundle } from './persistence/planning-result-records.ts';
+import { CapGroundedOptionReader } from './narratives/cap-grounded-option-reader.ts';
+import { CapNarrativeWriter } from './narratives/cap-narrative-writer.ts';
+import { buildNarrativePersistenceBundle } from './narratives/narrative-persistence.ts';
+import { createOptionNarrativeRequest } from './narratives/option-narrative.ts';
 import { REFERENCE_DESTINATIONS } from './providers/fixtures/europe-reference-fixtures.ts';
 import { MOCK_FIXTURE_VERSION } from './providers/fixtures/fixture-source.ts';
 import { MockAccommodationProvider } from './providers/mock-accommodation-provider.ts';
@@ -42,9 +53,63 @@ interface PersistedPlanningRun {
   workflowRun_ID: string;
   requestFingerprint: string;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
+  currencyContractVersion: string | null;
+  providerFixtureVersion: string;
+  engineVersion: string;
+  scoringVersion: string;
   selectedOptionCount: number;
   errorCode: string | null;
   errorMessage: string | null;
+}
+
+interface PersistedRankedOptionLineage {
+  ID: string;
+  tripRequest_ID: string;
+  workflowRun_ID: string;
+  planningRun_ID: string;
+  providerFixtureVersion: string;
+  scoringVersion: string;
+}
+
+function assertLegacyPlanningReplay(
+  tripRequestId: string,
+  workflowRun: PersistedWorkflowRun,
+  planningRun: PersistedPlanningRun,
+  expectedFingerprint: string,
+  rankedOptions: readonly PersistedRankedOptionLineage[],
+): void {
+  const optionsHaveExactHistoricalLineage =
+    rankedOptions.length === 3 &&
+    rankedOptions.every(
+      (option) =>
+        option.tripRequest_ID === tripRequestId &&
+        option.workflowRun_ID === workflowRun.ID &&
+        option.planningRun_ID === planningRun.ID &&
+        option.providerFixtureVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.providerFixtureVersion &&
+        option.scoringVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.scoringVersion,
+    );
+  const runHasExactHistoricalLineage =
+    planningRun.tripRequest_ID === tripRequestId &&
+    planningRun.workflowRun_ID === workflowRun.ID &&
+    planningRun.requestFingerprint === expectedFingerprint &&
+    planningRun.currencyContractVersion === null &&
+    planningRun.status === 'SUCCEEDED' &&
+    planningRun.providerFixtureVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.providerFixtureVersion &&
+    planningRun.engineVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.engineVersion &&
+    planningRun.scoringVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.scoringVersion &&
+    planningRun.selectedOptionCount === 3;
+
+  if (
+    workflowRun.tripRequest_ID !== tripRequestId ||
+    workflowRun.state !== 'OPTIONS_READY' ||
+    !runHasExactHistoricalLineage ||
+    !optionsHaveExactHistoricalLineage
+  ) {
+    throw new DomainError(
+      'PLANNING_STATE_INCONSISTENT',
+      'Historyczny wynik planowania v0 nie spełnia zamrożonego kontraktu replay.',
+    );
+  }
 }
 
 /** Tłumaczy błąd domenowy na kontrolowaną odpowiedź HTTP 400 bez gubienia jego kodu. */
@@ -67,8 +132,57 @@ function rejectDomainError(request: Request, error: unknown): never {
   throw error;
 }
 
+/** Zwraca wyłącznie zamknięty kod AI/domeny; raw provider error nie trafia do klienta. */
+function rejectNarrativeError(request: Request, error: unknown): never {
+  if (error instanceof DomainError) {
+    const status = ['RANKED_OPTION_NOT_FOUND', 'PLANNING_RUN_NOT_FOUND'].includes(error.code)
+      ? 404
+      : [
+            'INVALID_NARRATIVE_AUDIT_LINK',
+            'INVALID_GROUNDED_OPTION_CONTEXT',
+            'INVALID_NARRATIVE_PERSISTENCE',
+          ].includes(error.code)
+        ? 500
+        : 409;
+    return request.reject({ status, code: error.code, message: error.message });
+  }
+  const aiError = normalizeAiError(error);
+  if (aiError !== null) {
+    const status = [
+      'AI_DISABLED',
+      'LIVE_AI_NOT_ENABLED',
+      'MISSING_CREDENTIALS',
+      'INVALID_AI_CONFIGURATION',
+      'UNSUPPORTED_AI_PROVIDER',
+    ].includes(aiError.code)
+      ? 503
+      : aiError.code === 'AI_AUDIT_FAILED'
+        ? 500
+        : 502;
+    return request.reject({ status, code: aiError.code, message: aiError.message });
+  }
+  throw error;
+}
+
+function normalizeAiError(error: unknown): { code: AiErrorCode; message: string } | null {
+  if (error instanceof AiError) return error;
+  if (typeof error !== 'object' || error === null) return null;
+  const candidate = error as Readonly<Record<string, unknown>>;
+  if (
+    candidate.name !== 'AiError' ||
+    typeof candidate.code !== 'string' ||
+    typeof candidate.message !== 'string' ||
+    !AI_ERROR_CODE_VALUES.includes(candidate.code as AiErrorCode)
+  ) {
+    return null;
+  }
+  return { code: candidate.code as AiErrorCode, message: candidate.message };
+}
+
 export default class TripPlannerService extends cds.ApplicationService {
   private readonly activePlanningRequests = new Map<string, Promise<unknown>>();
+  private readonly groundedOptionReader = new CapGroundedOptionReader();
+  private readonly narrativeWriter = new CapNarrativeWriter();
 
   /** Jawny seam zależności pozwala testować awarię providera bez flag w publicznym API. */
   public createPlanningProviders(): CandidateEngineProviders {
@@ -77,6 +191,11 @@ export default class TripPlannerService extends cds.ApplicationService {
       accommodation: new MockAccommodationProvider(),
       places: new MockPlacesProvider(),
     };
+  }
+
+  /** Jawny seam testowy; produkcja nadal używa profilu GENERATE i fail-closed AiRuns. */
+  public createNarrativeGateway(): AiGateway {
+    return createPersistentAiGateway(loadAiConfig(process.env));
   }
 
   /**
@@ -128,7 +247,7 @@ export default class TripPlannerService extends cds.ApplicationService {
   }
 
   override async init(): Promise<void> {
-    const { TripRequests } = this.entities;
+    const { NarrativeRuns, TripRequests } = this.entities;
     const {
       BudgetItems: PersistedBudgetItems,
       OptionNotes: PersistedOptionNotes,
@@ -143,6 +262,7 @@ export default class TripPlannerService extends cds.ApplicationService {
     const { DELETE, INSERT, SELECT, UPDATE } = cds.ql;
     if (
       !TripRequests ||
+      !NarrativeRuns ||
       !PersistedWorkflowRuns ||
       !PersistedPlanningRuns ||
       !PersistedWorkflowTransitions ||
@@ -305,6 +425,7 @@ export default class TripPlannerService extends cds.ApplicationService {
 
         const context = createPlanningContext(current);
         const versions = {
+          currencyContractVersion: CURRENCY_CONTRACT_VERSION,
           providerFixtureVersion: MOCK_FIXTURE_VERSION,
           engineVersion: DEFAULT_CANDIDATE_ENGINE_CONFIG.version,
           scoringVersion: SCORE_VERSION,
@@ -336,6 +457,33 @@ export default class TripPlannerService extends cds.ApplicationService {
           );
         }
 
+        // Dual-read jest ograniczony do dokładnego, udanego v0 z main@1b8a852. Nowe zapisy
+        // nadal używają wyłącznie v1. Replay nie aktualizuje ani nie backfilluje legacy row.
+        if (workflowRun.state === 'OPTIONS_READY') {
+          const legacyFingerprint = createLegacyPlanningFingerprintV0(context);
+          const legacyRun = (await transaction.run(
+            SELECT.one.from(PersistedPlanningRuns).where({
+              tripRequest_ID: ID,
+              requestFingerprint: legacyFingerprint,
+            }),
+          )) as PersistedPlanningRun | undefined;
+          if (legacyRun) {
+            const legacyOptions = (await transaction.run(
+              SELECT.from(PersistedRankedOptions).where({ planningRun_ID: legacyRun.ID }),
+            )) as PersistedRankedOptionLineage[];
+            assertLegacyPlanningReplay(
+              ID,
+              workflowRun,
+              legacyRun,
+              legacyFingerprint,
+              legacyOptions,
+            );
+            return transaction.run(
+              SELECT.one.from(PersistedPlanningRuns).where({ ID: legacyRun.ID }),
+            );
+          }
+        }
+
         if (workflowRun.state !== 'CONSTRAINTS_CONFIRMED') {
           throw new DomainError(
             workflowRun.state === 'SEARCHING'
@@ -355,6 +503,7 @@ export default class TripPlannerService extends cds.ApplicationService {
           tripRequestId: ID,
           workflowRunId: workflowRun.ID,
           requestFingerprint,
+          currencyContractVersion: versions.currencyContractVersion,
           providerFixtureVersion: MOCK_FIXTURE_VERSION,
           startedAt,
           completedAt: new Date().toISOString(),
@@ -426,6 +575,34 @@ export default class TripPlannerService extends cds.ApplicationService {
     this.on('startPlanning', (request: Request) => {
       const ID = String(request.params[0]?.ID ?? '');
       return this.runPlanningOnce(ID, request, () => executeStartPlanning(request, ID));
+    });
+
+    this.on('generateNarrative', async (request: Request) => {
+      const rankedOptionId = String(request.params[0]?.ID ?? '');
+
+      try {
+        // Ta jawna transakcja tylko odczytu kończy się przed STARTED i provider call.
+        const context = await this.groundedOptionReader.read(rankedOptionId);
+        const result = await this.createNarrativeGateway().call(
+          createOptionNarrativeRequest(context),
+        );
+
+        // Builder ponownie waliduje cały output i wszystkie referencje przed pierwszym
+        // zapisem produktu. Durable SUCCEEDED istnieje już w osobnej transakcji AiRuns.
+        const bundle = buildNarrativePersistenceBundle({
+          context,
+          output: result.output,
+          aiRunId: result.aiRunId,
+          completedAt: new Date().toISOString(),
+        });
+        const productTransaction = cds.tx(request);
+        await this.narrativeWriter.write(productTransaction, bundle);
+        return productTransaction.run(
+          SELECT.one.from(NarrativeRuns).where({ ID: bundle.narrativeRun.ID }),
+        );
+      } catch (error) {
+        return rejectNarrativeError(request, error);
+      }
     });
 
     await super.init();

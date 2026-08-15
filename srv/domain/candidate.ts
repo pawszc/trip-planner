@@ -81,6 +81,12 @@ export const BUDGET_CATEGORY_VALUES = [
 ] as const;
 export type BudgetCategory = (typeof BUDGET_CATEGORY_VALUES)[number];
 
+/** Znane części kategorii zachowują klasyfikację także dla agregatów mieszanych. */
+export interface BudgetCategoryAmounts {
+  confirmedAmountMinor: number;
+  estimatedAmountMinor: number;
+}
+
 /** Wynik kalkulatora budżetu; null oznacza brak wymaganej kwoty, a nie zero. */
 export interface BudgetBreakdown {
   transport: Money;
@@ -90,6 +96,7 @@ export interface BudgetBreakdown {
   attractions: Money;
   additionalFees: Money;
   buffer: Money;
+  categoryAmounts: Readonly<Record<BudgetCategory, BudgetCategoryAmounts>>;
   budgetLimitMinor: number;
   confirmedAmountMinor: number;
   estimatedAmountMinor: number;

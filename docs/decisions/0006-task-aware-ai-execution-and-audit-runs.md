@@ -95,6 +95,12 @@ Domyślna retencja wynosi 30 dni, walidowany zakres to 1–365 dni, a `expiresAt
 `expiresAt < now`. Faza 3B1 świadomie nie dodaje schedulera; cleanup musi zostać podłączony
 przez deployment lub kolejną fazę operacyjną.
 
+Od Fazy 3B2 `AiRuns` jest jawnie traktowane jako efemeryczne metadata audytowe. Dane produktu
+nie tworzą mandatory association ani foreign key blokującego cleanup. Po sprawdzeniu
+istniejącego terminalnego `SUCCEEDED` i dokładnych pól linkage `NarrativeRuns` zachowuje
+jedynie historyczny scalar UUID `aiRunId`; bloki i fact references dziedziczą go przez
+`NarrativeRuns`. Domyślne 30 dni i konfigurowalny zakres retencji pozostają bez zmian.
+
 Każdy INSERT/UPDATE/DELETE store działa w krótkiej, jawnej transakcji CAP. Realny test
 kompozycji CAP request handler + SQLite in-memory wykazał jednak, że poprzednie założenie o
 możliwości rozpoczęcia takiej transakcji z aktywnej transakcji bazodanowej requestu było

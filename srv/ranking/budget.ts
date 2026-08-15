@@ -1,6 +1,7 @@
 import type {
   BudgetBreakdown,
   BudgetCategory,
+  BudgetCategoryAmounts,
   LocalCostEstimates,
   PlanningContext,
   TripCandidate,
@@ -153,6 +154,29 @@ const CATEGORIES = [
   ['BUFFER', 'buffer'],
 ] as const satisfies readonly (readonly [BudgetCategory, keyof BudgetBreakdown])[];
 
+function knownCategoryAmounts(items: readonly Money[], currency: string): BudgetCategoryAmounts {
+  const knownInCurrency = items.filter(
+    (item): item is Money => isKnownMoney(item) && item.currency === currency,
+  );
+  const summary = sumMoney(knownInCurrency, currency);
+  return {
+    confirmedAmountMinor: summary.confirmedAmountMinor,
+    estimatedAmountMinor: summary.estimatedAmountMinor,
+  };
+}
+
+function sumCategoryAmounts(
+  categoryAmounts: Readonly<Record<BudgetCategory, BudgetCategoryAmounts>>,
+): BudgetCategoryAmounts {
+  return Object.values(categoryAmounts).reduce<BudgetCategoryAmounts>(
+    (total, amounts) => ({
+      confirmedAmountMinor: addMinorUnits(total.confirmedAmountMinor, amounts.confirmedAmountMinor),
+      estimatedAmountMinor: addMinorUnits(total.estimatedAmountMinor, amounts.estimatedAmountMinor),
+    }),
+    { confirmedAmountMinor: 0, estimatedAmountMinor: 0 },
+  );
+}
+
 export function calculateBudgetBreakdown(
   context: PlanningContext,
   input: Pick<TripCandidate, 'transport' | 'stay' | 'localCostEstimates'>,
@@ -176,32 +200,30 @@ export function calculateBudgetBreakdown(
     additionalFees,
     buffer: bufferFor(beforeBuffer, context.currency),
   };
-  // Podsumowanie zachowuje klasyfikację każdej źródłowej opłaty. Zagregowana kategoria
-  // może być ESTIMATE/UNKNOWN, ale nie może przepisać znanej części na inną klasę.
-  const summaryItems = [
-    input.transport.price,
-    input.stay.price,
-    input.localCostEstimates.localTransport,
-    input.localCostEstimates.food,
-    input.localCostEstimates.attractions,
-    ...additionalFeeItems,
-    budgetItems.buffer,
-  ];
+  // Części kategorii są częścią wyniku kalkulatora. Zagregowane additional fees mogą mieć
+  // jednocześnie część confirmed i estimated, również gdy inna składowa jest UNKNOWN.
+  const categoryAmounts: Readonly<Record<BudgetCategory, BudgetCategoryAmounts>> = {
+    TRANSPORT: knownCategoryAmounts([budgetItems.transport], context.currency),
+    ACCOMMODATION: knownCategoryAmounts([budgetItems.accommodation], context.currency),
+    LOCAL_TRANSPORT: knownCategoryAmounts([budgetItems.localTransport], context.currency),
+    FOOD: knownCategoryAmounts([budgetItems.food], context.currency),
+    ATTRACTIONS: knownCategoryAmounts([budgetItems.attractions], context.currency),
+    ADDITIONAL_FEES: knownCategoryAmounts(additionalFeeItems, context.currency),
+    BUFFER: knownCategoryAmounts([budgetItems.buffer], context.currency),
+  };
+  const categoryTotals = sumCategoryAmounts(categoryAmounts);
   const unknownCategories = CATEGORIES.filter(([, key]) => {
     const money = budgetItems[key];
     return !isKnownMoney(money) || money.currency !== context.currency;
   }).map(([category]) => category);
 
   if (unknownCategories.length > 0) {
-    const usable = summaryItems.filter(
-      (money): money is Money => isKnownMoney(money) && money.currency === context.currency,
-    );
-    const partial = sumMoney(usable, context.currency);
     return {
       ...budgetItems,
+      categoryAmounts,
       budgetLimitMinor: context.totalBudgetMinor,
-      confirmedAmountMinor: partial.confirmedAmountMinor,
-      estimatedAmountMinor: partial.estimatedAmountMinor,
+      confirmedAmountMinor: categoryTotals.confirmedAmountMinor,
+      estimatedAmountMinor: categoryTotals.estimatedAmountMinor,
       unknownCategories,
       totalAmountMinor: null,
       costPerPersonMinor: null,
@@ -209,13 +231,16 @@ export function calculateBudgetBreakdown(
     };
   }
 
-  const summary = sumMoney(summaryItems, context.currency);
-  const total = summary.totalAmountMinor;
+  const total = addMinorUnits(
+    categoryTotals.confirmedAmountMinor,
+    categoryTotals.estimatedAmountMinor,
+  );
   return {
     ...budgetItems,
+    categoryAmounts,
     budgetLimitMinor: context.totalBudgetMinor,
-    confirmedAmountMinor: summary.confirmedAmountMinor,
-    estimatedAmountMinor: summary.estimatedAmountMinor,
+    confirmedAmountMinor: categoryTotals.confirmedAmountMinor,
+    estimatedAmountMinor: categoryTotals.estimatedAmountMinor,
     unknownCategories,
     totalAmountMinor: total,
     costPerPersonMinor: total === null ? null : divideMinorUnitsCeil(total, context.adults),

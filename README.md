@@ -5,8 +5,8 @@ wersjonowane dane demonstracyjne, buduje i filtruje kandydatów, liczy budżet o
 a następnie pokazuje dokładnie trzy zróżnicowane warianty wraz ze źródłami i odrzuceniami.
 
 Faza 2 — Planning API and Options UI — jest ukończona. Faza 3B1 dodaje domyślnie
-wyłączone, task-aware profile wykonania oraz trwały audyt `AiRuns`, ale nie łączy modeli z
-przepływem produktu.
+wyłączone, task-aware profile wykonania oraz trwały audyt `AiRuns`. Faza 3B2 wykorzystuje
+ten fundament w pierwszej jawnej akcji grounded narrative dla jednej wybranej opcji.
 Standardowe uruchomienie i testy nie wywołują płatnych API. Projekt nadal nie obsługuje
 rezerwacji, płatności ani uwierzytelniania.
 
@@ -43,7 +43,7 @@ odczytują ani nie wymagają sekretów.
 Każde źródło `INTERNAL_FIXTURE` jest w UI jawnie oznaczone jako dane demonstracyjne,
 nie jako aktualna oferta.
 
-## AI execution foundation Fazy 3B1
+## AI execution i grounded narratives Fazy 3B2
 
 Gateway udostępnia jeden kontrakt strukturalnych wywołań i osobny profil
 `provider + model + effort + max output tokens` dla `DECIDE`, `GENERATE` i `JUDGE`.
@@ -62,13 +62,36 @@ Na SQLite gateway działa poza aktywną transakcją DB: krótki odczyt kończy s
 krótki zapis produktu zaczyna dopiero po terminalnym audycie. Próba z aktywnej transakcji
 jest odrzucana przed adapterem, zamiast wejść w circular wait.
 
+Bound action `RankedOptions.generateNarrative()` buduje `grounded-option-context-v1` z
+udanej opcji, jej kategorii budżetu i źródeł. Każdy fakt — także jawny `UNKNOWN` albo
+`MISSING` — ma deterministyczny identyfikator związany z dokładnym fingerprintem kontekstu.
+Transport i nocleg wskazują rozwiązywalne `SourceSnapshot`, a code-derived score, selection
+i agregaty budżetu mają jawne wersje `INTERNAL_DETERMINISTIC`. Kod przygotowuje też display
+kwot z minor units. Zamknięty `currency-fraction-digits-v1` współdzielony przez walidację,
+major → minor i display dopuszcza obecnie PLN/EUR z dwiema cyframi; JPY, KWD i nieznane kody
+są odrzucane. Kategorie budżetu, klasyfikacje, sumy i status agregatu są walidowane
+fail-closed, podobnie jak lineage wersji fixture/scoringu na wszystkich rekordach opcji.
+Model nie dzieli ani nie formatuje pieniędzy.
+Strict output wymaga exact context fingerprint i niepustych `factReferences` każdego bloku;
+nieznany, pusty, nieaktualny albo obcy identyfikator odrzuca cały output przed persistence.
+
+Po trwałym `SUCCEEDED` writer sprawdza exact plan/task/prompt/schema/input fingerprint, a
+osobna transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i
+`NarrativeFactReferences`. Produkt zachowuje historyczny scalar `aiRunId`, nie mandatory
+association do audytu. Błąd AI, audytu, walidacji lub tego zapisu nie zmienia
+deterministycznej opcji, rankingu, constraints ani budżetu.
+Akcja nie jest automatycznie wywoływana przez `startPlanning` ani obecne UI.
+
 Wewnętrzne `AiRuns` nie jest publikowane przez OData. Przechowuje wyłącznie bezpieczne
 metadane i domyślny `expiresAt` po 30 dniach — bez promptów, wejść, wyjść i surowych błędów.
-Cleanup ma zaimplementowany kontrakt, ale nie ma jeszcze schedulera.
+Jest efemerycznym audytem: cleanup nie narusza trwałych narracji produktu. Kontrakt cleanup
+jest zaimplementowany i przetestowany, ale nie ma jeszcze schedulera.
 
 `AI_ENABLED=false` wyłącza gateway dla produktu, a `AI_LIVE_SMOKE_ENABLED=false` blokuje
-ręczne testy live. Testy jednostkowe adapterów używają transportu HTTP in-memory i nie
-kontaktują się z internetem. Po świadomym skonfigurowaniu sekretów poza repo dostępne są:
+ręczne testy live. Przed włączeniem produktu trzeba zatwierdzić retencję organizacji
+providera, ZDR, politykę prywatności i dozwolony zakres danych. Testy używają transportów i
+adapterów in-memory, więc nie kontaktują się z internetem. Po świadomym skonfigurowaniu
+sekretów poza repo dostępne są:
 
 ```sh
 npm run ai:credentials:check
@@ -81,18 +104,20 @@ Smoke test jest osobnym, płatnym wywołaniem opt-in i nie należy do `verify` a
 `verify:full`. Nigdy nie commituj `.env` ani kluczy. Pełny kontrakt, konfiguracja,
 bezpieczeństwo i ograniczenia są opisane w `docs/ai-gateway.md`.
 
-Faza 3B1 nie dodaje żadnej akcji CAP wykonującej AI. Faza 3B2 doda grounded narratives,
-a Faza 3B3 wykonywanie judge, safety pipeline i evale.
+Poprawna referencja zapewnia traceability, ale nie jest jeszcze semantycznym dowodem
+groundedness. Faza 3B3 doda wykonywanie judge, safety pipeline i evale.
 
 ## API
 
 Serwis OData V4 jest dostępny pod `/trip-planner`:
 
 - CRUD szkicu: `TripRequests`;
-- akcje bound: `confirmConstraints`, `startPlanning`;
+- akcje bound: `confirmConstraints`, `startPlanning` oraz jawne
+  `RankedOptions.generateNarrative`;
 - odczyt: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions`, `RankedOptions`,
   `BudgetBreakdowns`, `BudgetItems`, `SourceSnapshots`, `OptionNotes`,
-  `RejectionReasons`, `RejectionSummaries`.
+  `RejectionReasons`, `RejectionSummaries`, `NarrativeRuns`, `OptionNarratives` i
+  `NarrativeFactReferences`.
 
 Kontrolowany niedobór trzech opcji zwraca trwały `PlanningRun` ze statusem
 `INSUFFICIENT_OPTIONS`, kodem błędu i diagnostyką, ale bez częściowych `RankedOptions`.

@@ -54,10 +54,13 @@ function validateCommonEvent(event: AiRunTelemetryEvent): void {
 }
 
 export class PersistentAiRunRecorder implements AiRunRecorder {
-  constructor(
-    private readonly store: AiRunStore,
-    private readonly runRetentionDays: number,
-  ) {}
+  private readonly store: AiRunStore;
+  private readonly runRetentionDays: number;
+
+  constructor(store: AiRunStore, runRetentionDays: number) {
+    this.store = store;
+    this.runRetentionDays = runRetentionDays;
+  }
 
   async record(event: AiRunTelemetryEvent): Promise<void> {
     try {

@@ -78,14 +78,17 @@ describe('Money', () => {
     },
   );
 
-  it.each(['pln', 'PL', 'PLNN', '', 'P1N'])('odrzuca niepoprawny kod waluty %s', (currency) => {
-    expect(() => createMoney(100, currency, 'FIXED_PRICE', snapshot)).toThrowError(
-      expect.objectContaining({ code: 'INVALID_CURRENCY' }),
-    );
-    expect(() => unknownMoney(currency, snapshot)).toThrowError(
-      expect.objectContaining({ code: 'INVALID_CURRENCY' }),
-    );
-  });
+  it.each(['pln', 'PL', 'PLNN', '', 'P1N', 'USD', 'JPY', 'KWD', 'ZZZ'])(
+    'odrzuca nieobsługiwany kod waluty %s',
+    (currency) => {
+      expect(() => createMoney(100, currency, 'FIXED_PRICE', snapshot)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_CURRENCY' }),
+      );
+      expect(() => unknownMoney(currency, snapshot)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_CURRENCY' }),
+      );
+    },
+  );
 
   it('bezpiecznie sumuje potwierdzone i estymowane kwoty osobno', () => {
     const prices = [

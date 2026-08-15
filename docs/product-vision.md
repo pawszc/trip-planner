@@ -29,6 +29,17 @@ Fixture Fazy 2 jest w interfejsie jawnie ograniczone do demonstracyjnego scenari
 rozpoczynającego się we Wrocławiu. Zapisany `DRAFT` można poprawić przed potwierdzeniem, a
 po `INSUFFICIENT_OPTIONS` rozpocząć nowy brief z kopią obecnych danych bez zmiany starego.
 
+## Stan po Fazie 3B2
+
+Użytkownik API może jawnie zażądać narracji dla jednej z opcji już wybranych przez kod.
+Model otrzymuje wersjonowany grounded context z dokładnymi fact IDs, źródłami i jawnymi
+brakami. Każdy zwalidowany blok tekstu musi wskazać co najmniej jeden fakt z dokładnego
+kontekstu, a błąd AI lub walidacji nie zmienia karty, rankingu, constraints ani budżetu.
+
+Akcja pozostaje domyślnie wyłączona przez `AI_ENABLED=false` i nie jest jeszcze podłączona
+do UI. Same poprawne referencje dają traceability, ale bez przyszłego `JUDGE` nie stanowią
+semantycznego dowodu groundedness tekstu.
+
 ## Różnica wobec chatbota
 
 Model językowy nie poluzuje ograniczeń, nie wymyśli brakującej ceny i nie wykona

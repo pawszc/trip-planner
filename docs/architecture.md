@@ -10,6 +10,8 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 - `providers/` — typowane kontrakty providerów oraz stabilne adaptery fixture;
 - `ai/` — task-aware profile LLM, routing, adaptery SDK, lokalna walidacja, redakcja,
   fail-closed recorder i wewnętrzna persistence `AiRuns`;
+- `narratives/` — deterministyczny grounded context, fact IDs, wersjonowany prompt/schema,
+  fazowy odczyt i atomowy zapis zwalidowanych narracji;
 - `ranking/` — budżet, twarde filtrowanie, scoring i wybór zróżnicowanych wariantów;
 - `persistence/` — kontrolowane mapowanie wyników domenowych na znormalizowane rekordy;
 - serwis CAP — transport OData, trwałość, transakcje i kontrolowane błędy.
@@ -26,9 +28,18 @@ innymi 29 lutego w roku nieprzestępnym oraz nieistniejące dni miesiąca.
 Status `TripRequest` opisuje lifecycle briefu: `DRAFT` oznacza wersję roboczą, a `CONSTRAINTS_CONFIRMED` potwierdzony zestaw ograniczeń. Postęp planowania przechowuje osobna encja `WorkflowRuns`, powiązana jeden-do-jednego z `TripRequest`. Rekord workflow zawiera bieżący stan, kontrolowane informacje o błędzie i znaczniki czasu. Projekcja OData workflow jest tylko do odczytu; klient nie może ominąć maszyny stanów przez bezpośredni zapis. Dzięki temu etap wykonania nie zmienia znaczenia statusu briefu ani zasad jego edycji.
 
 Każde deterministyczne wykonanie ma osobny `PlanningRun`, powiązany z `TripRequest` i
-`WorkflowRun`. Run zapisuje fingerprint pełnego wejścia, wersję fixture providerów, wersję
-silnika i scoringu, liczniki kandydatów oraz kontrolowany status. Unikalność fingerprintu
-zapewnia idempotencję dla nieedytowalnego, potwierdzonego briefu.
+`WorkflowRun`. Każdy nowy run zapisuje fingerprint v1 pełnego wejścia, dokładną wersję
+kontraktu walut, wersję fixture providerów, wersję silnika i scoringu, liczniki kandydatów
+oraz kontrolowany status. Unikalność fingerprintu zapewnia idempotencję dla
+nieedytowalnego, potwierdzonego briefu.
+
+Replay stosuje dual-read/single-write. Najpierw szuka v1. Dopiero po jego braku i wyłącznie
+dla `OPTIONS_READY` oblicza osobnym, zamrożonym algorytmem exact v0 z `main@1b8a852`.
+Historyczny run jest zwracany tylko wtedy, gdy pozostaje nieoznaczony
+`currencyContractVersion: null`, ma `SUCCEEDED`, dokładne linkage i historyczne wersje,
+`selectedOptionCount: 3` oraz dokładnie trzy spójne `RankedOptions`. Nie ma UPDATE,
+backfillu ani provider call. `INSUFFICIENT_OPTIONS` nie korzysta z fallbacku, a każda
+niespójność kończy się 409 `PLANNING_STATE_INCONSISTENT`.
 
 Równoległe wywołania `startPlanning` dla tego samego briefu są koaleskowane przez serwis do
 jednego aktywnego wykonania. Pierwszy request jest właścicielem transakcji, a kolejne czekają
@@ -54,6 +65,8 @@ minor units, wywołuje providery przez interfejsy 2B i uruchamia pipeline. Provi
 wywoływani przed pierwszym zapisem. Udany wynik zapisuje atomowo run, przejścia, dokładnie
 trzy opcje, budżety, źródła, notatki i odrzucenia. Awaria providera zwraca kontrolowane
 `PROVIDER_SEARCH_FAILED` i pozostawia workflow w `CONSTRAINTS_CONFIRMED` bez wyników.
+Zaakceptowany replay v1 albo exact v0 kończy się przed konstrukcją providerów i nie wykonuje
+żadnego zapisu.
 
 ## Deterministyczny silnik kandydatów
 
@@ -96,9 +109,11 @@ Zamknięty katalog powodów odrzucenia obejmuje:
 Kalkulator `internal-cost-estimates-v1` używa stawek w minor units na osobę i dzień:
 2 000 na transport lokalny, 8 000 na wyżywienie i 4 000 na atrakcje. Dzień wyjazdu i
 powrotu są wliczone. Bufor wynosi 10% znanego podsumowania i jest zaokrąglany w górę do
-pełnego minor unit. `BudgetBreakdown` osobno sumuje kwoty potwierdzone i estymowane;
-jeśli dowolna wymagana kategoria jest `UNKNOWN` albo ma inną walutę, koszt całkowity,
-koszt na osobę i pozostały budżet mają wartość `null`.
+pełnego minor unit. `BudgetBreakdown` osobno sumuje kwoty potwierdzone i estymowane, a każda
+kategoria zachowuje obie części. Dzięki temu legalne połączenie potwierdzonej i estymowanej
+opłaty dodatkowej pozostaje odtwarzalne po agregacji do jednego `BudgetItem`. Jeśli dowolna
+wymagana kategoria jest `UNKNOWN` albo ma inną walutę, koszt całkowity, koszt na osobę i
+pozostały budżet mają wartość `null`.
 
 Score ma zakres 0–100 i wersję zapisaną w kodzie. Jest ważoną średnią komponentów:
 `budgetFit` 20%, `travelTime` 15%, `effectiveTimeAtDestination` 15%,
@@ -132,7 +147,8 @@ odrzucone. Stabilny wybór to Praga jako `BEST_OVERALL`, Wiedeń jako
 
 Faza 2C integruje ten sam czysty pipeline z CAP i UI bez zmiany zasad rankingu. Surowe
 payloady providerów nie są zapisywane. `RankedOptions` zawierają wyłącznie wybrane fakty
-domenowe i komponenty score; `BudgetItems` zachowują kategorię, price type i klasyfikację;
+domenowe i komponenty score; `BudgetItems` zachowują kategorię, price type, klasyfikację
+oraz części confirmed/estimated;
 `SourceSnapshots` przechowują kontrolowany kontrakt pochodzenia. `OptionNotes` powstają z
 deterministycznych szablonów.
 
@@ -154,16 +170,26 @@ Bound actions na `TripRequests`:
 - `confirmConstraints()` — zatwierdza brief;
 - `startPlanning()` — zwraca wersjonowany `PlanningRun`.
 
+Bound action na `RankedOptions`:
+
+- `generateNarrative()` — po jawnym opt-in uruchamia profil `GENERATE` dla jednej już
+  wybranej opcji i zwraca `NarrativeRun`.
+
 Projekcje tylko do odczytu: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions`,
 `RankedOptions`, `BudgetBreakdowns`, `BudgetItems`, `SourceSnapshots`, `OptionNotes`,
 `RejectionReasons` i `RejectionSummaries`. Klient pobiera zbiory filtrem po
 `tripRequest_ID` albo `planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników.
 
-## Deterministyczny rdzeń i AI execution foundation
+`NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences` są projekcjami tylko do
+odczytu. `NarrativeRuns` pokazuje bezpieczny historyczny `aiRunId`, a rekordy potomne
+dziedziczą linkage przez `NarrativeRuns`; serwis nie publikuje wewnętrznej encji `AiRuns`.
+
+## Deterministyczny rdzeń i AI execution
 
 Kod pozostaje jedynym źródłem prawdy dla constraints, przejść workflow, wykonalności,
-scoringu i arytmetyki finansowej. Gateway Fazy 3B1 nie jest wywoływany przez CAP ani UI.
-Przyjmuje wyłącznie jawne, ugruntowane wejście JSON i schemat Zod.
+scoringu i arytmetyki finansowej. `startPlanning` ani UI nie wykonują AI. Jedyna akcja CAP
+Fazy 3B2 przyjmuje wyłącznie jawny, ugruntowany kontekst JSON i ścisły schemat Zod dla
+pojedynczej, wcześniej wybranej opcji.
 
 `AiGateway` wybiera pełny profil `DECIDE`, `GENERATE` lub `JUDGE`. Request produktu nie ma
 provider override i może jedynie obniżyć task-specific limit tokenów. Brak adaptera,
@@ -191,19 +217,64 @@ niezależnej transakcji CAP. Brak zapisu blokuje wykonanie albo zwrot wyniku i k
 Recorder jest obowiązkową zależnością `AiGateway`; jawna factory persistent składa oba
 adaptery, `PersistentAiRunRecorder` i `CapAiRunStore`. Test CAP + SQLite wykazał circular
 wait, gdy niezależny audit był uruchamiany po rozpoczęciu requestowej transakcji DB.
-Store odrzuca taki układ przed adapterem. Przyszły use case 3B2 musi zakończyć krótki odczyt,
-wykonać `STARTED → adapter → terminalny audit` bez otwartej transakcji DB, a dopiero potem
-otworzyć osobny krótki zapis produktu. Test potwierdza committed `STARTED` przed adapterem
+Store odrzuca taki układ przed adapterem. Use case 3B2 kończy krótki odczyt,
+wykonuje `STARTED → adapter → terminalny audit` bez otwartej transakcji DB, a dopiero potem
+otwiera osobny krótki zapis produktu. Test potwierdza committed `STARTED` przed adapterem
 oraz przetrwanie terminalnego audytu po rollbacku późniejszego zapisu produktu.
 
 Wewnętrzne `AiRuns` przechowuje provider/task, oba modele, wersje, fingerprint, timestamps,
 usage, latency, attempts, refusal i kontrolowany błąd. Nie zapisuje promptów, wejść, wyjść,
 raw responses, raw errors, nagłówków ani sekretów i nie jest publikowane w
 `TripPlannerService`. Domyślny `expiresAt` wynosi 30 dni. Cleanup ma kontrakt
-`deleteExpired(now)`, ale Faza 3B1 nie dodaje schedulera.
+`deleteExpired(now)`, ale nie ma schedulera. `AiRuns` jest efemerycznym audytem. Narracje są
+danymi produktu i po dokładnej walidacji terminalnego audytu przechowują tylko scalar UUID,
+bez foreign key blokującego cleanup. Test CAP/SQLite potwierdza usunięcie wygasłego `AiRun`
+oraz dalszą spójność i czytelność narracji.
 
-Faza 3B2 doda grounded narratives i pierwsze produktowe `GENERATE`; Faza 3B3 doda
-wykonywanie `JUDGE`, safety pipeline i evale.
+### Grounded option narratives
+
+Krótki root transaction odczytuje udany `PlanningRun`, jedną `RankedOption`, jej
+`BudgetItems` i `SourceSnapshots`, po czym kończy się przed AI. Kontekst
+`grounded-option-context-v1` stabilnie sortuje fakty i tworzy fingerprint canonical JSON.
+Każdy fakt, w tym jawny `UNKNOWN` lub `MISSING`, otrzymuje deterministyczny
+`fact_<sha256>` związany z wersją i dokładnym fingerprintem. Transport i nocleg wskazują
+dokładne `SourceSnapshot` znalezione przez persisted source contexts; dangling lub
+wieloznaczne mapowanie jest odrzucane. Selection, score i agregaty budżetu są oznaczone jako
+wersjonowane derivations `INTERNAL_DETERMINISTIC`.
+
+Minor units pozostają źródłem prawdy. `grounded-money-display-v1` przygotowuje w kodzie
+human-readable wartości limitu, total, confirmed, estimated, per-person i remaining.
+Precision pochodzi wyłącznie z wersji kontraktu zapisanej na `PlanningRuns`; obecny
+`currency-fraction-digits-v1` przy `Decimal(13, 2)` dopuszcza PLN/EUR i odrzuca
+JPY/KWD/nieznane kody. Brakująca lub nieobsługiwana wersja historyczna nie jest zastępowana
+stałą runtime. Kategorie, ich części confirmed/estimated, klasyfikacje, waluta, partial sums,
+total, per-person, remaining i status kompletności muszą być wzajemnie zgodne.
+`providerFixtureVersion` i `scoringVersion` muszą zgadzać się na PlanningRun,
+RankedOption, BudgetItems i SourceSnapshots. Każda sprzeczność odrzuca cały kontekst przed AI.
+`UNKNOWN` i `MISSING` nie dostają wymyślonej kwoty. Prompt
+zabrania modelowi dzielenia minor units, ustalania precision i formatowania pieniędzy.
+
+Kolumny `PlanningRuns.currencyContractVersion` oraz części `BudgetItems` są addytywne,
+nullable i nie mają defaultu. Nowe runy wypełniają je zawsze, natomiast wiersze legacy
+pozostają nieoznaczone. Exact v0 może być odczytany jedynie przez ograniczony replay
+`startPlanning`, lecz przy budowie grounded context nadal jest odrzucany fail-closed przed
+gatewayem i `AiRun`; kod nie wykonuje nieudowodnionego backfillu.
+
+`grounded-option-narrative-prompt-v1` używa wyłącznie profilu `GENERATE`. Strict output
+wymaga exact context fingerprint i niepustych `factReferences` każdego bloku. Lokalny
+validator odrzuca cały output z pustym, nieznanym, nieaktualnym lub obcym fact ID; niczego
+nie filtruje częściowo. Referencja zapewnia traceability, ale bez `JUDGE` nie jest jeszcze
+semantycznym dowodem zgodności tekstu z faktem.
+
+Po trwałym `SUCCEEDED` gatewaya writer jeszcze raz sprawdza istnienie audytu, terminalny
+status oraz exact planning run/task/prompt/schema/input fingerprint. Osobna transakcja
+zapisuje `NarrativeRuns`, bloki `OptionNarratives` i znormalizowane
+`NarrativeFactReferences`. `NarrativeRuns.aiRunId` jest niezmiennym historycznym scalarem;
+potomkowie nie duplikują powiązania. Awaria AI, audytu, walidacji albo zapisu nie zmienia
+deterministycznych opcji. Rollback product write nie usuwa audytu, a cleanup audytu nie
+usuwa danych produktu.
+
+Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline i evale.
 
 ## Stos technologiczny
 

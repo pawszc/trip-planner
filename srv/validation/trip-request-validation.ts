@@ -1,4 +1,9 @@
 import { DomainError, PACE_VALUES } from '../domain/trip-request.ts';
+import {
+  convertMajorUnitsToMinorUnits,
+  isSupportedCurrency,
+  SUPPORTED_CURRENCY_CODES,
+} from '../domain/currency.ts';
 import type {
   HardConstraints,
   Pace,
@@ -53,10 +58,19 @@ export function validateTripRequest(input: NormalizedTripRequestValidationInput)
     throw new DomainError('INVALID_TOTAL_BUDGET', 'Całkowity budżet musi być większy od zera.');
   }
 
-  if (!/^[A-Z]{3}$/.test(input.currency)) {
+  if (!isSupportedCurrency(input.currency)) {
     throw new DomainError(
       'INVALID_CURRENCY',
-      'Waluta musi być trzyliterowym kodem zapisanym wielkimi literami.',
+      `Waluta nie jest obsługiwana. Dozwolone waluty: ${SUPPORTED_CURRENCY_CODES.join(', ')}.`,
+    );
+  }
+  const budgetConversion = convertMajorUnitsToMinorUnits(input.totalBudget, input.currency);
+  if (!budgetConversion.ok) {
+    throw new DomainError(
+      budgetConversion.reason === 'INVALID_PRECISION'
+        ? 'INVALID_TOTAL_BUDGET_PRECISION'
+        : 'INVALID_TOTAL_BUDGET_MINOR_UNITS',
+      'Całkowity budżet nie jest reprezentowalny w minor units zgodnie z kontraktem waluty.',
     );
   }
 

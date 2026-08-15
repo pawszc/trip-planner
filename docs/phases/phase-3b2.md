@@ -8,10 +8,11 @@ constraints, budżetu lub rankingu.
 
 ## Status
 
-`READY`
+`REVIEW`
 
-Status obowiązuje po zmergowaniu bootstrap PR ustanawiającego workflow Level 2 i tę
-wersjonowaną specyfikację.
+Implementacja rozpoczęła się po zmergowaniu bootstrap PR ustanawiającego workflow Level 2
+i tę wersjonowaną specyfikację. `REVIEW` oznacza przekazanie kompletnej implementacji do
+pętli Draft PR bez automatycznego startu następnej fazy.
 
 ## Preconditions
 
@@ -37,7 +38,9 @@ wersjonowaną specyfikację.
   odrzuca cały output przed persistence lub użyciem; błędne referencje nie są cicho usuwane.
 - Wewnętrzne persistence wykonania i wyniku narracji jako `NarrativeRuns` i
   `OptionNarratives` albo semantycznie równoważne nazwy zgodne z istniejącym modelem.
-- Jawne linkage do właściwych `PlanningRun`, `RankedOption` i `AiRun`.
+- Jawne linkage do właściwych `PlanningRun`, `RankedOption` i dokładnie zwalidowanego
+  `AiRun`; po walidacji produkt zachowuje historyczny scalar UUID, a nie association
+  blokujące konfigurowalną retencję efemerycznego audytu.
 - Jeden jawny CAP use case korzystający z profilu `GENERATE`.
 - Kontrolowane zachowanie, w którym błąd albo brak narracji nie zmienia opcji, rankingu,
   hard constraints ani budżetu.
@@ -58,8 +61,22 @@ wersjonowaną specyfikację.
 
 - Kod pozostaje jedynym źródłem prawdy dla constraints, kompletności, workflow, rankingu
   i arytmetyki finansowej. LLM tworzy wyłącznie narrację.
+- Zamknięty `currency-fraction-digits-v1` współdzielony przez walidację briefu, major → minor
+  i grounded display obsługuje wyłącznie PLN/EUR z dwiema cyframi. JPY, KWD i nieznane kody
+  są odrzucane; rozszerzenie precision wymaga osobnej decyzji o modelu budżetowym.
+- Wersja kontraktu walut jest częścią fingerprintu i trwałego `PlanningRun`. Grounded reader
+  nie może zastąpić brakującej lub nieobsługiwanej wersji historycznej bieżącą stałą runtime.
+- Nowe `PlanningRuns` są zapisywane wyłącznie fingerprintem v1. Ograniczony dual-read może po
+  braku v1 rozpoznać dokładny, zamrożony fingerprint v0 z `main@1b8a852` tylko dla spójnego
+  `SUCCEEDED`/`OPTIONS_READY`, historycznego lineage i dokładnie trzech opcji. Taki replay jest
+  read-only, bez backfillu i provider call; nie dotyczy `INSUFFICIENT_OPTIONS` i nie nadaje
+  legacy row brakującego lineage narracji.
+- Każda trwała kategoria budżetu zachowuje części confirmed/estimated. Legalne mieszane
+  `ADDITIONAL_FEES` zachowuje obie części, które sumują się do znanego `amountMinor`.
 - Model nie wykonuje obliczeń finansowych, nie zmienia ugruntowanych wartości i nie
-  uzupełnia brakujących danych. `UNKNOWN` i missing pozostają jawne.
+  uzupełnia brakujących danych. Kod przygotowuje human-readable display z minor units i
+  precision waluty; model nie dzieli minor units ani nie formatuje pieniędzy. `UNKNOWN` i
+  missing pozostają jawne.
 - Walidacja 3B2 obejmuje wyłącznie ścisły schemat i deterministyczną integralność
   referencji. Poprawna referencja zapewnia traceability, ale nie dowodzi semantycznie, że
   treść bloku wynika ze wskazanego faktu; taka ocena należy do `JUDGE` w Fazie 3B3.
@@ -70,7 +87,9 @@ wersjonowaną specyfikację.
 - Żadna transakcja DB nie pozostaje aktywna podczas provider call. Product read, wykonanie
   AI z audytem i product write są osobnymi fazami zgodnymi z `docs/ai-workflow.md`.
 - `AiRuns` pozostaje wewnętrzne i nie przechowuje promptów, wejść, wyjść ani surowych
-  błędów. Nie wolno dodawać sekretów ani utrwalać raw provider payloads.
+  błędów. Jest efemerycznym audytem z niezmienioną konfigurowalną retencją i defaultem 30
+  dni; cleanup nie może być blokowany przez trwałe narracje produktu. Nie wolno dodawać
+  sekretów ani utrwalać raw provider payloads.
 - Prawdziwe dane użytkowników nie mogą zostać wysłane do providera przed zatwierdzeniem
   ustawień retencji organizacji, ZDR i dozwolonego zakresu danych opisanego w
   `docs/ai-gateway.md`.
@@ -80,6 +99,10 @@ wersjonowaną specyfikację.
 - Grounded context jest deterministyczny, wersjonowany i zawiera wyłącznie zatwierdzone
   fakty wraz z provenance oraz jawnymi brakami. Każdy referencjonowalny wpis ma
   deterministyczny, unikalny i związany z dokładnym kontekstem `factId`.
+- Kategorie i agregat budżetu są wzajemnie zgodne; `UNKNOWN`/`MISSING` wymuszają niekompletny
+  status agregatu, poprawny count i `null` dla total/per-person/remaining.
+- Lineage wersji fixture i scoringu jest identyczne na PlanningRun, opcji, pozycjach budżetu
+  i źródłach albo cały kontekst jest odrzucany przed AI.
 - Wersjonowany request `GENERATE` zwraca wyłącznie wynik zgodny ze ścisłym schematem Zod,
   ponownie zwalidowany lokalnie przed użyciem.
 - Każdy blok narracji zawiera co najmniej jeden identyfikator w `factReferences`, a każdy
@@ -90,7 +113,10 @@ wersjonowaną specyfikację.
 - Referencja do istniejącego wpisu jawnie oznaczonego `UNKNOWN`/missing jest poprawna
   referencyjnie i nie może zostać pomylona z nieznanym identyfikatorem.
 - Trwały wynik narracji jest jednoznacznie powiązany z planning runem, opcją i właściwym
-  audytem AI.
+  audytem AI, a historyczny `aiRunId` pozostaje po dozwolonym cleanup audytu.
+- Dokładny historyczny run v0 może być zwrócony wyłącznie przez fail-closed replay zgodny z
+  zamrożonym kontraktem; każda niespójność daje 409, a brak currency lineage nadal blokuje
+  narrację błędem 500 przed gatewayem i persistence.
 - Jawny CAP use case respektuje fazową granicę transakcji i nie odtwarza SQLite deadlocku
   wykrytego w 3B1.
 - Awaria AI, walidacji albo audytu nie zmienia deterministycznych opcji, rankingu,
@@ -112,6 +138,30 @@ wersjonowaną specyfikację.
   `JUDGE`, safety pipeline ani evali.
 - Brak provider call przed durable `STARTED`.
 - Poprawne linkage planning run/option/AI run.
+- Usunięcie wygasłego `AiRun` przez realny CAP/SQLite store nie usuwa ani nie uszkadza
+  trwałej narracji i nie pozostawia mandatory database association do audytu.
+- Deterministyczne display values pieniędzy, jawne `null` dla `UNKNOWN`/`MISSING` oraz brak
+  arytmetyki i formatowania po stronie LLM.
+- End-to-end akceptacja PLN/EUR i odrzucenie JPY/KWD/nieznanych kodów przez wspólny
+  wersjonowany kontrakt walut.
+- Arytmetyka, klasyfikacje, waluty, kompletność, status agregatu i lineage wersji budżetu
+  odrzucają każdą sprzeczność fail-closed.
+- Legalny kandydat z mixed confirmed/estimated additional fees przechodzi kalkulator,
+  persistence, grounded reader i realny przepływ CAP bez zmiany semantyki budżetu.
+- Addytywny upgrade schematu nie backfilluje wersji kontraktu ani części kategorii dla legacy
+  rows; brakujące lub nieobsługiwane lineage jest odrzucane fail-closed przed AI.
+- Golden test zamraża literalny SHA-256 fingerprintu v0 z `main@1b8a852` i potwierdza, że v0
+  różni się od v1.
+- Realny CAP/SQLite stan post-upgrade z exact v0, `currencyContractVersion: null`, nullowymi
+  częściami `BudgetItems`, `OPTIONS_READY` i trzema opcjami replayuje ten sam run bez zapisu,
+  backfillu i provider call. Narracja kończy się 500 przed gatewayem i pozostawia zero
+  `AiRuns` oraz rekordów produktu narracji.
+- Istniejący v1 ma pierwszeństwo przed równoczesnym v0. Exact v0 z brakującą opcją,
+  niezgodnym historycznym lineage albo `INSUFFICIENT_OPTIONS` kończy się 409
+  `PLANNING_STATE_INCONSISTENT` bez wywołań i bez zmian w bazie.
+- Rozwiązywalne provenance transportu/noclegu i fail-closed dla dangling lub ambiguous
+  source-context mappings.
+- `INVALID_GROUNDED_OPTION_CONTEXT` i `INVALID_NARRATIVE_PERSISTENCE` mapowane do HTTP 500.
 - Failed AI albo audit nie zmienia deterministycznych opcji.
 - Kompozycja transakcji nie odtwarza SQLite deadlocku z 3B1.
 - Standardowe testy nie wykonują live ani paid AI.

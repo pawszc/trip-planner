@@ -4,6 +4,7 @@ import {
   type TripCandidate,
   TRANSPORT_MODE_VALUES,
 } from '../domain/candidate.ts';
+import { isSupportedCurrency } from '../domain/currency.ts';
 import { FRESHNESS_TYPE_VALUES, type Money, type SourceSnapshot } from '../domain/money.ts';
 import { SOFT_PREFERENCE_KEYS } from '../domain/trip-request.ts';
 import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
@@ -111,7 +112,7 @@ function hasCompleteSourceSnapshot(source: SourceSnapshot | null): source is Sou
     strictInstant(source.fetchedAt) !== null &&
     isNonEmptyString(source.sourceUrl) &&
     FRESHNESS_TYPE_VALUES.includes(source.freshnessType) &&
-    /^[A-Z]{3}$/.test(source.currency) &&
+    isSupportedCurrency(source.currency) &&
     isNonEmptyString(source.fixtureVersion)
   );
 }

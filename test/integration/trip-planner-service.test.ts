@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Request } from '@sap/cds';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { CURRENCY_CONTRACT_VERSION, SUPPORTED_CURRENCY_CODES } from '../../srv/domain/currency.ts';
 import type { HardConstraints, SoftPreferences } from '../../srv/domain/trip-request.js';
 import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
 import { MOCK_FIXTURE_VERSION } from '../../srv/providers/fixtures/fixture-source.js';
@@ -23,6 +24,8 @@ interface CreatedTripRequest {
   originCity: string;
   startDate: string;
   endDate: string;
+  totalBudget: number | string;
+  currency: string;
   status: string;
   hardConstraints_hardBudgetLimit: boolean;
   hardConstraints_earliestDepartureTime: string | null;
@@ -58,6 +61,7 @@ interface PlanningRunResponse {
   workflowRun_ID: string;
   requestFingerprint: string;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
+  currencyContractVersion: string | null;
   providerFixtureVersion: string;
   engineVersion: string;
   scoringVersion: string;
@@ -88,11 +92,14 @@ interface RankedOptionResponse {
   destinationCode: string;
   destinationCity: string;
   transportMode: string;
+  currency: string;
+  budgetLimitMinor: number | string;
   totalAmountMinor: number | string;
   costPerPersonMinor: number | string;
   confirmedAmountMinor: number | string;
   estimatedAmountMinor: number | string;
   unknownCategoryCount: number;
+  remainingBudgetMinor: number | string;
   totalScore: number | string;
 }
 
@@ -100,9 +107,15 @@ interface BudgetItemResponse {
   rankedOption_ID: string;
   planningRun_ID: string;
   sourceSnapshot_ID: string | null;
+  providerFixtureVersion: string;
+  scoringVersion: string;
   category: string;
+  priceType: 'LIVE_PRICE' | 'FIXED_PRICE' | 'ESTIMATE' | 'UNKNOWN';
   classification: 'CONFIRMED' | 'ESTIMATED' | 'UNKNOWN';
+  currency: string;
   amountMinor: number | string | null;
+  confirmedAmountMinor: number | string | null;
+  estimatedAmountMinor: number | string | null;
 }
 
 interface SourceSnapshotResponse {
@@ -113,6 +126,7 @@ interface SourceSnapshotResponse {
   rankedOption_ID: string;
   providerFixtureVersion: string;
   scoringVersion: string;
+  currency: string;
   provider: string;
   sourceUrl: string;
   fixtureVersion: string;
@@ -274,6 +288,51 @@ describe('TripPlannerService', () => {
     expect(hardConstraintsFromOData(tripRequest)).toEqual(customHardConstraints);
     expect(softPreferencesFromOData(tripRequest)).toEqual(customSoftPreferences);
   });
+
+  it.each(SUPPORTED_CURRENCY_CODES)(
+    'accepts supported currency %s through persistence and deterministic planning',
+    async (currency) => {
+      const created = await POST('/trip-planner/TripRequests', {
+        ...referenceTripRequestODataPayload,
+        currency,
+      });
+      const tripRequest = created.data as CreatedTripRequest;
+      expect(tripRequest.currency).toBe(currency);
+      await POST(actionUrl(tripRequest.ID), {});
+      const planningRun = await startReferencePlanning(tripRequest.ID);
+      const options = await readPlanningCollection<RankedOptionResponse>(
+        'RankedOptions',
+        'planningRun_ID',
+        planningRun.ID,
+      );
+      const budgetItems = await readPlanningCollection<BudgetItemResponse>(
+        'BudgetItems',
+        'planningRun_ID',
+        planningRun.ID,
+      );
+
+      expect(planningRun.status).toBe('SUCCEEDED');
+      expect(options).toHaveLength(3);
+      expect(options.every((option) => option.currency === currency)).toBe(true);
+      expect(options.every((option) => Number(option.budgetLimitMinor) === 450_000)).toBe(true);
+      expect(budgetItems).toHaveLength(21);
+      expect(budgetItems.every((item) => item.currency === currency)).toBe(true);
+    },
+  );
+
+  it.each(['JPY', 'KWD', 'USD', 'ZZZ'])(
+    'rejects currency %s outside the closed contract before persistence',
+    async (currency) => {
+      await expect(
+        POST('/trip-planner/TripRequests', { ...validTripRequest, currency }),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { data: { error: { code: 'INVALID_CURRENCY' } } },
+      });
+      const persisted = await GET('/trip-planner/TripRequests');
+      expect((persisted.data as ODataCollection<CreatedTripRequest>).value).toHaveLength(0);
+    },
+  );
 
   it('deep-merges a partial profile PATCH without resetting custom values', async () => {
     const created = await POST('/trip-planner/TripRequests', customTripRequestODataPayload);
@@ -574,6 +633,23 @@ describe('TripPlannerService', () => {
     ).resolves.toHaveLength(0);
   });
 
+  it('rejects an unsupported persisted currency before major-to-minor conversion', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.TripRequests')
+        .set({ currency: 'JPY' })
+        .where({ ID: tripRequest.ID }),
+    );
+
+    await expect(POST(startPlanningActionUrl(tripRequest.ID), {})).rejects.toMatchObject({
+      status: 400,
+      response: { data: { error: { code: 'INVALID_CURRENCY' } } },
+    });
+    await expect(
+      readPlanningCollection<PlanningRunResponse>('PlanningRuns', 'tripRequest_ID', tripRequest.ID),
+    ).resolves.toHaveLength(0);
+  });
+
   it('runs the confirmed reference workflow in the required order and persists three roles', async () => {
     const tripRequest = await createConfirmedReferenceTrip();
     const planningRun = await startReferencePlanning(tripRequest.ID);
@@ -595,6 +671,7 @@ describe('TripPlannerService', () => {
       status: 'SUCCEEDED',
       tripRequest_ID: tripRequest.ID,
       workflowRun_ID: workflowRuns[0]?.ID,
+      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
       providerFixtureVersion: MOCK_FIXTURE_VERSION,
       engineVersion: 'candidate-engine-v1',
       scoringVersion: 'candidate-score-v1:candidate-engine-v1',
@@ -738,15 +815,43 @@ describe('TripPlannerService', () => {
       );
       expect(items.every((item) => item.sourceSnapshot_ID)).toBe(true);
       expect(items.every((item) => item.amountMinor !== null)).toBe(true);
-      const confirmed = items
-        .filter((item) => item.classification === 'CONFIRMED')
-        .reduce((sum, item) => sum + Number(item.amountMinor), 0);
-      const estimated = items
-        .filter((item) => item.classification === 'ESTIMATED')
-        .reduce((sum, item) => sum + Number(item.amountMinor), 0);
+      expect(
+        items.every(
+          (item) =>
+            item.confirmedAmountMinor !== null &&
+            item.estimatedAmountMinor !== null &&
+            Number(item.confirmedAmountMinor) + Number(item.estimatedAmountMinor) ===
+              Number(item.amountMinor),
+        ),
+      ).toBe(true);
+      expect(items.every((item) => item.currency === option.currency)).toBe(true);
+      expect(
+        items.every((item) =>
+          item.priceType === 'ESTIMATE'
+            ? item.classification === 'ESTIMATED'
+            : item.priceType === 'UNKNOWN'
+              ? item.classification === 'UNKNOWN'
+              : item.classification === 'CONFIRMED',
+        ),
+      ).toBe(true);
+      expect(
+        items.every(
+          (item) =>
+            item.providerFixtureVersion === planningRun.providerFixtureVersion &&
+            item.scoringVersion === planningRun.scoringVersion,
+        ),
+      ).toBe(true);
+      const confirmed = items.reduce((sum, item) => sum + Number(item.confirmedAmountMinor), 0);
+      const estimated = items.reduce((sum, item) => sum + Number(item.estimatedAmountMinor), 0);
       expect(confirmed).toBe(Number(option.confirmedAmountMinor));
       expect(estimated).toBe(Number(option.estimatedAmountMinor));
       expect(confirmed + estimated).toBe(Number(option.totalAmountMinor));
+      expect(Number(option.costPerPersonMinor)).toBe(
+        Math.ceil(Number(option.totalAmountMinor) / 2),
+      );
+      expect(Number(option.remainingBudgetMinor)).toBe(
+        Number(option.budgetLimitMinor) - Number(option.totalAmountMinor),
+      );
       expect(option.unknownCategoryCount).toBe(0);
     }
   });

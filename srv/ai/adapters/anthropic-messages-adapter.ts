@@ -180,12 +180,19 @@ function incompleteOutputMessage(stopReason: StopReason | null): string {
 
 export class AnthropicMessagesAdapter implements StructuredAiAdapter {
   readonly provider = AiProvider.ANTHROPIC;
+  private readonly config: AiConfig;
+  private readonly clientFactory: AnthropicClientFactory;
+  private readonly now: () => number;
 
   constructor(
-    private readonly config: AiConfig,
-    private readonly clientFactory: AnthropicClientFactory = createAnthropicSdkClient,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
+    config: AiConfig,
+    clientFactory: AnthropicClientFactory = createAnthropicSdkClient,
+    now: () => number = () => Date.now(),
+  ) {
+    this.config = config;
+    this.clientFactory = clientFactory;
+    this.now = now;
+  }
 
   async call<TOutput>(
     request: StructuredAiRequest<TOutput>,

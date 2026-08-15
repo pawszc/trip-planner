@@ -130,6 +130,17 @@ type AiTaskType : String(16) enum {
   SMOKE;
 }
 
+type NarrativeRunStatus : String(16) enum {
+  SUCCEEDED;
+}
+
+type NarrativeBlockKind : String(16) enum {
+  SUMMARY;
+  ADVANTAGE;
+  TRADEOFF;
+  RISK;
+}
+
 // Trwały zapis twardych ograniczeń i podstawowej preferencji tempa podróży.
 entity TripRequests : cuid, managed {
   originCity : String(120) not null;
@@ -162,6 +173,8 @@ entity PlanningRuns : cuid, managed {
   workflowRun : Association to one WorkflowRuns not null;
   requestFingerprint : String(64) not null;
   status : PlanningRunStatus not null;
+  // Nullable bez defaultu: legacy row nie może otrzymać wersji, której nie da się udowodnić.
+  currencyContractVersion : String(80);
   providerFixtureVersion : String(80) not null;
   engineVersion : String(80) not null;
   scoringVersion : String(120) not null;
@@ -213,6 +226,49 @@ entity AiRuns : cuid, managed {
 
   errorCode : String(80);
   retryable : Boolean;
+}
+
+// Produktowy wynik narracji powstaje dopiero po lokalnej walidacji i trwałym SUCCEEDED
+// właściwego AiRun. Audyt jest efemeryczny, więc produkt zachowuje tylko historyczny UUID.
+// Prompt, ugruntowane wejście i raw output nie są tu przechowywane.
+@assert.unique.narrativeAiRun: [aiRunId]
+entity NarrativeRuns : cuid, managed {
+  planningRun : Association to one PlanningRuns not null;
+  rankedOption : Association to one RankedOptions not null;
+  // Niezmienny historyczny UUID; cleanup efemerycznego AiRuns nie narusza produktu.
+  aiRunId : UUID not null;
+  status : NarrativeRunStatus not null;
+  contextVersion : String(120) not null;
+  contextFingerprint : String(64) not null;
+  promptVersion : String(120) not null;
+  schemaVersion : String(120) not null;
+  blockCount : Integer not null;
+  completedAt : Timestamp not null;
+}
+
+// Każdy blok narracji jest osobnym rekordem; brak częściowego zapisu zapewnia jedna
+// krótka transakcja produktu wykonywana po terminalnym audycie AI.
+@assert.unique.narrativeBlockSequence: [narrativeRun, sequence]
+entity OptionNarratives : cuid, managed {
+  narrativeRun : Association to one NarrativeRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  rankedOption : Association to one RankedOptions not null;
+  sequence : Integer not null;
+  kind : NarrativeBlockKind not null;
+  text : String(1200) not null;
+}
+
+// Referencje pozostają znormalizowane, aby każdy utrwalony blok zachował dokładne factId
+// z kontekstu requestu zamiast niezwalidowanej listy JSON.
+@assert.unique.narrativeFactSequence: [optionNarrative, sequence]
+@assert.unique.narrativeFactId: [optionNarrative, factId]
+entity NarrativeFactReferences : cuid, managed {
+  narrativeRun : Association to one NarrativeRuns not null;
+  optionNarrative : Association to one OptionNarratives not null;
+  planningRun : Association to one PlanningRuns not null;
+  rankedOption : Association to one RankedOptions not null;
+  sequence : Integer not null;
+  factId : String(80) not null;
 }
 
 // Audit kolejności przejść wykonywanych atomowo przez udany startPlanning.
@@ -311,6 +367,9 @@ entity BudgetItems : cuid, managed {
   classification : MoneyClassification not null;
   currency : String(3) not null;
   amountMinor : Integer64;
+  // Nullable bez defaultu zapewnia bezpieczny upgrade; wszystkie nowe zapisy podają obie części.
+  confirmedAmountMinor : Integer64;
+  estimatedAmountMinor : Integer64;
 }
 
 @assert.unique.optionNote: [rankedOption, kind, sequence]

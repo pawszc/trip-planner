@@ -1,19 +1,21 @@
 import { createHash } from 'node:crypto';
 import type { ZodType } from 'zod';
 
-export enum AiProvider {
-  OPENAI = 'OPENAI',
-  ANTHROPIC = 'ANTHROPIC',
-}
+export const AiProvider = Object.freeze({
+  OPENAI: 'OPENAI',
+  ANTHROPIC: 'ANTHROPIC',
+} as const);
+export type AiProvider = (typeof AiProvider)[keyof typeof AiProvider];
 
-export enum AiTaskType {
-  DECIDE = 'DECIDE',
-  GENERATE = 'GENERATE',
-  JUDGE = 'JUDGE',
-  SMOKE = 'SMOKE',
-}
+export const AiTaskType = Object.freeze({
+  DECIDE: 'DECIDE',
+  GENERATE: 'GENERATE',
+  JUDGE: 'JUDGE',
+  SMOKE: 'SMOKE',
+} as const);
+export type AiTaskType = (typeof AiTaskType)[keyof typeof AiTaskType];
 
-export type ProfiledAiTaskType = Exclude<AiTaskType, AiTaskType.SMOKE>;
+export type ProfiledAiTaskType = Exclude<AiTaskType, (typeof AiTaskType)['SMOKE']>;
 
 export type AiEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
