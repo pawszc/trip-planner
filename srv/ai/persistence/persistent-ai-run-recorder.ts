@@ -3,6 +3,7 @@ import type { AiRunRecorder, AiRunTelemetryEvent } from '../telemetry.ts';
 import type { AiRunStore } from './ai-run-store.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const CONFIGURED_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 function auditMappingFailure(message: string, cause?: unknown): AiError {
   return new AiError('AI_AUDIT_FAILED', message, cause === undefined ? {} : { cause });
@@ -43,6 +44,16 @@ export function calculateAiRunExpiresAt(startedAt: string, runRetentionDays: num
 function validateCommonEvent(event: AiRunTelemetryEvent): void {
   requireNonEmpty(event.aiRunId, 'aiRunId');
   requireNonEmpty(event.configuredModel, 'configuredModel');
+  if (!CONFIGURED_EFFORTS.has(event.configuredEffort)) {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit configured effort is invalid.', {
+      details: { field: 'configuredEffort' },
+    });
+  }
+  if (event.provider === 'ANTHROPIC' && event.configuredEffort === 'none') {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit configured effort is invalid.', {
+      details: { field: 'configuredEffort' },
+    });
+  }
   requireNonEmpty(event.promptVersion, 'promptVersion');
   requireNonEmpty(event.schemaVersion, 'schemaVersion');
   if (!/^[a-f0-9]{64}$/.test(event.inputFingerprint)) {
@@ -51,6 +62,24 @@ function validateCommonEvent(event: AiRunTelemetryEvent): void {
     });
   }
   requireTimestamp(event.startedAt, 'startedAt');
+  if (
+    !Number.isSafeInteger(event.configuredMaxOutputTokens) ||
+    event.configuredMaxOutputTokens < 1 ||
+    event.configuredMaxOutputTokens > 8_192
+  ) {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit configured token limit is invalid.', {
+      details: { field: 'configuredMaxOutputTokens' },
+    });
+  }
+  if (
+    !Number.isSafeInteger(event.effectiveMaxOutputTokens) ||
+    event.effectiveMaxOutputTokens < 1 ||
+    event.effectiveMaxOutputTokens > event.configuredMaxOutputTokens
+  ) {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit effective token limit is invalid.', {
+      details: { field: 'effectiveMaxOutputTokens' },
+    });
+  }
 }
 
 export class PersistentAiRunRecorder implements AiRunRecorder {
@@ -73,6 +102,9 @@ export class PersistentAiRunRecorder implements AiRunRecorder {
           taskType: event.taskType,
           provider: event.provider,
           configuredModel: event.configuredModel,
+          configuredEffort: event.configuredEffort,
+          configuredMaxOutputTokens: event.configuredMaxOutputTokens,
+          effectiveMaxOutputTokens: event.effectiveMaxOutputTokens,
           promptVersion: event.promptVersion,
           schemaVersion: event.schemaVersion,
           inputFingerprint: event.inputFingerprint,

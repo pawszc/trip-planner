@@ -1,12 +1,13 @@
-# AI execution i grounded narratives po Fazie 3B2
+# AI execution i narrative quality gate Fazy 3B3
 
 ## Cel i granice
 
 Faza 3B1 dodała task-aware profile wykonania, walidację metadanych adaptera i trwały audyt
-`AiRuns`. Faza 3B2 wykorzystuje ten fundament w jednej jawnej bound action
-`RankedOptions.generateNarrative()`. `TripRequests.startPlanning()` i UI nadal nie wykonują
-AI. Gateway jest domyślnie wyłączony, a standardowe testy są offline i nie potrzebują
-credentiali.
+`AiRuns`, a Faza 3B2 pierwszą grounded narrative. Faza 3B3 dodaje do tej samej jawnej bound
+action `RankedOptions.generateNarrative()` model-safe projection, deterministic precheck,
+strict `JUDGE`, code-owned publication policy, bezpieczne review metadata i evale.
+`TripRequests.startPlanning()` i UI nadal nie wykonują AI. Gateway jest domyślnie
+wyłączony, a standardowe testy są offline i nie potrzebują credentiali.
 
 Kod pozostaje jedynym źródłem prawdy dla hard constraints, kompletności danych, workflow,
 rankingu i arytmetyki finansowej. Model nie może uzupełniać brakujących faktów ani liczyć
@@ -22,8 +23,11 @@ budżetu.
 - `srv/ai/telemetry.ts` — asynchroniczny kontrakt bez payloadów;
 - `srv/ai/persistence/` — store CAP i persistent recorder;
 - `srv/ai/live-smoke.ts` — osobna ścieżka operator-only;
-- `srv/narratives/` — grounded context, prompt/schema, krótki odczyt i atomowy zapis
-  zwalidowanych narracji;
+- `srv/narratives/` — grounded context, model-safe/quality contexts, kontrakty
+  `GENERATE`/`JUDGE`, precheck, review persistence, krótki odczyt i atomowy zapis
+  zaakceptowanych narracji;
+- `srv/evals/` — frozen dataset loader, offline harness, metryki, privacy-safe raporty,
+  baseline binding, price snapshot i fail-closed live guard;
 - `scripts/ai-*.ts` — lokalne helpery operatora.
 
 Typy OpenAI i Anthropic pozostają wewnątrz adapterów. Nie ma tools, streamingu, web search,
@@ -84,6 +88,26 @@ Credentiale są opcjonalne do chwili faktycznego wywołania wybranego adaptera.
 | `AI_RUN_RETENTION_DAYS`         | `30`              | integer 1–365                    |
 | `OPENAI_API_KEY`                | brak              | wymagany tylko do OpenAI call    |
 | `ANTHROPIC_API_KEY`             | brak              | wymagany tylko do Anthropic call |
+
+Finalny live eval ma osobny fail-closed loader i nie jest włączany przez sam gateway:
+
+| Zmienna                                     | Default | Walidacja i hard cap                     |
+| ------------------------------------------- | ------- | ---------------------------------------- |
+| `AI_LIVE_EVAL_ENABLED`                      | `false` | dokładnie `true` lub `false`             |
+| `AI_LIVE_EVAL_MAX_LOGICAL_CALLS`            | `48`    | positive integer, maksymalnie 48         |
+| `AI_LIVE_EVAL_MAX_PROVIDER_ATTEMPTS`        | `56`    | positive integer, maksymalnie 56         |
+| `AI_LIVE_EVAL_MAX_ESTIMATED_COST_USD_CENTS` | `300`   | positive integer, maksymalnie 300 centów |
+
+Opt-in live eval nie wystarcza samodzielnie: preflight wymaga także `AI_ENABLED=true`,
+credentiali, wersjonowanej ceny każdego dokładnego configured modelu i planu mieszczącego
+się we wszystkich limitach. Unknown price lub przekroczenie rezerwacji blokuje call przed
+providerem. Runner v1 ma dokładnie 46 logical calls i wymaga `AI_MAX_RETRIES=0`: po thrown
+provider failure gateway nie udostępnia jeszcze bezpiecznego attempts/usage settlement, więc
+runner zatrzymuje się bez częściowego raportu. Checked-in katalog cen ma pustą listę modeli,
+aby nie wymyślać stawek; zatwierdzone exact rates są warunkiem osobnego live baseline.
+Po przejściu wszystkich guardów każdy baseline dostaje odizolowany SQLite store pod
+`.tools/narrative-live-eval/`; zawiera on wyłącznie allow-listed `AiRuns`, bez promptu,
+kontekstu, narracji, raw payloadu lub sekretu.
 
 Do końca Fazy 3B dostępne są deprecated aliases:
 
@@ -174,9 +198,11 @@ Nie ma opcji fail-open.
 
 `AiRuns.ID` jest UUID gatewaya. Opcjonalne `planningRun` wiąże wykonanie narracji z planem w
 czasie walidacji przed product write i nadal pozwala zachować runy smoke/eval bez planu.
-Encja ma status/provider/task, oba modele, wersje, fingerprint, timestamps, `expiresAt`, token
-usage, latency, attempts, provider request ID, refusal oraz kontrolowany error
-code/retryability. Jest efemerycznym audytem wykonania, a nie danymi produktu.
+Encja ma status/provider/task, oba modele, wersje, fingerprint, timestamps, `expiresAt`,
+skonfigurowany effort, skonfigurowany i efektywny limit output tokens, token usage, latency,
+attempts, provider request ID, refusal oraz kontrolowany error code/retryability. Nowe runy
+wypełniają metadata profilu przed `STARTED`; addytywne pola legacy pozostają nullable bez
+defaultu. Jest to efemeryczny audyt wykonania, a nie dane produktu.
 
 Encja celowo nie ma pól na prompt, instrukcje, wejście, output, raw response, raw error,
 nagłówki ani credentiale. Nie jest projektowana w publicznym `TripPlannerService`; endpoint
@@ -198,15 +224,16 @@ transakcja zapisu produktu. Realny test-only handler CAP potwierdza widoczność
 `expiresAt < now`. Kontrakt cleanup jest zaimplementowany i testowany, ale 3B1 nie dodaje
 schedulera. Deployment lub kolejna faza operacyjna musi podłączyć jego wywołanie.
 
-Narracje mają niezależny lifecycle produktu. Przed ich zapisem writer wymaga istniejącego,
-terminalnego `SUCCEEDED` z dokładnym `planningRun`, taskiem `GENERATE`, `promptVersion`,
-`schemaVersion` i `inputFingerprint`. Następnie `NarrativeRuns` zapisuje UUID jako niezmienny
-scalar `aiRunId`, bez association/foreign key do `AiRuns`; bloki i fact references dziedziczą
-to linkage przez `NarrativeRuns`. Dzięki temu cleanup audytu nie jest blokowany przez produkt.
-Realny test CAP/SQLite wygasza audyt udanej narracji, wykonuje `deleteExpired(now)`, potwierdza
-usunięcie `AiRun` oraz dalszą czytelność i spójność wszystkich rekordów narracji.
+Narracje mają niezależny lifecycle produktu. Przed publikacją writer wymaga istniejących,
+terminalnych `SUCCEEDED` z dokładnym `planningRun`, taskami `GENERATE` i `JUDGE`, wersjami
+prompt/schema oraz exact input fingerprints. Następnie `NarrativeRuns` zapisuje UUID-y jako
+niezmienne scalar IDs, bez association/foreign key do `AiRuns`; review, bloki i fact
+references dziedziczą zwalidowane linkage. Dzięki temu cleanup audytu nie jest blokowany
+przez produkt. Realny test CAP/SQLite wygasza oba audyty udanej narracji, wykonuje
+`deleteExpired(now)`, potwierdza usunięcie `AiRuns` oraz dalszą czytelność i spójność review
+i rekordów narracji.
 
-## Offline testy i ręczny smoke
+## Offline testy, eval i ręczny smoke
 
 Standardowe testy używają transportów HTTP in-memory i SQLite in-memory. Obejmują pełną
 kompozycję gateway + mock adapter + persistent recorder + real store, a także test-only
@@ -227,7 +254,19 @@ Brak profilu providera kończy się `INVALID_AI_CONFIGURATION`; nie ma ukrytego 
 Credential checker pokazuje wyłącznie presence flags, trzy profile, stan opt-in i retencję —
 bez wartości, fragmentów lub długości kluczy.
 
-## Produktowy use case 3B2
+Offline narrative-quality eval jest częścią standardowej weryfikacji. Ładuje dokładnie 32
+synthetic semantic cases i cztery synthetic end-to-end contexts, waliduje frozen canonical
+fingerprint, exact distribution i kontrakty, a następnie uruchamia deterministic in-memory
+harness. Metryki, progi i privacy-safe raporty nie zawierają promptów, kontekstów,
+kandydatów ani raw provider payloads.
+
+Finalny live baseline jest oddzielony od smoke i CI. Wymaga osobnej zgody na dokładny plan
+wywołań i konserwatywny koszt, a preflight/guard egzekwują maksymalnie 48 logical calls, 56
+provider attempts oraz USD 3.00. Implementacja nie wykonała żadnego live call; rzeczywisty
+koszt wynosi USD 0, więc bez zatwierdzonego, przechodzącego baseline Faza 3B3 pozostaje w
+`REVIEW`.
+
+## Produktowy use case 3B3
 
 `RankedOptions.generateNarrative()` buduje `grounded-option-context-v1` wyłącznie z udanego
 `PlanningRun`, wybranej opcji, kategorii budżetu i istniejących source snapshots. Każdy fakt,
@@ -246,20 +285,38 @@ kategorie, klasyfikacje, walutę, sumy i status kompletności, a
 `grounded-money-display-v1` przygotowuje display dla limitu, sumy, confirmed, estimated,
 per-person i remaining. Prompt zabrania modelowi dzielenia minor units, ustalania precision
 i formatowania pieniędzy.
-Prompt `grounded-option-narrative-prompt-v1` i strict schema
+Prompt `grounded-option-narrative-prompt-v2` i strict schema
 `grounded-option-narrative-schema-v1` wymagają niepustych referencji w każdym bloku.
 
 Nieznana, pusta, nieaktualna albo pochodząca z innego kontekstu referencja odrzuca cały
-output. Po ponownej lokalnej walidacji i sprawdzeniu dokładnego terminalnego `AiRun` osobna
-transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i znormalizowane
-`NarrativeFactReferences`. Trwałe linkage używa historycznego scalar `aiRunId`, więc
-30-dniowy domyślny cleanup audytu nie narusza produktu. Szczegółową decyzję opisuje ADR 0007.
+output. `GENERATE` otrzymuje jednak model-safe projection zamiast pełnego kontekstu: raw
+source URL/external ID, HTML, znaki kontrolne i inne niepotrzebne provider-shaped values są
+usuwane, podczas gdy exact fact IDs, display, status i lineage pozostają dostępne.
+
+Po lokalnej walidacji deterministyczny precheck blokuje syntaktyczne/formatowe zagrożenia.
+Semantyczna niezgodność kwoty, nowe obliczenie lub wypełnienie `UNKNOWN` celowo trafiają do
+`JUDGE`, zgodnie z frozen stage labels datasetu. Szerokie odczytanie reguły exact-money,
+które przechwyciłoby te przypadki w prechecku, jest jawnym punktem review i nie może zmienić
+golden labels.
+
+`narrative-quality-context-v1` wiąże exact candidate, fingerprints, potwierdzone constraints
+i wszystkie wymagane wersje. Strict `JUDGE` output ma osiem wymiarów oraz kontrolowane
+findings; code-owned policy publikuje wyłącznie osiem `PASS` i zero findings. Reject zapisuje
+tylko safe review metadata w osobnej krótkiej transakcji i zero tekstu produktu. Publish
+wymaga dokładnych terminalnych audytów obu tasków, a następnie atomowo zapisuje review,
+`NarrativeRuns`, `OptionNarratives` i znormalizowane `NarrativeFactReferences`.
+
+Trwałe linkage używa historycznych scalar IDs, więc 30-dniowy domyślny cleanup audytu nie
+narusza produktu ani durable review. Szczegółową decyzję grounded 3B2 opisuje ADR 0007, a
+quality gate — ADR 0008.
 
 ## Znane ograniczenia i następne fazy
 
 - produkt wykonuje AI wyłącznie po jawnej akcji na pojedynczej `RankedOption` i opt-in;
-- poprawne referencje nie są semantycznym dowodem groundedness bez przyszłego `JUDGE`;
 - cleanup nie ma schedulera;
 - nie ma fallbacku providera/modelu;
 - adaptery obsługują wyłącznie tekstowy structured output;
-- Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline i evale.
+- precheck pozostaje wąski i nie zastępuje semantycznej oceny `JUDGE`; granica money-stage
+  opisana wyżej wymaga potwierdzenia podczas review;
+- produkt nie jest jeszcze włączony publicznie, a finalny live baseline nie został
+  zatwierdzony ani wykonany; koszt wynosi USD 0 i Faza 3B3 pozostaje `REVIEW`.

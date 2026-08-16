@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createInputFingerprint, isValidAiRunId } from '../ai/contracts.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import type { GroundedOptionContext } from './grounded-option-context.ts';
+import { buildNarrativeModelView, type NarrativeModelView } from './narrative-model-view.ts';
 import {
   OPTION_NARRATIVE_PROMPT_VERSION,
   OPTION_NARRATIVE_SCHEMA_VERSION,
@@ -60,6 +61,7 @@ export interface NarrativePersistenceBundle {
 
 export interface NarrativePersistenceInput {
   context: GroundedOptionContext;
+  modelView?: NarrativeModelView;
   output: unknown;
   aiRunId: string;
   completedAt: string;
@@ -88,6 +90,15 @@ export function buildNarrativePersistenceBundle(
     invalidNarrativePersistence('Narrative persistence requires the audited AI run UUID.');
   }
   const output: OptionNarrativeOutput = parseOptionNarrativeOutput(input.output, input.context);
+  const modelView = input.modelView ?? buildNarrativeModelView(input.context);
+  if (
+    modelView.groundedContextVersion !== input.context.version ||
+    modelView.groundedContextFingerprint !== input.context.fingerprint
+  ) {
+    invalidNarrativePersistence(
+      'Narrative persistence requires the model view from the exact grounded context.',
+    );
+  }
   const generateId = input.generateId ?? randomUUID;
   const narrativeRunId = generateId();
   const commonReferences = {
@@ -126,7 +137,7 @@ export function buildNarrativePersistenceBundle(
       taskType: 'GENERATE',
       promptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
       schemaVersion: OPTION_NARRATIVE_SCHEMA_VERSION,
-      inputFingerprint: createInputFingerprint(input.context),
+      inputFingerprint: createInputFingerprint(modelView),
     },
     narrativeRun: {
       ID: narrativeRunId,

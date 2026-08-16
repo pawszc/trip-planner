@@ -11,9 +11,10 @@
 
 ## Stan realizacji
 
-Faza 2 — od domeny do Planning API and Options UI — jest zakończona. Faza 3B1 dodaje
-fundament task-aware execution i trwałego audytu LLM, a Faza 3B2 pierwszy jawny use case
-grounded narrative dla wybranej opcji.
+Faza 2 — od domeny do Planning API and Options UI — jest zakończona. Faza 3B1 dodała
+fundament task-aware execution i trwałego audytu LLM, Faza 3B2 pierwszy jawny use case
+grounded narrative dla wybranej opcji, a Faza 3B3 jest w `REVIEW` z fail-closed narrative
+quality gate i evalami.
 
 ### Faza 2A — Domain and Workflow Core
 
@@ -91,11 +92,33 @@ grounded narrative dla wybranej opcji.
   zapisu produktu;
 - domyślny brak live calls przez `AI_ENABLED=false` i pełne testy offline.
 
+### Faza 3B3 — Narrative Quality Gate, Safety and Evals (`REVIEW`)
+
+- deterministyczny `narrative-model-view-v1`, który zachowuje wymagane fact IDs, display,
+  status i lineage, ale usuwa raw source URLs, external IDs, HTML, control/bidi i zbędne
+  provider-shaped values;
+- osobny `narrative-quality-context-v1` z exact candidate, fingerprints, potwierdzonymi
+  strukturalnymi constraints oraz wszystkimi wymaganymi wersjami kontraktów;
+- lokalny format/safety precheck przed `JUDGE`, bez semantycznego zgadywania money mismatch,
+  calculations lub `UNKNOWN` fill przypisanych przez frozen dataset do `JUDGE`;
+- strict `JUDGE` z dokładnie ośmioma wymiarami i zamkniętymi findings oraz code-owned
+  all-pass publication policy;
+- fazowa granica short read → audited `GENERATE` → precheck → audited `JUDGE` → short write,
+  bez aktywnej transakcji produktu podczas provider calls;
+- bezpieczne `NarrativeReviewRuns`/`NarrativeReviewFindings`: reject nie zapisuje candidate
+  text ani rekordów produktu, a publish atomowo zapisuje review i dokładny oceniony tekst po
+  dwóch terminalnych `SUCCEEDED`;
+- synthetic dataset v1, offline loader/harness, metryki, privacy-safe report, baseline
+  binding, integer-only price arithmetic i guarded live preflight;
+- zero live calls i USD 0 podczas implementacji. Finalny baseline wymaga osobnej zgody i
+  limitów 48 calls, 56 attempts oraz USD 3.00; bez niego faza nie jest `DONE`.
+
 ## Poza zakresem obecnego MVP
 
 - automatyczne wywołania AI w `startPlanning`, UI narracji i konwersacyjne pytania;
-- wykonywanie judge, evale i automatyczne safety checks (Faza 3B3);
 - prawdziwi providerzy, live search, kursy walut i aktualna dostępność;
+- publiczne włączenie ścieżki AI przed zatwierdzeniem privacy/retention/ZDR oraz finalnym
+  quality baseline;
 - itinerary dzień po dniu i wybór wariantu;
 - rezerwacje, płatności oraz uwierzytelnianie;
 - podróże wieloetapowe i międzykontynentalne;

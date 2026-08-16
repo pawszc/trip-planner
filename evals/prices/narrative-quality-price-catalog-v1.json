@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "ai-price-snapshot-schema-v1",
+  "priceCatalogVersion": "narrative-quality-price-catalog-v1",
+  "currency": "USD",
+  "tokenUnit": 1000000,
+  "models": []
+}

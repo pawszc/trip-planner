@@ -1,11 +1,12 @@
 # Przepływ AI
 
-## Stan po Fazie 3B2
+## Stan Fazy 3B3 (`REVIEW`)
 
-Faza 3B2 dodaje pierwszy jawny use case produktu: bound action
-`RankedOptions.generateNarrative()`. Akcja opisuje pojedynczą opcję już wybraną przez kod i
-nie jest automatycznie wywoływana przez `startPlanning` ani UI. `AI_ENABLED=false` pozostaje
-defaultem, więc bez jawnego opt-in nie powstaje audit ani request do providera.
+Faza 3B3 rozszerza pierwszy jawny use case produktu, bound action
+`RankedOptions.generateNarrative()`, o fail-closed bramkę jakości. Akcja opisuje pojedynczą
+opcję już wybraną przez kod i nie jest automatycznie wywoływana przez `startPlanning` ani
+UI. `AI_ENABLED=false` pozostaje defaultem, więc bez jawnego opt-in nie powstaje audit ani
+request do providera.
 
 Każdy normalny request wskazuje `DECIDE`, `GENERATE` lub `JUDGE`. Gateway wybiera wyłącznie
 skonfigurowany profil zadania; request nie może zmienić providera, modelu ani effort i może
@@ -16,7 +17,7 @@ override w requestcie produktu.
 
 1. Gateway sprawdza opt-in `AI_ENABLED` przed fingerprintem i jakimkolwiek audytem.
 2. Wybiera pełny profil zadania i adapter tego providera.
-3. Tworzy SHA-256 fingerprint ugruntowanego JSON oraz UUID `aiRunId`.
+3. Tworzy SHA-256 fingerprint dokładnego wejścia requestu oraz UUID `aiRunId`.
 4. Asynchroniczny recorder utrwala `STARTED` w krótkiej transakcji CAP.
 5. Dopiero po sukcesie `STARTED` adapter wykonuje request bez otwartej transakcji bazy.
 6. Adapter lokalnie waliduje structured output i zwraca oba identyfikatory modelu.
@@ -28,8 +29,9 @@ override w requestcie produktu.
 
 Na SQLite ten lifecycle nie może zaczynać się wewnątrz rozpoczętej transakcji DB requestu,
 bo niezależny audit czekałby na jedyne połączenie trzymane przez outer request. Store
-odrzuca taki układ fail-closed. Produktowy handler 3B2 musi użyć faz:
-`krótki read i commit → audit/provider/audit → osobny krótki product write`.
+odrzuca taki układ fail-closed. Produktowy handler 3B3 musi użyć faz: `krótki read i commit
+→ GENERATE audit/provider/audit → lokalny precheck → JUDGE audit/provider/audit → osobny
+krótki product/review write`.
 
 Recorder jest fail-closed. Błąd dowolnego wymaganego zapisu kończy się
 `AI_AUDIT_FAILED`. Brak trwałego `STARTED` bezwzględnie blokuje request do providera, a brak
@@ -41,7 +43,7 @@ OData. Jest efemeryczna: default retencji wynosi 30 dni, konfiguracja zachowuje 
 1–365 dni, a cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze
 schedulera. Narracje są danymi produktu i nie mają mandatory association do `AiRuns`.
 
-## Grounded narrative w Fazie 3B2
+## Quality-gated narrative w Fazie 3B3
 
 1. Osobna krótka transakcja odczytu pobiera udany `PlanningRun`, finansowe pola powiązanego
    `TripRequest`, jedną `RankedOption`, jej `BudgetItems` oraz `SourceSnapshots`, a następnie
@@ -57,20 +59,36 @@ schedulera. Narracje są danymi produktu i nie mają mandatory association do `A
 3. Każdy fakt otrzymuje deterministyczny `factId` związany z wersją i dokładnym
    fingerprintem kontekstu. Kod tworzy też display pieniędzy przez zamknięty dwucyfrowy
    kontrakt PLN/EUR; model nie dzieli ani nie formatuje kwot.
-4. Gateway wybiera wyłącznie profil `GENERATE`, zapisuje durable `STARTED`, wykonuje
-   provider call bez transakcji produktu i zapisuje terminalny audit.
-5. Strict Zod wymaga dokładnego fingerprintu oraz niepustych `factReferences` w każdym
-   bloku. Nieznany, nieaktualny albo obcy identyfikator odrzuca cały output.
-6. Wynik jest ponownie walidowany lokalnie. Writer odczytuje `AiRun` i wymaga dokładnego
-   terminalnego `SUCCEEDED` dla planu, tasku, promptu, schematu i input fingerprint.
-   Dopiero potem osobna krótka transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i
-   `NarrativeFactReferences`; tylko `NarrativeRuns` zachowuje historyczny scalar `aiRunId`.
-7. Awaria dowolnej fazy nie zmienia opcji, rankingu, constraints ani budżetu. Rollback
-   product write nie usuwa wcześniej zatwierdzonego `AiRun`, a późniejszy cleanup `AiRuns`
-   nie usuwa ani nie osieraca obowiązkowych associations danych narracji.
-
-Poprawna referencja daje traceability, ale bez `JUDGE` nie dowodzi semantycznie, że tekst
-rzeczywiście wynika z faktu. Safety pipeline i taka kontrola należą do Fazy 3B3.
+4. Kod tworzy `narrative-model-view-v1`. Zachowuje fakty potrzebne modelowi, provenance
+   status, display, fact IDs i lineage, ale usuwa raw URL-e, external IDs, HTML, znaki
+   kontrolne oraz zbędne provider-shaped wartości. Model view wiąże fingerprint pełnego
+   kontekstu z własnym canonical fingerprintem.
+5. Gateway wybiera wyłącznie profil `GENERATE`, zapisuje durable `STARTED`, wykonuje call
+   bez transakcji produktu i zapisuje terminalny audit. Strict Zod wymaga dokładnego
+   grounded fingerprintu i niepustych `factReferences`; lokalna walidacja odrzuca cały
+   niezgodny output.
+6. Deterministyczny precheck blokuje formatowe i syntaktyczne przypadki bezpieczeństwa,
+   zanim powstanie płatny `JUDGE`: URL/Markdown, HTML/script/event handlers, control/bidi,
+   wykluczone wartości i mechanicznie wykrywalny niedozwolony reformat pieniędzy. Precheck
+   reject wykonuje zero `JUDGE` calls i zapisuje wyłącznie safe review metadata.
+7. Semantyczna niezgodność kwoty, nowe obliczenie i uzupełnienie `UNKNOWN` nie są
+   rozstrzygane heurystyką prechecku. Frozen dataset przypisuje je do `JUDGE`, więc trafiają
+   wraz z kandydatem, exact constraints, fingerprints i wersjami do
+   `narrative-quality-context-v1`.
+8. Gateway wykonuje dokładnie jeden profil `JUDGE` z własnym durable lifecycle. Strict
+   validator wymaga wszystkich ośmiu wymiarów dokładnie raz, zamkniętych reason codes,
+   severity, istniejących block/fact references i exact fingerprintów. Model nie zwraca
+   wiążącego overall verdict ani persistowalnego rationale.
+9. Kod wylicza decyzję: osiem `PASS` i zero findings daje `PUBLISH`; każdy `FAIL` albo
+   finding daje `REJECT`. Semantic reject utrwala bezpieczne review metadata w osobnej
+   krótkiej transakcji, bez tekstu kandydata i bez rekordów produktu narracji.
+10. Dla `PUBLISH` writer wymaga exact terminalnych `SUCCEEDED` obu audytów, po czym jedna
+    krótka transakcja atomowo zapisuje review, `NarrativeRuns`, `OptionNarratives` i
+    `NarrativeFactReferences`. Historyczne scalar IDs nie tworzą mandatory associations do
+    efemerycznych `AiRuns`.
+11. Awaria dowolnej fazy nie zmienia opcji, rankingu, constraints ani budżetu. Rollback
+    product write nie usuwa wcześniej zatwierdzonych audytów, a cleanup `AiRuns` nie usuwa
+    durable review ani zaakceptowanej narracji.
 
 ## Docelowy przepływ produktu
 
@@ -84,6 +102,7 @@ rzeczywiście wynika z faktu. Safety pipeline i taka kontrola należą do Fazy 3
 8. Osobna krótka transakcja zapisuje wynik produktowy; jej rollback nie usuwa audytu.
 9. Plan dzień po dniu powstaje dopiero po wyborze wariantu.
 
-Faza 3B2 implementuje dla narracji kroki 1, 3, 5, 7 i 8 tego docelowego przepływu. Nie
-wykonuje `DECIDE` ani `JUDGE`. Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline oraz
-offline/płatne opt-in evale.
+Faza 3B3 implementuje dla narracji kroki 1, 3, 5–8 tego przepływu oraz deterministic offline
+eval. Nie wykonuje `DECIDE`. Finalny synthetic live baseline jest osobno guardowany i
+wymaga jawnej zgody; nie został uruchomiony, koszt wynosi USD 0, dlatego faza pozostaje w
+`REVIEW`.

@@ -10,15 +10,68 @@ uncertainty, provenance, and safety.
 
 ## Status
 
-`READY`
+`REVIEW`
 
-`READY` becomes effective only after this contract and its versioned synthetic golden
-dataset, schema, and rubric are merged to `main`. An open contract PR does not authorize
-implementation. Until merge, GitHub `main` and Notion remain `PLANNED`.
+The contract and its versioned synthetic golden dataset, schema, and rubric were merged to
+`main` before implementation started. The implementation now runs on its dedicated branch
+and is ready for the Draft PR review loop. `REVIEW` does not mean that the release gate has
+passed: the separately approved final live baseline has not been executed, so this phase
+cannot become `DONE`.
 
 The golden labels and initial thresholds are architect-curated for this phase. Changing a
 label, critical-case membership, formula, threshold, or cost cap during implementation is a
 contract change, not a test fix.
+
+### Implementation evidence
+
+- [x] `narrative-model-view-v1`, `narrative-quality-context-v1`, canonical fingerprints,
+      version bindings, size limits, and excluded-value handling are implemented locally.
+- [x] The deterministic safety precheck, strict eight-dimension `JUDGE` contract, closed
+      reason catalog, and code-owned all-pass publication policy are implemented.
+- [x] `RankedOptions.generateNarrative()` follows the short read → audited `GENERATE` →
+      local precheck → audited `JUDGE` → short write boundary and remains manual, opt-in,
+      and absent from `startPlanning` and the UI.
+- [x] Safe review/finding persistence, exact generate/judge audit linkage, additive legacy
+      nullability, and atomic reviewed narrative publication are implemented without
+      publishing internal review or audit entities through OData.
+- [x] Dataset loading, immutable fingerprint validation, metrics, privacy-safe reports,
+      baseline binding, integer-only cost estimation, offline harness, and fail-closed live
+      preflight/budget guards are implemented and covered by offline tests.
+- [x] The live runner freezes a 46-call synthetic-only plan, requires zero retries for complete
+      failure accounting, deploys an isolated safe-metadata `AiRuns` store only after preflight,
+      and cannot run while exact configured-model prices remain unapproved.
+- [x] No live or paid call was made during implementation or documentation work; actual cost
+      is USD 0.
+- [ ] A failure before durable `STARTED` has no persisted generate audit UUID, while the frozen
+      review schema requires exact non-null generate linkage. The product remains fail-closed but
+      cannot create a `NarrativeReviewRun` for `AI_DISABLED`, invalid pre-audit configuration, or
+      a failed `STARTED` write. Review must reconcile this acceptance gap without inventing an
+      audit link.
+- [ ] The final synthetic live baseline still requires separate approval of its exact call
+      plan and conservative cost estimate. It was deliberately not run in this phase review.
+- [ ] `DONE` still requires a passing approved baseline, completed review, merge, and
+      verification on `main`.
+
+### Review item: precheck/JUDGE money boundary
+
+The frozen dataset assigns only deterministic format/safety cases such as R09 and R20 to
+`PRECHECK`; semantic wrong/new amounts, a new calculation, and filling an `UNKNOWN` value
+(R07, R08, and R10) are `JUDGE` cases, with R07 and R10 also in the stability subset.
+Implementation therefore keeps precheck format/safety-only: it may reject a mechanically
+recognizable forbidden money reformat, but semantic amount mismatch, calculation, or
+unknown filling must reach `JUDGE`. A broader literal reading of the exact-money bullet in
+Scope 3 would conflict with the frozen `expected.stage` labels. Review must confirm this
+boundary; the golden labels are not changed and the ambiguity is another reason not to mark
+the phase `DONE`.
+
+### Review item: failures before durable audit
+
+Review persistence deliberately validates a non-null `generateAiRunId` against an actual
+persisted `AiRuns` row. The gateway deliberately performs no recorder write for a disabled or
+invalid pre-audit call, and a failed `STARTED` write is not durable by definition. Those paths
+still make zero provider calls and persist zero candidate/product rows, but there is no truthful
+audit UUID with which to build the required review row. The Draft PR therefore reports this as an
+unresolved contract edge rather than weakening linkage or fabricating evidence.
 
 ## Preconditions
 

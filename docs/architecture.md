@@ -10,8 +10,11 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 - `providers/` — typowane kontrakty providerów oraz stabilne adaptery fixture;
 - `ai/` — task-aware profile LLM, routing, adaptery SDK, lokalna walidacja, redakcja,
   fail-closed recorder i wewnętrzna persistence `AiRuns`;
-- `narratives/` — deterministyczny grounded context, fact IDs, wersjonowany prompt/schema,
-  fazowy odczyt i atomowy zapis zwalidowanych narracji;
+- `narratives/` — deterministyczny grounded context i model-safe view, fact IDs,
+  wersjonowane kontrakty `GENERATE`/`JUDGE`, safety precheck, code-owned publication policy,
+  fazowy odczyt oraz review i atomowy zapis zaakceptowanych narracji;
+- `evals/` — offline dataset/harness, metryki, privacy-safe raporty, baseline binding,
+  integer-only estymacja kosztu i fail-closed guard finalnego live baseline;
 - `ranking/` — budżet, twarde filtrowanie, scoring i wybór zróżnicowanych wariantów;
 - `persistence/` — kontrolowane mapowanie wyników domenowych na znormalizowane rekordy;
 - serwis CAP — transport OData, trwałość, transakcje i kontrolowane błędy.
@@ -181,14 +184,18 @@ Projekcje tylko do odczytu: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions
 `tripRequest_ID` albo `planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników.
 
 `NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences` są projekcjami tylko do
-odczytu. `NarrativeRuns` pokazuje bezpieczny historyczny `aiRunId`, a rekordy potomne
-dziedziczą linkage przez `NarrativeRuns`; serwis nie publikuje wewnętrznej encji `AiRuns`.
+odczytu i zachowują publiczny kontrakt 3B2: `NarrativeRuns` pokazuje historyczny generate
+`aiRunId` oraz dotychczasowe bezpieczne wersje, a rekordy potomne dziedziczą linkage przez
+`NarrativeRuns`. Wewnętrzny rekord persistence `db.NarrativeRuns` otrzymuje addytywne,
+nullable/no-default scalar review/judge IDs i quality versions dla nowych wierszy 3B3, ale
+te pola nie rozszerzają publicznej projekcji w tej fazie. Serwis nie publikuje `AiRuns`,
+`NarrativeReviewRuns` ani `NarrativeReviewFindings`.
 
 ## Deterministyczny rdzeń i AI execution
 
 Kod pozostaje jedynym źródłem prawdy dla constraints, przejść workflow, wykonalności,
-scoringu i arytmetyki finansowej. `startPlanning` ani UI nie wykonują AI. Jedyna akcja CAP
-Fazy 3B2 przyjmuje wyłącznie jawny, ugruntowany kontekst JSON i ścisły schemat Zod dla
+scoringu, arytmetyki finansowej i decyzji publikacyjnej narracji. `startPlanning` ani UI nie
+wykonują AI. Jedyna akcja CAP Fazy 3B3 pracuje na jawnych, wersjonowanych kontraktach dla
 pojedynczej, wcześniej wybranej opcji.
 
 `AiGateway` wybiera pełny profil `DECIDE`, `GENERATE` lub `JUDGE`. Request produktu nie ma
@@ -217,15 +224,17 @@ niezależnej transakcji CAP. Brak zapisu blokuje wykonanie albo zwrot wyniku i k
 Recorder jest obowiązkową zależnością `AiGateway`; jawna factory persistent składa oba
 adaptery, `PersistentAiRunRecorder` i `CapAiRunStore`. Test CAP + SQLite wykazał circular
 wait, gdy niezależny audit był uruchamiany po rozpoczęciu requestowej transakcji DB.
-Store odrzuca taki układ przed adapterem. Use case 3B2 kończy krótki odczyt,
-wykonuje `STARTED → adapter → terminalny audit` bez otwartej transakcji DB, a dopiero potem
-otwiera osobny krótki zapis produktu. Test potwierdza committed `STARTED` przed adapterem
-oraz przetrwanie terminalnego audytu po rollbacku późniejszego zapisu produktu.
+Store odrzuca taki układ przed adapterem. Use case 3B3 kończy krótki odczyt, wykonuje
+osobne `STARTED → adapter → terminalny audit` dla `GENERATE` i — po lokalnym prechecku —
+`JUDGE`, bez otwartej transakcji DB. Dopiero potem otwiera osobny krótki zapis produktu.
+Test potwierdza committed `STARTED` przed adapterem oraz przetrwanie terminalnego audytu po
+rollbacku późniejszego zapisu produktu.
 
 Wewnętrzne `AiRuns` przechowuje provider/task, oba modele, wersje, fingerprint, timestamps,
-usage, latency, attempts, refusal i kontrolowany błąd. Nie zapisuje promptów, wejść, wyjść,
-raw responses, raw errors, nagłówków ani sekretów i nie jest publikowane w
-`TripPlannerService`. Domyślny `expiresAt` wynosi 30 dni. Cleanup ma kontrakt
+skonfigurowany effort, skonfigurowany i efektywny limit output tokens, usage, latency,
+attempts, refusal i kontrolowany błąd. Nie zapisuje promptów, wejść, wyjść, raw responses,
+raw errors, nagłówków ani sekretów i nie jest publikowane w `TripPlannerService`. Domyślny
+`expiresAt` wynosi 30 dni. Cleanup ma kontrakt
 `deleteExpired(now)`, ale nie ma schedulera. `AiRuns` jest efemerycznym audytem. Narracje są
 danymi produktu i po dokładnej walidacji terminalnego audytu przechowują tylko scalar UUID,
 bez foreign key blokującego cleanup. Test CAP/SQLite potwierdza usunięcie wygasłego `AiRun`
@@ -260,7 +269,8 @@ pozostają nieoznaczone. Exact v0 może być odczytany jedynie przez ograniczony
 `startPlanning`, lecz przy budowie grounded context nadal jest odrzucany fail-closed przed
 gatewayem i `AiRun`; kod nie wykonuje nieudowodnionego backfillu.
 
-`grounded-option-narrative-prompt-v1` używa wyłącznie profilu `GENERATE`. Strict output
+`grounded-option-narrative-prompt-v2` używa wyłącznie profilu `GENERATE` i exact
+`narrative-model-view-v1`; historyczny v1 pozostaje związany z pełnym kontekstem 3B2. Strict output
 wymaga exact context fingerprint i niepustych `factReferences` każdego bloku. Lokalny
 validator odrzuca cały output z pustym, nieznanym, nieaktualnym lub obcym fact ID; niczego
 nie filtruje częściowo. Referencja zapewnia traceability, ale bez `JUDGE` nie jest jeszcze
@@ -274,7 +284,43 @@ potomkowie nie duplikują powiązania. Awaria AI, audytu, walidacji albo zapisu 
 deterministycznych opcji. Rollback product write nie usuwa audytu, a cleanup audytu nie
 usuwa danych produktu.
 
-Faza 3B3 doda wykonywanie `JUDGE`, safety pipeline i evale.
+### Narrative quality gate Fazy 3B3
+
+Po zbudowaniu pełnego `GroundedOptionContext` kod tworzy `narrative-model-view-v1`.
+Projection zachowuje referencjonowalne fakty, ich status, display values, `factId`, freshness,
+fixture/demo markers i deterministyczne lineage, ale nie wysyła raw `sourceUrl`,
+`externalItemId`, HTML, znaków kontrolnych ani zbędnych provider-shaped wartości. Model view
+zawiera fingerprint pełnego kontekstu i własny canonical SHA-256; pełny kontekst pozostaje
+lokalny.
+
+Po `GENERATE` ten sam strict parser 3B2 ponownie wiąże każdy blok z exact grounded
+fingerprintem i fact IDs. Następnie deterministyczny precheck blokuje URL-e, Markdown/HTML,
+script/event handlers, kontrolne lub bidi znaki, wartości wykluczone przez projection i
+mechanicznie rozpoznawalny niedozwolony reformat pieniędzy. Odrzucenie na tym etapie
+wykonuje zero `JUDGE` calls. Semantic amount mismatch, nowe obliczenie i wypełnienie
+`UNKNOWN` dochodzą do `JUDGE` zgodnie z frozen stage labels; szersza interpretacja reguły
+exact-money pozostaje jawnym punktem review.
+
+Kod buduje osobny `narrative-quality-context-v1`: dokładny zwalidowany kandydat i jego
+fingerprint, model view i grounded fingerprints, potwierdzone strukturalne constraints oraz
+wersje wszystkich kontraktów. Nie mutuje to `grounded-option-context-v1`. Profil `JUDGE`
+zwraca dokładnie osiem wymiarów `PASS`/`FAIL` i findings z zamkniętego katalogu kodów,
+severity, block sequences i in-context fact IDs. Nie zwraca wiążącego overall verdict ani
+persistowalnego free-form rationale. Kod publikuje tylko przy ośmiu `PASS` i zerze findings.
+
+`NarrativeReviewRuns` i znormalizowane `NarrativeReviewFindings` przechowują wyłącznie
+kontrolowane metadata, fingerprints, wersje, wyniki wymiarów i scalar IDs audytów. Precheck
+lub semantic reject jest zapisywany w osobnej krótkiej transakcji i pozostawia zero tekstu
+kandydata oraz zero rekordów produktu narracji. `PUBLISH` atomowo zapisuje review i dokładny
+tekst oceniony przez judge dopiero po terminalnych `SUCCEEDED` obu audytów. Nullable pola
+quality/review na legacy narracjach 3B2 nie mają defaultu ani backfillu.
+
+Synthetic dataset v1, offline harness, metryki i privacy-safe report są deterministyczne i
+credential-free. Live baseline jest osobną ścieżką: default `AI_LIVE_EVAL_ENABLED=false`,
+preflight wymaga znanych cen, credentiali i jawnych opt-inów, a guard rezerwuje koszt przed
+każdym wywołaniem i egzekwuje maksymalnie 48 logicznych calls, 56 attempts i USD 3.00.
+Baseline nie został uruchomiony; koszt implementacji wynosi USD 0 i Faza 3B3 pozostaje w
+`REVIEW` do osobnej zgody oraz przejścia wszystkich bramek.
 
 ## Stos technologiczny
 

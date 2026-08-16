@@ -45,6 +45,29 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   fail-closed dla dangling lub ambiguous source-context mappings;
 - strict schema narracji, niepuste `factReferences`, exact context fingerprint i odrzucenie
   brakujących, pustych, obcych, nieaktualnych, powtórzonych lub częściowo błędnych referencji;
+- deterministic `narrative-model-view-v1`, usunięcie raw URL/external ID, HTML, znaków
+  control/bidi i secret-shaped values, zachowanie dozwolonych faktów oraz canonical
+  fingerprint/size/immutability;
+- `narrative-quality-context-v1`, exact constraint snapshot, candidate/model/grounded
+  fingerprints oraz kompletne version bindings;
+- strict `JUDGE` input/output: dokładnie osiem wymiarów, zamknięty katalog reason codes i
+  severity, istniejące block/fact references, spójność findings z wymiarami i odrzucenie
+  unknown fields lub mismatched fingerprints;
+- safety precheck dla URL/Markdown/HTML/script/event handlers/control/bidi, excluded values i
+  money format oraz bezpieczne przypadki, których nie wolno overblockować; semantycznie zła
+  kwota, nowe obliczenie i wypełnienie `UNKNOWN` pozostają przypadkami `JUDGE` zgodnie z
+  frozen stage labels;
+- wszystkie gałęzie code-owned publication policy: osiem `PASS` i zero findings jako jedyny
+  `PUBLISH`;
+- strict loader i canonical fingerprint frozen datasetu, exact 32/12/20/18 distribution,
+  fact-key resolution, critical/sentinel membership i malformed goldens;
+- confusion matrix, precision/recall/F1, macro-F1, dimension macro-F1, stability, threshold
+  edges, percent deltas oraz call/attempt/cost caps na hand-calculated fixtures;
+- offline end-to-end harness, privacy-safe report i baseline binding bez raw content;
+- integer-only price arithmetic oraz live guard blokujący brak opt-in, credentiali, znanej
+  ceny, poprawnych caps lub budżetu jeszcze przed pierwszym provider call;
+- safe review/rejection/publication bundles, exact generate/judge links, legacy nullability i
+  brak candidate/raw content w internal review metadata;
 - offline konwersję tego samego schematu przez helpery structured output obu SDK;
 - atomowy mapper `NarrativeRuns`/`OptionNarratives`/`NarrativeFactReferences` z walidacją
   dokładnego audytu AI oraz historycznym scalar `NarrativeRuns.aiRunId`;
@@ -88,6 +111,15 @@ sprawdza między innymi:
 - bound action `RankedOptions.generateNarrative()` z realnym CAP i SQLite: profil
   `GENERATE`, committed `STARTED` przed adapterem, ścisłe linkage narracji oraz atomowy
   product write po terminalnym audycie;
+- pełną granicę 3B3: krótki read → `GENERATE` → precheck → `JUDGE` → krótki write, bez
+  otwartej transakcji produktu podczas obu provider calls;
+- publish po exact terminalnych `SUCCEEDED` obu audytów oraz atomowy zapis review, findings i
+  narracji ocenionej byte-for-byte;
+- precheck reject z zerem `JUDGE` calls, semantic reject, invalid judge output, audit/linkage
+  failure i product-write rollback: safe durable review metadata, zero candidate text i zero
+  częściowych rekordów produktu narracji;
+- brak publicznych endpointów `AiRuns`, `NarrativeReviewRuns` i
+  `NarrativeReviewFindings`;
 - realny cleanup wygasłego `AiRun` udanej narracji, po którym produkt pozostaje czytelny,
   spójny i nie ma dangling mandatory database associations;
 - regresyjne HTTP 500 dla `INVALID_GROUNDED_OPTION_CONTEXT` i
@@ -130,7 +162,22 @@ kontrolowany transport, który pozwala sprawdzić rzeczywisty payload SDK bez si
 test w `test`, `verify` ani `verify:full` nie wymaga credentiali i nie wykonuje płatnego
 requestu.
 
-## Manualny smoke test AI
+## Offline narrative-quality eval
+
+Frozen `narrative-quality-v1` zawiera dokładnie 32 synthetic semantic cases — 12
+`PUBLISH`, 20 `REJECT`, w tym 18 critical — oraz cztery synthetic end-to-end contexts.
+Loader waliduje schema, stable IDs/fact keys, labels, reason codes, dimensions, membership i
+literalny canonical fingerprint. Offline harness używa wyłącznie adapterów in-memory,
+tworzy privacy-safe raport bez promptów, kontekstów, narracji i raw payloads oraz jest częścią
+standardowej weryfikacji.
+
+Golden stage jest także kontraktem granicy: tylko format/safety cases R09 i R20 są
+`PRECHECK`; wrong/new money, calculation i `UNKNOWN` fill (R07/R08/R10) dochodzą do
+`JUDGE`. Test regresyjny ma chronić tę granicę, szczególnie sentinel R07/R10. Ewentualna
+szersza interpretacja exact-money precheck jest punktem review, nie pretekstem do zmiany
+frozen labels.
+
+## Manualny smoke i finalny live baseline AI
 
 `npm run ai:credentials:check` wykonuje wyłącznie lokalną kontrolę obecności wymaganych
 zmiennych i wypisuje bezpieczne statusy bez wartości sekretów. `npm run ai:smoke:openai` i
@@ -143,15 +190,24 @@ zewnętrznej dostępności i uprawnień konta. Nie wolno ich uruchamiać automat
 używać do omijania testów offline. Evale LLM nie zastąpią testów twardych reguł,
 persistence ani arytmetyki kodu.
 
+Finalny live baseline jest osobną ścieżką od smoke. Wymaga
+`AI_LIVE_EVAL_ENABLED=true`, istniejącego gateway opt-in, credentiali, znanych
+wersjonowanych cen i osobnej zgody na dokładny plan. Preflight oraz sequential reservation
+guard egzekwują maksymalnie 48 logical calls, 56 attempts i USD 3.00 przed każdym call.
+Plan v1 ma dokładnie 46 calls i wymaga `AI_MAX_RETRIES=0`; checked-in katalog cen nie zawiera
+niezatwierdzonych stawek, więc obecnie blokuje się przed pierwszym call.
+Nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI. W trakcie
+implementacji nie wykonano żadnego live call; rzeczywisty koszt wynosi USD 0.
+
 Testy `AiRuns` uruchamiają prawdziwy CAP 10 i SQLite in-memory. Store wykonuje krótkie,
 niezależne transakcje i nie utrzymuje transakcji podczas call providera. Aktywna transakcja
 DB requestu jest jawnie niedozwolona i testowana, ponieważ przy pojedynczym połączeniu
 SQLite prowadziłaby do circular wait. Kontrakt cleanup jest testowany, ale testy nie
 uruchamiają schedulera, bo nie istnieje on w Fazie 3B1.
 
-Testy narracji 3B2 wstrzykują adapter `GENERATE` działający wyłącznie w pamięci. Nie czytają
-credentiali, nie uruchamiają `JUDGE` i nie kontaktują się z providerem. Ten adapter również
-ponownie używa requestowego schematu, dlatego przypadek obcej referencji kończy się
-`INVALID_STRUCTURED_OUTPUT` i terminalnym `FAILED`, zanim powstanie persistence produktu.
-Osobny test lifecycle wygasza terminalny audyt, uruchamia prawdziwy
-`CapAiRunStore.deleteExpired()` i czyta zachowane rekordy produktu po usunięciu `AiRun`.
+Testy narracji 3B3 wstrzykują adaptery `GENERATE` i `JUDGE` działające wyłącznie w pamięci.
+Nie czytają credentiali i nie kontaktują się z providerem. Oba ponownie używają requestowych
+schematów, więc malformed output kończy się terminalnym `FAILED`, zanim powstanie produkt.
+Osobne testy lifecycle wygaszają oba terminalne audyty, uruchamiają prawdziwy
+`CapAiRunStore.deleteExpired()` i czytają zachowane review oraz rekordy produktu po
+usunięciu `AiRuns`.

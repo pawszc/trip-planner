@@ -1,4 +1,4 @@
-import type { AiProvider, AiRefusalState, AiTaskType, AiUsage } from './contracts.ts';
+import type { AiEffort, AiProvider, AiRefusalState, AiTaskType, AiUsage } from './contracts.ts';
 import type { AiErrorCode } from './errors.ts';
 
 export type AiRunStatus = 'STARTED' | 'SUCCEEDED' | 'FAILED';
@@ -10,6 +10,9 @@ export interface AiRunTelemetryEvent {
   status: AiRunStatus;
   provider: AiProvider;
   configuredModel: string;
+  configuredEffort: AiEffort;
+  configuredMaxOutputTokens: number;
+  effectiveMaxOutputTokens: number;
   responseModel?: string;
   taskType: AiTaskType;
   promptVersion: string;

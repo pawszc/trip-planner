@@ -18,6 +18,7 @@ import { CURRENCY_CONTRACT_VERSION } from '../../srv/domain/currency.ts';
 import { createMoney, isKnownMoney } from '../../srv/domain/money.ts';
 import type { PersistedTripRequest } from '../../srv/mapping/trip-request-mapper.ts';
 import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
+import { NARRATIVE_JUDGE_DIMENSIONS } from '../../srv/narratives/narrative-judge.ts';
 import {
   createLegacyPlanningFingerprintV0,
   createPlanningContext,
@@ -158,8 +159,12 @@ function readRequestFacts(request: StructuredAiRequest<unknown>): {
   budgetSummary: Readonly<Record<string, unknown>>;
 } {
   const input = request.input;
-  if (!isRecord(input) || typeof input.fingerprint !== 'string' || !Array.isArray(input.facts)) {
-    throw new Error('Offline adapter received no grounded context.');
+  if (
+    !isRecord(input) ||
+    typeof input.groundedContextFingerprint !== 'string' ||
+    !Array.isArray(input.facts)
+  ) {
+    throw new Error('Offline adapter received no narrative model view.');
   }
   let budgetSummary: Readonly<Record<string, unknown>> | undefined;
   const factIds = input.facts.map((fact) => {
@@ -174,7 +179,11 @@ function readRequestFacts(request: StructuredAiRequest<unknown>): {
   if (budgetSummary === undefined) {
     throw new Error('Offline adapter received no grounded budget summary.');
   }
-  return { fingerprint: input.fingerprint, factIds, budgetSummary };
+  return {
+    fingerprint: input.groundedContextFingerprint,
+    factIds,
+    budgetSummary,
+  };
 }
 
 async function readAiRun(ID: string): Promise<PersistedAiRun | undefined> {
@@ -204,12 +213,10 @@ class OfflineNarrativeAdapter implements StructuredAiAdapter {
     profile: AiExecutionProfile,
   ): Promise<AiCallResult<TOutput>> {
     this.observation.adapterCalls += 1;
-    this.observation.aiRunId = request.aiRunId;
-    this.observation.profileTaskType = profile.taskType;
-    this.observation.startedSeenByAdapter = await readAiRunIndependently(request.aiRunId!);
-    const grounded = readRequestFacts(request);
-    this.observation.requestFactIds = grounded.factIds;
-    this.observation.budgetSummary = grounded.budgetSummary;
+    this.observation.aiRunId ??= request.aiRunId;
+    this.observation.profileTaskType ??= profile.taskType;
+    const startedAiRun = await readAiRunIndependently(request.aiRunId!);
+    this.observation.startedSeenByAdapter ??= startedAiRun;
 
     if (this.mode === 'PROVIDER_FAILURE') {
       throw new AiError('PROVIDER_UNAVAILABLE', 'Offline provider failure.', {
@@ -219,33 +226,57 @@ class OfflineNarrativeAdapter implements StructuredAiAdapter {
       });
     }
 
-    const output =
-      this.mode === 'INVALID_REFERENCE'
-        ? {
-            contextFingerprint: grounded.fingerprint,
-            blocks: [
-              {
-                kind: 'SUMMARY',
-                text: 'Output with a foreign fact reference.',
-                factReferences: [`fact_${'f'.repeat(64)}`],
-              },
-            ],
-          }
-        : {
-            contextFingerprint: grounded.fingerprint,
-            blocks: [
-              {
-                kind: 'SUMMARY',
-                text: 'Praga jest opcją wybraną przez deterministyczny pipeline.',
-                factReferences: [grounded.factIds[0]],
-              },
-              {
-                kind: 'RISK',
-                text: 'Dane oferty są demonstracyjnym fixture, a nie bieżącą dostępnością.',
-                factReferences: [grounded.factIds.at(-1)],
-              },
-            ],
-          };
+    let output: unknown;
+    if (request.taskType === AiTaskType.JUDGE) {
+      const input = request.input;
+      if (
+        !isRecord(input) ||
+        typeof input.fingerprint !== 'string' ||
+        typeof input.narrativeFingerprint !== 'string'
+      ) {
+        throw new Error('Offline adapter received no quality context.');
+      }
+      output = {
+        qualityContextFingerprint: input.fingerprint,
+        narrativeFingerprint: input.narrativeFingerprint,
+        dimensions: NARRATIVE_JUDGE_DIMENSIONS.map((dimension) => ({
+          dimension,
+          status: 'PASS',
+        })),
+        findings: [],
+      };
+    } else {
+      const grounded = readRequestFacts(request);
+      this.observation.requestFactIds = grounded.factIds;
+      this.observation.budgetSummary = grounded.budgetSummary;
+      output =
+        this.mode === 'INVALID_REFERENCE'
+          ? {
+              contextFingerprint: grounded.fingerprint,
+              blocks: [
+                {
+                  kind: 'SUMMARY',
+                  text: 'Output with a foreign fact reference.',
+                  factReferences: [`fact_${'f'.repeat(64)}`],
+                },
+              ],
+            }
+          : {
+              contextFingerprint: grounded.fingerprint,
+              blocks: [
+                {
+                  kind: 'SUMMARY',
+                  text: 'Praga jest opcją wybraną przez deterministyczny pipeline.',
+                  factReferences: [grounded.factIds[0]],
+                },
+                {
+                  kind: 'RISK',
+                  text: 'Dane oferty są demonstracyjnym fixture, a nie bieżącą dostępnością.',
+                  factReferences: [grounded.factIds.at(-1)],
+                },
+              ],
+            };
+    }
     const validation = request.outputSchema.safeParse(output);
     if (!validation.success) {
       throw new AiError(
@@ -279,35 +310,67 @@ function createOfflineGateway(
   mode: OfflineMode = 'SUCCESS',
   enabled = true,
 ): AiGateway {
-  return createPersistentAiGateway(loadAiConfig({ AI_ENABLED: enabled ? 'true' : 'false' }), {
-    adapters: [new OfflineNarrativeAdapter(observation, mode)],
-    generateAiRunId: randomUUID,
-  });
+  return createPersistentAiGateway(
+    loadAiConfig({
+      AI_ENABLED: enabled ? 'true' : 'false',
+      AI_JUDGE_PROVIDER: 'anthropic',
+      AI_JUDGE_MODEL: 'claude-sonnet-5',
+      AI_JUDGE_EFFORT: 'low',
+    }),
+    {
+      adapters: [new OfflineNarrativeAdapter(observation, mode)],
+      generateAiRunId: randomUUID,
+    },
+  );
 }
 
 function createMismatchedAuditGateway(): { gateway: AiGateway; aiRunId: string } {
   const aiRunId = randomUUID();
+  const judgeAiRunId = randomUUID();
   const gateway = {
     async call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>> {
-      const grounded = readRequestFacts(request);
-      const output = request.outputSchema.parse({
-        contextFingerprint: grounded.fingerprint,
-        blocks: [
-          {
-            kind: 'SUMMARY',
-            text: 'Narrative with an audit linked to no planning run.',
-            factReferences: [grounded.factIds[0]],
-          },
-        ],
-      });
+      const isJudge = request.taskType === AiTaskType.JUDGE;
+      let output: TOutput;
+      if (isJudge) {
+        const input = request.input;
+        if (
+          !isRecord(input) ||
+          typeof input.fingerprint !== 'string' ||
+          typeof input.narrativeFingerprint !== 'string'
+        ) {
+          throw new Error('Fake gateway received no quality context.');
+        }
+        output = request.outputSchema.parse({
+          qualityContextFingerprint: input.fingerprint,
+          narrativeFingerprint: input.narrativeFingerprint,
+          dimensions: NARRATIVE_JUDGE_DIMENSIONS.map((dimension) => ({
+            dimension,
+            status: 'PASS',
+          })),
+          findings: [],
+        });
+      } else {
+        const grounded = readRequestFacts(request);
+        output = request.outputSchema.parse({
+          contextFingerprint: grounded.fingerprint,
+          blocks: [
+            {
+              kind: 'SUMMARY',
+              text: 'Narrative with an audit linked to no planning run.',
+              factReferences: [grounded.factIds[0]],
+            },
+          ],
+        });
+      }
       const inputFingerprint = createInputFingerprint(request.input);
+      const currentAiRunId = isJudge ? judgeAiRunId : aiRunId;
       await cds.db.tx((transaction) =>
         transaction.run(
           cds.ql.INSERT.into('trip.planner.AiRuns').entries({
-            ID: aiRunId,
-            planningRun_ID: null,
+            ID: currentAiRunId,
+            planningRun_ID: isJudge ? request.planningRunId : null,
             status: 'SUCCEEDED',
-            taskType: 'GENERATE',
+            taskType: request.taskType,
             provider: 'ANTHROPIC',
             configuredModel: 'claude-sonnet-5',
             responseModel: 'claude-sonnet-5-fake-snapshot',
@@ -322,12 +385,12 @@ function createMismatchedAuditGateway(): { gateway: AiGateway; aiRunId: string }
         ),
       );
       return {
-        aiRunId,
+        aiRunId: currentAiRunId,
         output,
         provider: AiProvider.ANTHROPIC,
         configuredModel: 'claude-sonnet-5',
         responseModel: 'claude-sonnet-5-fake-snapshot',
-        taskType: AiTaskType.GENERATE,
+        taskType: request.taskType,
         promptVersion: request.promptVersion,
         schemaVersion: request.schemaVersion,
         inputFingerprint,
@@ -583,7 +646,7 @@ describe('grounded option narrative CAP use case', () => {
     await expect(withHardTimeout(POST(narrativeActionUrl(option.ID), {}))).resolves.toMatchObject({
       data: { status: 'SUCCEEDED' },
     });
-    expect(observation.adapterCalls).toBe(1);
+    expect(observation.adapterCalls).toBe(2);
     expect(observation.budgetSummary).toMatchObject({
       currencyContractVersion: CURRENCY_CONTRACT_VERSION,
     });
@@ -829,7 +892,7 @@ describe('grounded option narrative CAP use case', () => {
     const aiRun = await readAiRun(narrativeRun.aiRunId);
 
     expect(observation).toMatchObject({
-      adapterCalls: 1,
+      adapterCalls: 2,
       profileTaskType: AiTaskType.GENERATE,
       startedSeenByAdapter: {
         status: 'STARTED',
@@ -843,7 +906,7 @@ describe('grounded option narrative CAP use case', () => {
       aiRunId: observation.aiRunId,
       status: 'SUCCEEDED',
       contextVersion: 'grounded-option-context-v1',
-      promptVersion: 'grounded-option-narrative-prompt-v1',
+      promptVersion: 'grounded-option-narrative-prompt-v2',
       schemaVersion: 'grounded-option-narrative-schema-v1',
       blockCount: 2,
     });
@@ -987,7 +1050,7 @@ describe('grounded option narrative CAP use case', () => {
     ).rejects.toMatchObject({ status: 500 });
 
     expect(observation).toMatchObject({
-      adapterCalls: 1,
+      adapterCalls: 2,
       startedSeenByAdapter: { status: 'STARTED' },
     });
     expect(await readAiRun(observation.aiRunId!)).toMatchObject({
@@ -1152,7 +1215,7 @@ describe('grounded option narrative CAP use case', () => {
 
     await expect(POST(narrativeActionUrl(option.ID), {})).rejects.toMatchObject({
       status: 500,
-      response: { data: { error: { code: 'INVALID_NARRATIVE_PERSISTENCE' } } },
+      response: { data: { error: { code: 'INVALID_NARRATIVE_AUDIT_LINK' } } },
     });
     expect(await readAllInternal('NarrativeRuns')).toHaveLength(0);
     expect(await readAllInternal('OptionNarratives')).toHaveLength(0);

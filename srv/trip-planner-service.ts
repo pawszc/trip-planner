@@ -4,6 +4,7 @@ import type { Request } from '@sap/cds';
 import type { AiGateway } from './ai/ai-gateway.ts';
 import { loadAiConfig } from './ai/config.ts';
 import { createPersistentAiGateway } from './ai/create-persistent-ai-gateway.ts';
+import { createInputFingerprint, isValidAiRunId } from './ai/contracts.ts';
 import { AI_ERROR_CODE_VALUES, AiError, type AiErrorCode } from './ai/errors.ts';
 import { CURRENCY_CONTRACT_VERSION } from './domain/currency.ts';
 import { confirmTripRequestStatus, DomainError } from './domain/trip-request.ts';
@@ -26,10 +27,53 @@ import {
   LEGACY_PLANNING_RUN_V0_LINEAGE,
 } from './orchestration/planning-request.ts';
 import { buildPlanningPersistenceBundle } from './persistence/planning-result-records.ts';
-import { CapGroundedOptionReader } from './narratives/cap-grounded-option-reader.ts';
-import { CapNarrativeWriter } from './narratives/cap-narrative-writer.ts';
+import { CapNarrativeQualityReader } from './narratives/cap-narrative-quality-reader.ts';
+import { CapNarrativeReviewStore } from './narratives/cap-narrative-review-store.ts';
+import { CapNarrativeReviewWriter } from './narratives/cap-narrative-review-writer.ts';
+import {
+  createNarrativeJudgeRequest,
+  parseNarrativeJudgeOutput,
+  type NarrativeJudgeOutput,
+} from './narratives/narrative-judge.ts';
+import {
+  buildNarrativeModelView,
+  NARRATIVE_MODEL_VIEW_VERSION,
+} from './narratives/narrative-model-view.ts';
 import { buildNarrativePersistenceBundle } from './narratives/narrative-persistence.ts';
-import { createOptionNarrativeRequest } from './narratives/option-narrative.ts';
+import { decideNarrativePublication } from './narratives/narrative-publication-policy.ts';
+import {
+  buildNarrativeQualityContext,
+  createNarrativeFingerprint,
+  NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
+  NARRATIVE_QUALITY_CONTEXT_VERSION,
+  type NarrativeQualityContractVersions,
+} from './narratives/narrative-quality-context.ts';
+import {
+  NARRATIVE_JUDGE_PROMPT_VERSION,
+  NARRATIVE_JUDGE_SCHEMA_VERSION,
+  NARRATIVE_MODEL_PROFILE_VERSION,
+  NARRATIVE_PRICE_CATALOG_VERSION,
+  NARRATIVE_PUBLICATION_POLICY_VERSION,
+  NARRATIVE_QUALITY_DATASET_VERSION,
+  NARRATIVE_QUALITY_RUBRIC_VERSION,
+  NARRATIVE_SAFETY_PRECHECK_VERSION,
+} from './narratives/narrative-quality-versions.ts';
+import {
+  buildNarrativeReviewPublicationBundle,
+  buildNarrativeReviewRejectionBundle,
+  NARRATIVE_REVIEW_FAILURE_CODE_VALUES,
+  type NarrativeReviewAiRunExpectation,
+  type NarrativeReviewDimensionResults,
+  type NarrativeReviewFailureCode,
+  type NarrativeReviewPersistenceVersions,
+} from './narratives/narrative-review-persistence.ts';
+import { runNarrativeSafetyPrecheck } from './narratives/narrative-safety-precheck.ts';
+import {
+  createOptionNarrativeRequest,
+  OPTION_NARRATIVE_PROMPT_VERSION,
+  OPTION_NARRATIVE_SCHEMA_VERSION,
+  parseOptionNarrativeOutput,
+} from './narratives/option-narrative.ts';
 import { REFERENCE_DESTINATIONS } from './providers/fixtures/europe-reference-fixtures.ts';
 import { MOCK_FIXTURE_VERSION } from './providers/fixtures/fixture-source.ts';
 import { MockAccommodationProvider } from './providers/mock-accommodation-provider.ts';
@@ -141,6 +185,11 @@ function rejectNarrativeError(request: Request, error: unknown): never {
             'INVALID_NARRATIVE_AUDIT_LINK',
             'INVALID_GROUNDED_OPTION_CONTEXT',
             'INVALID_NARRATIVE_PERSISTENCE',
+            'INVALID_NARRATIVE_MODEL_VIEW',
+            'INVALID_NARRATIVE_QUALITY_CONTEXT',
+            'INVALID_NARRATIVE_JUDGE_OUTPUT',
+            'INVALID_NARRATIVE_REVIEW_PERSISTENCE',
+            'PRODUCT_WRITE_FAILED',
           ].includes(error.code)
         ? 500
         : 409;
@@ -164,8 +213,21 @@ function rejectNarrativeError(request: Request, error: unknown): never {
   throw error;
 }
 
-function normalizeAiError(error: unknown): { code: AiErrorCode; message: string } | null {
-  if (error instanceof AiError) return error;
+interface NormalizedNarrativeAiError {
+  readonly code: AiErrorCode;
+  readonly message: string;
+  readonly aiRunId?: string;
+}
+
+function normalizeAiError(error: unknown): NormalizedNarrativeAiError | null {
+  if (error instanceof AiError) {
+    const aiRunId = error.details.aiRunId;
+    return {
+      code: error.code,
+      message: error.message,
+      ...(typeof aiRunId === 'string' ? { aiRunId } : {}),
+    };
+  }
   if (typeof error !== 'object' || error === null) return null;
   const candidate = error as Readonly<Record<string, unknown>>;
   if (
@@ -176,13 +238,121 @@ function normalizeAiError(error: unknown): { code: AiErrorCode; message: string 
   ) {
     return null;
   }
-  return { code: candidate.code as AiErrorCode, message: candidate.message };
+  const details =
+    typeof candidate.details === 'object' && candidate.details !== null
+      ? (candidate.details as Readonly<Record<string, unknown>>)
+      : undefined;
+  const aiRunId = details?.aiRunId;
+  return {
+    code: candidate.code as AiErrorCode,
+    message: candidate.message,
+    ...(typeof aiRunId === 'string' ? { aiRunId } : {}),
+  };
+}
+
+const NARRATIVE_REVIEW_FAILURE_CODES = new Set<string>(NARRATIVE_REVIEW_FAILURE_CODE_VALUES);
+
+function createNarrativeVersions(
+  groundedContextVersion: string,
+): NarrativeReviewPersistenceVersions {
+  const qualityVersions: NarrativeQualityContractVersions = {
+    groundedContextVersion,
+    modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
+    qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
+    constraintSnapshotVersion: NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
+    generatePromptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
+    generateSchemaVersion: OPTION_NARRATIVE_SCHEMA_VERSION,
+    judgePromptVersion: NARRATIVE_JUDGE_PROMPT_VERSION,
+    judgeSchemaVersion: NARRATIVE_JUDGE_SCHEMA_VERSION,
+    rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+    datasetVersion: NARRATIVE_QUALITY_DATASET_VERSION,
+    publicationPolicyVersion: NARRATIVE_PUBLICATION_POLICY_VERSION,
+    modelProfileVersion: NARRATIVE_MODEL_PROFILE_VERSION,
+    priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
+    safetyPrecheckVersion: NARRATIVE_SAFETY_PRECHECK_VERSION,
+  };
+  return qualityVersions;
+}
+
+function createSucceededReviewAudit(input: {
+  readonly ID: string;
+  readonly planningRunId: string;
+  readonly taskType: 'GENERATE' | 'JUDGE';
+  readonly promptVersion: string;
+  readonly schemaVersion: string;
+  readonly inputFingerprint: string;
+}): NarrativeReviewAiRunExpectation {
+  if (!isValidAiRunId(input.ID)) {
+    throw new DomainError(
+      'INVALID_NARRATIVE_AUDIT_LINK',
+      'Narrative quality gate requires an audited AI run UUID.',
+    );
+  }
+  return {
+    ID: input.ID,
+    planningRun_ID: input.planningRunId,
+    status: 'SUCCEEDED',
+    taskType: input.taskType,
+    promptVersion: input.promptVersion,
+    schemaVersion: input.schemaVersion,
+    inputFingerprint: input.inputFingerprint,
+  };
+}
+
+function createFailedReviewAudit(
+  error: unknown,
+  input: Omit<NarrativeReviewAiRunExpectation, 'ID' | 'status'>,
+): NarrativeReviewAiRunExpectation | undefined {
+  const normalized = normalizeAiError(error);
+  const aiRunId = normalized?.aiRunId;
+  if (normalized === null || aiRunId === undefined || !isValidAiRunId(aiRunId)) {
+    return undefined;
+  }
+  return {
+    ...input,
+    ID: aiRunId,
+    // A terminal recorder failure leaves the already durable STARTED row unchanged.
+    status: normalized.code === 'AI_AUDIT_FAILED' ? 'STARTED' : 'FAILED',
+  };
+}
+
+function narrativeReviewFailureCode(
+  error: unknown,
+  fallback: NarrativeReviewFailureCode,
+): NarrativeReviewFailureCode {
+  const normalizedAiError = normalizeAiError(error);
+  const code =
+    normalizedAiError?.code ??
+    (typeof error === 'object' &&
+    error !== null &&
+    typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : undefined);
+  return code !== undefined && NARRATIVE_REVIEW_FAILURE_CODES.has(code)
+    ? (code as NarrativeReviewFailureCode)
+    : fallback;
+}
+
+function toNarrativeReviewDimensions(
+  output: NarrativeJudgeOutput,
+): NarrativeReviewDimensionResults {
+  return Object.fromEntries(
+    output.dimensions.map(({ dimension, status }) => [dimension, status]),
+  ) as unknown as NarrativeReviewDimensionResults;
+}
+
+function narrativeQualityRejected(): DomainError {
+  return new DomainError(
+    'NARRATIVE_QUALITY_REJECTED',
+    'Narrative candidate did not pass the deterministic quality gate.',
+  );
 }
 
 export default class TripPlannerService extends cds.ApplicationService {
   private readonly activePlanningRequests = new Map<string, Promise<unknown>>();
-  private readonly groundedOptionReader = new CapGroundedOptionReader();
-  private readonly narrativeWriter = new CapNarrativeWriter();
+  private readonly narrativeQualityReader = new CapNarrativeQualityReader();
+  private readonly narrativeReviewStore = new CapNarrativeReviewStore();
+  private readonly narrativeReviewWriter = new CapNarrativeReviewWriter();
 
   /** Jawny seam zależności pozwala testować awarię providera bez flag w publicznym API. */
   public createPlanningProviders(): CandidateEngineProviders {
@@ -581,24 +751,254 @@ export default class TripPlannerService extends cds.ApplicationService {
       const rankedOptionId = String(request.params[0]?.ID ?? '');
 
       try {
-        // Ta jawna transakcja tylko odczytu kończy się przed STARTED i provider call.
-        const context = await this.groundedOptionReader.read(rankedOptionId);
-        const result = await this.createNarrativeGateway().call(
-          createOptionNarrativeRequest(context),
-        );
+        // The short read commits before either audited provider call. Confirmed constraints
+        // remain in a separate envelope and do not mutate the frozen 3B2 grounded context.
+        const { context, constraints } = await this.narrativeQualityReader.read(rankedOptionId);
+        const modelView = buildNarrativeModelView(context);
+        const versions = createNarrativeVersions(context.version);
+        const gateway = this.createNarrativeGateway();
+        const generateRequest = createOptionNarrativeRequest(context, modelView);
+        const generateInputFingerprint = createInputFingerprint(generateRequest.input);
 
-        // Builder ponownie waliduje cały output i wszystkie referencje przed pierwszym
-        // zapisem produktu. Durable SUCCEEDED istnieje już w osobnej transakcji AiRuns.
-        const bundle = buildNarrativePersistenceBundle({
+        let generateResult;
+        try {
+          generateResult = await gateway.call(generateRequest);
+        } catch (error) {
+          const generateAudit = createFailedReviewAudit(error, {
+            planningRun_ID: context.planningRun.id,
+            taskType: 'GENERATE',
+            promptVersion: generateRequest.promptVersion,
+            schemaVersion: generateRequest.schemaVersion,
+            inputFingerprint: generateInputFingerprint,
+          });
+          // A STARTED write failure has no durable UUID to link. Every failure after durable
+          // STARTED is recorded without prompt, context, candidate, provider payload or text.
+          if (generateAudit !== undefined) {
+            await this.narrativeReviewStore.persistRejection(
+              buildNarrativeReviewRejectionBundle({
+                planningRunId: context.planningRun.id,
+                rankedOptionId: context.rankedOption.id,
+                generateAudit,
+                contextFingerprint: context.fingerprint,
+                modelViewFingerprint: modelView.fingerprint,
+                versions,
+                stage: 'GENERATE',
+                failureCode: narrativeReviewFailureCode(error, 'PROVIDER_ERROR'),
+                completedAt: new Date().toISOString(),
+              }),
+            );
+          }
+          throw error;
+        }
+
+        const generateAudit = createSucceededReviewAudit({
+          ID: generateResult.aiRunId,
+          planningRunId: context.planningRun.id,
+          taskType: 'GENERATE',
+          promptVersion: generateRequest.promptVersion,
+          schemaVersion: generateRequest.schemaVersion,
+          inputFingerprint: generateResult.inputFingerprint,
+        });
+        const narrativeOutput = parseOptionNarrativeOutput(generateResult.output, context);
+        const narrativeFingerprint = createNarrativeFingerprint(narrativeOutput);
+        const precheck = runNarrativeSafetyPrecheck({
           context,
-          output: result.output,
-          aiRunId: result.aiRunId,
+          modelView,
+          narrativeOutput,
+        });
+        if (!precheck.passed) {
+          await this.narrativeReviewStore.persistRejection(
+            buildNarrativeReviewRejectionBundle({
+              planningRunId: context.planningRun.id,
+              rankedOptionId: context.rankedOption.id,
+              generateAudit,
+              contextFingerprint: context.fingerprint,
+              modelViewFingerprint: modelView.fingerprint,
+              narrativeFingerprint,
+              versions,
+              stage: 'PRECHECK',
+              failureCode: 'PRECHECK_REJECTED',
+              findings: precheck.findings.map((finding) => ({
+                reasonCode: finding.reasonCode,
+                severity: finding.severity,
+                blockSequences: [finding.blockSequence],
+                factIds: [],
+              })),
+              completedAt: new Date().toISOString(),
+            }),
+          );
+          throw narrativeQualityRejected();
+        }
+
+        let qualityContext;
+        try {
+          qualityContext = buildNarrativeQualityContext({
+            context,
+            modelView,
+            narrativeOutput,
+            constraints,
+            versions,
+          });
+        } catch (error) {
+          await this.narrativeReviewStore.persistRejection(
+            buildNarrativeReviewRejectionBundle({
+              planningRunId: context.planningRun.id,
+              rankedOptionId: context.rankedOption.id,
+              generateAudit,
+              contextFingerprint: context.fingerprint,
+              modelViewFingerprint: modelView.fingerprint,
+              narrativeFingerprint,
+              versions,
+              stage: 'PRECHECK',
+              failureCode: narrativeReviewFailureCode(error, 'INVALID_NARRATIVE_QUALITY_CONTEXT'),
+              completedAt: new Date().toISOString(),
+            }),
+          );
+          throw error;
+        }
+
+        const judgeRequest = createNarrativeJudgeRequest(qualityContext);
+        const judgeInputFingerprint = createInputFingerprint(judgeRequest.input);
+        let judgeResult;
+        try {
+          judgeResult = await gateway.call(judgeRequest);
+        } catch (error) {
+          const judgeAudit = createFailedReviewAudit(error, {
+            planningRun_ID: context.planningRun.id,
+            taskType: 'JUDGE',
+            promptVersion: judgeRequest.promptVersion,
+            schemaVersion: judgeRequest.schemaVersion,
+            inputFingerprint: judgeInputFingerprint,
+          });
+          await this.narrativeReviewStore.persistRejection(
+            buildNarrativeReviewRejectionBundle({
+              planningRunId: context.planningRun.id,
+              rankedOptionId: context.rankedOption.id,
+              generateAudit,
+              ...(judgeAudit === undefined ? {} : { judgeAiRunId: judgeAudit.ID, judgeAudit }),
+              contextFingerprint: context.fingerprint,
+              modelViewFingerprint: modelView.fingerprint,
+              narrativeFingerprint,
+              qualityContextFingerprint: qualityContext.fingerprint,
+              versions,
+              stage: 'JUDGE',
+              failureCode: narrativeReviewFailureCode(error, 'PROVIDER_ERROR'),
+              completedAt: new Date().toISOString(),
+            }),
+          );
+          throw error;
+        }
+
+        const judgeAudit = createSucceededReviewAudit({
+          ID: judgeResult.aiRunId,
+          planningRunId: context.planningRun.id,
+          taskType: 'JUDGE',
+          promptVersion: judgeRequest.promptVersion,
+          schemaVersion: judgeRequest.schemaVersion,
+          inputFingerprint: judgeResult.inputFingerprint,
+        });
+        let judgeOutput: NarrativeJudgeOutput;
+        try {
+          judgeOutput = parseNarrativeJudgeOutput(judgeResult.output, qualityContext);
+        } catch (error) {
+          await this.narrativeReviewStore.persistRejection(
+            buildNarrativeReviewRejectionBundle({
+              planningRunId: context.planningRun.id,
+              rankedOptionId: context.rankedOption.id,
+              generateAudit,
+              judgeAiRunId: judgeAudit.ID,
+              judgeAudit,
+              contextFingerprint: context.fingerprint,
+              modelViewFingerprint: modelView.fingerprint,
+              narrativeFingerprint,
+              qualityContextFingerprint: qualityContext.fingerprint,
+              versions,
+              stage: 'JUDGE',
+              failureCode: 'INVALID_NARRATIVE_JUDGE_OUTPUT',
+              completedAt: new Date().toISOString(),
+            }),
+          );
+          throw error;
+        }
+
+        const dimensions = toNarrativeReviewDimensions(judgeOutput);
+        if (decideNarrativePublication(judgeOutput) === 'REJECT') {
+          await this.narrativeReviewStore.persistRejection(
+            buildNarrativeReviewRejectionBundle({
+              planningRunId: context.planningRun.id,
+              rankedOptionId: context.rankedOption.id,
+              generateAudit,
+              judgeAiRunId: judgeAudit.ID,
+              judgeAudit,
+              contextFingerprint: context.fingerprint,
+              modelViewFingerprint: modelView.fingerprint,
+              narrativeFingerprint,
+              qualityContextFingerprint: qualityContext.fingerprint,
+              versions,
+              stage: 'JUDGE',
+              failureCode: 'SEMANTIC_REJECTED',
+              dimensions,
+              findings: judgeOutput.findings,
+              completedAt: new Date().toISOString(),
+            }),
+          );
+          throw narrativeQualityRejected();
+        }
+
+        // Candidate text is materialized only after the deterministic precheck and the
+        // code-owned all-pass policy. These are the exact locally validated bytes judged above.
+        const narrativeBundle = buildNarrativePersistenceBundle({
+          context,
+          modelView,
+          output: narrativeOutput,
+          aiRunId: generateResult.aiRunId,
           completedAt: new Date().toISOString(),
         });
+        const publicationBundle = buildNarrativeReviewPublicationBundle({
+          planningRunId: context.planningRun.id,
+          rankedOptionId: context.rankedOption.id,
+          generateAudit,
+          judgeAiRunId: judgeAudit.ID,
+          judgeAudit,
+          contextFingerprint: context.fingerprint,
+          modelViewFingerprint: modelView.fingerprint,
+          narrativeFingerprint,
+          qualityContextFingerprint: qualityContext.fingerprint,
+          versions,
+          dimensions,
+          narrativeBundle,
+          completedAt: new Date().toISOString(),
+        });
+
+        // If the request transaction is rolled back (including a late CAP after-handler
+        // failure), persist only safe PRODUCT_WRITE_FAILED evidence after rollback completes.
+        const productFailureBundle = buildNarrativeReviewRejectionBundle({
+          planningRunId: context.planningRun.id,
+          rankedOptionId: context.rankedOption.id,
+          generateAudit,
+          judgeAiRunId: judgeAudit.ID,
+          judgeAudit,
+          contextFingerprint: context.fingerprint,
+          modelViewFingerprint: modelView.fingerprint,
+          narrativeFingerprint,
+          qualityContextFingerprint: qualityContext.fingerprint,
+          versions,
+          stage: 'JUDGE',
+          failureCode: 'PRODUCT_WRITE_FAILED',
+          completedAt: new Date().toISOString(),
+        });
+        request.on('failed', async () => {
+          try {
+            await this.narrativeReviewStore.persistRejection(productFailureBundle);
+          } catch {
+            // The request outcome is already failed. Never expose or log persistence causes.
+          }
+        });
+
         const productTransaction = cds.tx(request);
-        await this.narrativeWriter.write(productTransaction, bundle);
+        await this.narrativeReviewWriter.writePublication(productTransaction, publicationBundle);
         return productTransaction.run(
-          SELECT.one.from(NarrativeRuns).where({ ID: bundle.narrativeRun.ID }),
+          SELECT.one.from(NarrativeRuns).where({ ID: publicationBundle.narrativeRun.ID }),
         );
       } catch (error) {
         return rejectNarrativeError(request, error);

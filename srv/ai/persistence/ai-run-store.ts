@@ -1,4 +1,4 @@
-import type { AiProvider, AiRefusalState, AiTaskType, AiUsage } from '../contracts.ts';
+import type { AiEffort, AiProvider, AiRefusalState, AiTaskType, AiUsage } from '../contracts.ts';
 import type { AiErrorCode } from '../errors.ts';
 
 export interface AiRunStartedRecord {
@@ -8,6 +8,9 @@ export interface AiRunStartedRecord {
   taskType: AiTaskType;
   provider: AiProvider;
   configuredModel: string;
+  configuredEffort: AiEffort;
+  configuredMaxOutputTokens: number;
+  effectiveMaxOutputTokens: number;
   promptVersion: string;
   schemaVersion: string;
   inputFingerprint: string;

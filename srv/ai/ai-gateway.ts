@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { AiConfig } from './config.ts';
-import { isProfiledAiTaskType, validateAiExecutionProfile } from './config.ts';
+import {
+  isProfiledAiTaskType,
+  resolveMaxOutputTokens,
+  validateAiExecutionProfile,
+} from './config.ts';
 import { createInputFingerprint, isValidAiRunId } from './contracts.ts';
 import type {
   AiCallResult,
@@ -17,6 +21,7 @@ function auditFailure(
   profile: AiExecutionProfile,
   cause: unknown,
   originalErrorCode?: string,
+  aiRunId?: string,
 ): AiError {
   const transactionBoundary =
     cause instanceof AiError && typeof cause.details.transactionBoundary === 'string'
@@ -27,12 +32,27 @@ function auditFailure(
     model: profile.model,
     details:
       originalErrorCode === undefined
-        ? { stage, ...(transactionBoundary === undefined ? {} : { transactionBoundary }) }
+        ? {
+            stage,
+            ...(aiRunId === undefined ? {} : { aiRunId }),
+            ...(transactionBoundary === undefined ? {} : { transactionBoundary }),
+          }
         : {
             originalErrorCode,
+            ...(aiRunId === undefined ? {} : { aiRunId }),
             ...(transactionBoundary === undefined ? {} : { transactionBoundary }),
           },
     cause,
+  });
+}
+
+function withDurableAiRunId(error: AiError, aiRunId: string): AiError {
+  return new AiError(error.code, error.message, {
+    ...(error.provider === undefined ? {} : { provider: error.provider }),
+    ...(error.model === undefined ? {} : { model: error.model }),
+    retryable: error.retryable,
+    details: { ...error.details, aiRunId },
+    cause: error,
   });
 }
 
@@ -160,6 +180,13 @@ export class AiGateway {
       );
     }
 
+    // The gateway owns the effective cap. A request may only reduce the configured profile,
+    // and the exact value is fixed before durable STARTED and before the adapter sees it.
+    const effectiveMaxOutputTokens = resolveMaxOutputTokens(
+      request.maxOutputTokens,
+      profile.maxOutputTokens,
+    );
+
     const aiRunId = this.generateAiRunId().trim();
     if (!isValidAiRunId(aiRunId)) {
       throw new AiError('INVALID_AI_CONFIGURATION', 'The AI run ID generator returned no UUID.', {
@@ -175,6 +202,9 @@ export class AiGateway {
       ...(request.planningRunId === undefined ? {} : { planningRunId: request.planningRunId }),
       provider: profile.provider,
       configuredModel: profile.model,
+      configuredEffort: profile.effort,
+      configuredMaxOutputTokens: profile.maxOutputTokens,
+      effectiveMaxOutputTokens,
       taskType: request.taskType,
       promptVersion: request.promptVersion,
       schemaVersion: request.schemaVersion,
@@ -190,7 +220,11 @@ export class AiGateway {
 
     let result: AiCallResult<TOutput>;
     try {
-      const executionRequest: StructuredAiRequest<TOutput> = { ...request, aiRunId };
+      const executionRequest: StructuredAiRequest<TOutput> = {
+        ...request,
+        aiRunId,
+        maxOutputTokens: effectiveMaxOutputTokens,
+      };
       result = await adapter.call(executionRequest, profile);
       validateResultMetadata(result, executionRequest, profile, aiRunId, inputFingerprint);
       result = {
@@ -219,9 +253,9 @@ export class AiGateway {
       try {
         await this.recorder.record(failureEvent);
       } catch (recorderCause) {
-        throw auditFailure('FAILED', profile, recorderCause, error.code);
+        throw auditFailure('FAILED', profile, recorderCause, error.code, aiRunId);
       }
-      throw error;
+      throw withDurableAiRunId(error, aiRunId);
     }
 
     const successEvent: AiRunTelemetryEvent = {
@@ -241,7 +275,7 @@ export class AiGateway {
     try {
       await this.recorder.record(successEvent);
     } catch (cause) {
-      throw auditFailure('SUCCEEDED', profile, cause);
+      throw auditFailure('SUCCEEDED', profile, cause, undefined, aiRunId);
     }
 
     return result;

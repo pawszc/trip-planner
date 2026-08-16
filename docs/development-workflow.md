@@ -30,6 +30,12 @@ Implementację można rozpocząć wyłącznie dla fazy ze statusem `READY`. Stat
 oznacza kierunek, a nie zgodę na rozpoczęcie pracy. Zaakceptowanej specyfikacji nie wolno
 cicho rozszerzać ani zastępować decyzją podjętą podczas implementacji.
 
+Po rozpoczęciu pracy status przechodzi przez `IN_PROGRESS` do `REVIEW`. `REVIEW` oznacza
+Draft PR i pętlę weryfikacji, a nie spełnienie Definition of Done. Jeżeli kontrakt wymaga
+osobno zatwierdzonego live baseline, brak zgody lub niewykonany baseline utrzymuje fazę w
+`REVIEW`; nie wolno zastąpić dowodu offline wynikiem domniemanym ani cicho oznaczyć fazy
+jako `DONE`.
+
 Jedna faza albo task używa jednego dedykowanego brancha i jednego pull requestu. Kolejna
 faza nie uruchamia się automatycznie po zakończeniu poprzedniej; musi mieć własny kontrakt
 ze statusem `READY`.
@@ -47,7 +53,10 @@ ze statusem `READY`.
 7. Po tym handoffie Codex poprawia drobne uwagi na tym samym PR wraz z odpowiednimi testami
    regresyjnymi.
 8. Problem strategiczny zatrzymuje pętlę i wymaga decyzji człowieka.
-9. Po approval i merge następna faza może ruszyć wyłącznie wtedy, gdy ma status `READY`.
+9. Wymagany live baseline może zostać uruchomiony tylko po osobnej zgodzie obejmującej
+   dokładny plan wywołań i konserwatywny koszt; wynik i rzeczywisty koszt trafiają do PR.
+10. Po approval, spełnieniu wszystkich bramek i merge następna faza może ruszyć wyłącznie
+    wtedy, gdy ma status `READY`.
 
 Każda kolejna iteracja ChatGPT → Codex również wymaga jawnego handoffu uruchomionego przez
 użytkownika. Automatyczne przekazywanie feedbacku w tym kierunku pozostaje poza Level 2 i
@@ -71,5 +80,7 @@ Przed otwarciem PR Codex uruchamia co najmniej `npm run verify:full` i
 odstępstwa, ograniczenia i ryzyka, wszystkie external/live calls, przewidywany i rzeczywisty
 koszt płatnych API oraz informację o wymaganej eskalacji.
 
-Level 2 nie zezwala na automatyczny merge. Merge następuje dopiero po zielonym review. Nie
-ma również automatycznego startu faz ze statusem `PLANNED`.
+Level 2 nie zezwala na automatyczny merge. Merge następuje dopiero po zielonym review i
+spełnieniu wszystkich wymaganych bramek, w tym osobno zatwierdzonego baseline, jeśli
+przewiduje go kontrakt fazy. Nie ma również automatycznego startu faz ze statusem
+`PLANNED`.

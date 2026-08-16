@@ -13,8 +13,9 @@ constraints, budżetu lub rankingu.
 Faza została zmergowana do `main` w [PR #8](https://github.com/pawszc/trip-planner/pull/8)
 jako commit [`ac643b3`](https://github.com/pawszc/trip-planner/commit/ac643b3a055eb723a2fc43fed9ada28890e79146).
 [CI #46](https://github.com/pawszc/trip-planner/actions/runs/31876295834) dla tego commitu
-zakończyło się sukcesem. `DONE` nie uruchamia automatycznie następnej fazy; Faza 3B3
-pozostaje `PLANNED` do osobnego checkpointu i jawnej zmiany statusu na `READY`.
+zakończyło się sukcesem. `DONE` nie uruchomiło następnej fazy automatycznie; kontrakt Fazy
+3B3 przeszedł osobny checkpoint, został zmergowany jako `READY`, a jego implementacja jest
+obecnie w statusie `REVIEW`.
 
 ## Preconditions
 
