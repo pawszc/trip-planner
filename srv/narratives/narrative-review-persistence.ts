@@ -5,6 +5,15 @@ import { GROUNDED_OPTION_CONTEXT_VERSION } from './grounded-option-context.ts';
 import type { NarrativePersistenceBundle, NarrativeRunRecord } from './narrative-persistence.ts';
 import { NARRATIVE_MODEL_VIEW_VERSION } from './narrative-model-view.ts';
 import {
+  NARRATIVE_JUDGE_DIMENSIONS,
+  NARRATIVE_JUDGE_REASON_CODES,
+  NARRATIVE_JUDGE_REASON_SEVERITIES,
+  NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
+  type NarrativeJudgeDimension,
+  type NarrativeJudgeReasonCode,
+  type NarrativeJudgeSeverity,
+} from './narrative-quality-rubric.ts';
+import {
   OPTION_NARRATIVE_PROMPT_VERSION,
   OPTION_NARRATIVE_SCHEMA_VERSION,
 } from './option-narrative.ts';
@@ -22,47 +31,18 @@ import {
   NARRATIVE_SAFETY_PRECHECK_VERSION,
 } from './narrative-quality-versions.ts';
 
-export const NARRATIVE_REVIEW_DIMENSION_VALUES = [
-  'FACTUAL_ENTAILMENT',
-  'REFERENCE_RELEVANCE',
-  'UNKNOWN_MISSING_DISCIPLINE',
-  'CONSTRAINT_RANKING_FIDELITY',
-  'MONEY_DATE_TIME_FIDELITY',
-  'PROVENANCE_INTEGRITY',
-  'SAFETY_INSTRUCTION_INTEGRITY',
-  'RELEVANCE_AND_BLOCK_KIND',
-] as const;
+export const NARRATIVE_REVIEW_DIMENSION_VALUES = NARRATIVE_JUDGE_DIMENSIONS;
 
-export type NarrativeReviewDimension = (typeof NARRATIVE_REVIEW_DIMENSION_VALUES)[number];
+export type NarrativeReviewDimension = NarrativeJudgeDimension;
 export type NarrativeReviewDimensionResult = 'PASS' | 'FAIL';
 export type NarrativeReviewDimensionResults = Readonly<
   Record<NarrativeReviewDimension, NarrativeReviewDimensionResult>
 >;
 
-export const NARRATIVE_REVIEW_FINDING_CODE_VALUES = [
-  'REFERENCE_DOES_NOT_SUPPORT_CLAIM',
-  'UNSUPPORTED_CLAIM',
-  'CONTRADICTS_GROUNDED_FACT',
-  'CLAIM_MISSING_SUPPORT',
-  'FILLS_UNKNOWN_OR_MISSING',
-  'MONEY_VALUE_MISMATCH',
-  'MONEY_CALCULATION_OR_REFORMAT',
-  'DATE_TIME_MISMATCH',
-  'RANKING_ROLE_MISMATCH',
-  'HARD_CONSTRAINT_RELAXATION',
-  'PROVENANCE_OVERSTATED',
-  'AVAILABILITY_OR_BOOKING_GUARANTEE',
-  'UNSUPPORTED_LEGAL_VISA_HEALTH_OR_ACCESSIBILITY_ADVICE',
-  'UNSAFE_OR_ILLEGAL_GUIDANCE',
-  'PROMPT_INJECTION_FOLLOWED',
-  'UNTRUSTED_CONTENT_EXPOSED',
-  'PII_OR_SECRET_EXPOSURE',
-  'IRRELEVANT_OR_WRONG_BLOCK_KIND',
-  'CROSS_BLOCK_CONTRADICTION',
-] as const;
+export const NARRATIVE_REVIEW_FINDING_CODE_VALUES = NARRATIVE_JUDGE_REASON_CODES;
 
-export type NarrativeReviewFindingCode = (typeof NARRATIVE_REVIEW_FINDING_CODE_VALUES)[number];
-export type NarrativeReviewFindingSeverity = 'MAJOR' | 'CRITICAL';
+export type NarrativeReviewFindingCode = NarrativeJudgeReasonCode;
+export type NarrativeReviewFindingSeverity = NarrativeJudgeSeverity;
 
 export const NARRATIVE_REVIEW_FAILURE_CODE_VALUES = [
   'PRECHECK_REJECTED',
@@ -130,6 +110,7 @@ export interface NarrativeReviewRunRecord {
   readonly judgePromptVersion: string;
   readonly judgeSchemaVersion: string;
   readonly rubricVersion: string;
+  readonly rubricFingerprint: string | null;
   readonly publicationPolicyVersion: string;
   readonly datasetVersion: string;
   readonly modelProfileVersion: string;
@@ -187,6 +168,7 @@ export interface ReviewedNarrativeRunRecord extends NarrativeRunRecord {
   readonly judgePromptVersion: string;
   readonly judgeSchemaVersion: string;
   readonly rubricVersion: string;
+  readonly rubricFingerprint: string;
   readonly publicationPolicyVersion: string;
   readonly datasetVersion: string;
   readonly modelProfileVersion: string;
@@ -346,6 +328,9 @@ function normalizeFinding(
   }
   if (finding.severity !== 'MAJOR' && finding.severity !== 'CRITICAL') {
     invalidReviewPersistence('Narrative review finding severity is invalid.');
+  }
+  if (!NARRATIVE_JUDGE_REASON_SEVERITIES[finding.reasonCode].includes(finding.severity)) {
+    invalidReviewPersistence('Narrative review finding severity does not match its reason code.');
   }
   if (!Array.isArray(finding.blockSequences) || finding.blockSequences.length === 0) {
     invalidReviewPersistence('Narrative review finding requires at least one block sequence.');
@@ -514,6 +499,7 @@ function buildReviewBundle(
       judgePromptVersion: versions.judgePromptVersion,
       judgeSchemaVersion: versions.judgeSchemaVersion,
       rubricVersion: versions.rubricVersion,
+      rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
       publicationPolicyVersion: versions.publicationPolicyVersion,
       datasetVersion: versions.datasetVersion,
       modelProfileVersion: versions.modelProfileVersion,
@@ -698,6 +684,7 @@ export function buildNarrativeReviewPublicationBundle(
       judgePromptVersion: row.judgePromptVersion,
       judgeSchemaVersion: row.judgeSchemaVersion,
       rubricVersion: row.rubricVersion,
+      rubricFingerprint: row.rubricFingerprint!,
       publicationPolicyVersion: row.publicationPolicyVersion,
       datasetVersion: row.datasetVersion,
       modelProfileVersion: row.modelProfileVersion,

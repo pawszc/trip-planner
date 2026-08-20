@@ -11,6 +11,11 @@ import {
   NARRATIVE_QUALITY_DATASET_VERSION,
   NARRATIVE_QUALITY_RUBRIC_VERSION,
 } from '../narratives/narrative-quality-versions.ts';
+import {
+  NARRATIVE_JUDGE_DIMENSIONS,
+  NARRATIVE_JUDGE_REASON_CODES,
+} from '../narratives/narrative-quality-rubric.ts';
+import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 
 export {
   NARRATIVE_PUBLICATION_POLICY_VERSION,
@@ -27,38 +32,9 @@ export const NARRATIVE_QUALITY_DATASET_FINGERPRINT =
   '744d0a275f6c3324d5e1d3ff8d383bc1d957d56ea02c10169da756a60678c4b1';
 export const NARRATIVE_QUALITY_DATASET_CANONICAL_BYTES = 18_501;
 
-export const NARRATIVE_QUALITY_DIMENSIONS = [
-  'FACTUAL_ENTAILMENT',
-  'REFERENCE_RELEVANCE',
-  'UNKNOWN_MISSING_DISCIPLINE',
-  'CONSTRAINT_RANKING_FIDELITY',
-  'MONEY_DATE_TIME_FIDELITY',
-  'PROVENANCE_INTEGRITY',
-  'SAFETY_INSTRUCTION_INTEGRITY',
-  'RELEVANCE_AND_BLOCK_KIND',
-] as const;
+export const NARRATIVE_QUALITY_DIMENSIONS = NARRATIVE_JUDGE_DIMENSIONS;
 
-export const NARRATIVE_QUALITY_REASON_CODES = [
-  'REFERENCE_DOES_NOT_SUPPORT_CLAIM',
-  'UNSUPPORTED_CLAIM',
-  'CONTRADICTS_GROUNDED_FACT',
-  'CLAIM_MISSING_SUPPORT',
-  'FILLS_UNKNOWN_OR_MISSING',
-  'MONEY_VALUE_MISMATCH',
-  'MONEY_CALCULATION_OR_REFORMAT',
-  'DATE_TIME_MISMATCH',
-  'RANKING_ROLE_MISMATCH',
-  'HARD_CONSTRAINT_RELAXATION',
-  'PROVENANCE_OVERSTATED',
-  'AVAILABILITY_OR_BOOKING_GUARANTEE',
-  'UNSUPPORTED_LEGAL_VISA_HEALTH_OR_ACCESSIBILITY_ADVICE',
-  'UNSAFE_OR_ILLEGAL_GUIDANCE',
-  'PROMPT_INJECTION_FOLLOWED',
-  'UNTRUSTED_CONTENT_EXPOSED',
-  'PII_OR_SECRET_EXPOSURE',
-  'IRRELEVANT_OR_WRONG_BLOCK_KIND',
-  'CROSS_BLOCK_CONTRADICTION',
-] as const;
+export const NARRATIVE_QUALITY_REASON_CODES = NARRATIVE_JUDGE_REASON_CODES;
 
 export type NarrativeQualityDimension = (typeof NARRATIVE_QUALITY_DIMENSIONS)[number];
 export type NarrativeQualityReasonCode = (typeof NARRATIVE_QUALITY_REASON_CODES)[number];
@@ -189,21 +165,33 @@ function uniqueValues<T>(values: readonly T[]): boolean {
 const uniqueStringArray = <T extends z.ZodType<string>>(item: T, minimum = 0, maximum?: number) => {
   let schema = z.array(item).min(minimum);
   if (maximum !== undefined) schema = schema.max(maximum);
-  return schema.refine(uniqueValues, 'Array values must be unique.');
+  return schema.refine(uniqueValues, 'Array values must be unique.').meta({ uniqueItems: true });
 };
 
 const dimensionSchema = z.enum(NARRATIVE_QUALITY_DIMENSIONS);
 const reasonCodeSchema = z.enum(NARRATIVE_QUALITY_REASON_CODES);
+const strictIsoDateSchema = z
+  .string()
+  .refine((value) => parseStrictIsoDate(value) !== null, 'An exact ISO calendar date is required.')
+  .meta({ format: 'date' });
+
+function integerAtLeast(minimum: number) {
+  return z
+    .number()
+    .min(minimum)
+    .refine(Number.isInteger, 'An integer is required.')
+    .meta({ type: 'integer' });
+}
 
 const constraintSnapshotSchema = z
   .object({
-    startDate: z.iso.date(),
-    endDate: z.iso.date(),
-    adults: z.number().int().min(1),
+    startDate: strictIsoDateSchema,
+    endDate: strictIsoDateSchema,
+    adults: integerAtLeast(1),
     currency: z.enum(['PLN', 'EUR']),
     hardBudgetLimit: z.boolean(),
-    maxConnections: z.number().int().min(0),
-    maxTravelMinutes: z.number().int().min(1),
+    maxConnections: integerAtLeast(0),
+    maxTravelMinutes: integerAtLeast(1),
     allowFlight: z.boolean(),
     allowTrain: z.boolean(),
     allowBus: z.boolean(),
@@ -216,10 +204,8 @@ const authoringContextSchema = z
     fixtureBuilder: z.string().regex(/^[a-z0-9-]+-v1$/),
     summary: z
       .record(z.string(), z.string().min(1).max(500))
-      .refine(
-        (summary) => Object.keys(summary).length >= 4,
-        'A context summary needs four fields.',
-      ),
+      .refine((summary) => Object.keys(summary).length >= 4, 'A context summary needs four fields.')
+      .meta({ minProperties: 4 }),
     constraintSnapshot: constraintSnapshotSchema,
   })
   .strict();
@@ -283,6 +269,30 @@ const expectedResultSchema = z
         });
       }
     }
+  })
+  .meta({
+    allOf: [
+      {
+        if: { properties: { decision: { const: 'PUBLISH' } } },
+        then: {
+          properties: {
+            stage: { const: 'JUDGE' },
+            critical: { const: false },
+            failedDimensions: { maxItems: 0 },
+            requiredReasonCodes: { maxItems: 0 },
+          },
+        },
+      },
+      {
+        if: { properties: { decision: { const: 'REJECT' } } },
+        then: {
+          properties: {
+            failedDimensions: { minItems: 1 },
+            requiredReasonCodes: { minItems: 1 },
+          },
+        },
+      },
+    ],
   });
 
 const semanticCaseSchema = z

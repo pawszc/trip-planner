@@ -870,22 +870,28 @@ export default class TripPlannerService extends cds.ApplicationService {
             schemaVersion: judgeRequest.schemaVersion,
             inputFingerprint: judgeInputFingerprint,
           });
-          await this.narrativeReviewStore.persistRejection(
-            buildNarrativeReviewRejectionBundle({
-              planningRunId: context.planningRun.id,
-              rankedOptionId: context.rankedOption.id,
-              generateAudit,
-              ...(judgeAudit === undefined ? {} : { judgeAiRunId: judgeAudit.ID, judgeAudit }),
-              contextFingerprint: context.fingerprint,
-              modelViewFingerprint: modelView.fingerprint,
-              narrativeFingerprint,
-              qualityContextFingerprint: qualityContext.fingerprint,
-              versions,
-              stage: 'JUDGE',
-              failureCode: narrativeReviewFailureCode(error, 'PROVIDER_ERROR'),
-              completedAt: new Date().toISOString(),
-            }),
-          );
+          // A JUDGE attempt that never reached durable STARTED has no truthful judgeAiRunId.
+          // Its closed operational signal is emitted by the gateway; do not create a review
+          // row that would imply a durable judge audit or persist the in-memory candidate.
+          if (judgeAudit !== undefined) {
+            await this.narrativeReviewStore.persistRejection(
+              buildNarrativeReviewRejectionBundle({
+                planningRunId: context.planningRun.id,
+                rankedOptionId: context.rankedOption.id,
+                generateAudit,
+                judgeAiRunId: judgeAudit.ID,
+                judgeAudit,
+                contextFingerprint: context.fingerprint,
+                modelViewFingerprint: modelView.fingerprint,
+                narrativeFingerprint,
+                qualityContextFingerprint: qualityContext.fingerprint,
+                versions,
+                stage: 'JUDGE',
+                failureCode: narrativeReviewFailureCode(error, 'PROVIDER_ERROR'),
+                completedAt: new Date().toISOString(),
+              }),
+            );
+          }
           throw error;
         }
 

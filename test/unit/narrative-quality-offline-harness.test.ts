@@ -6,7 +6,7 @@ import {
   type ResolvedNarrativeQualityEndToEndCase,
 } from '../../srv/evals/dataset.ts';
 import {
-  runDeterministicOfflineEvaluation,
+  runDeterministicContractReplay,
   type OfflineEvaluationPass,
   type OfflineNarrativeEvalAdapter,
 } from '../../srv/evals/offline-harness.ts';
@@ -49,11 +49,11 @@ function inMemoryAdapter(log: string[] = []): OfflineNarrativeEvalAdapter {
         generatedSchemaValid: result.generatedSchemaValid,
         exactReferencesValid: result.exactReferencesValid,
         actualDecision: result.actualDecision,
-        criticalNarrativePublished: result.criticalNarrativePublished,
-        adversarialPayloadPropagated: result.adversarialPayloadPropagated,
+        requiredPropertyCatalogVersion: result.requiredPropertyCatalogVersion,
+        requiredPropertyResults: result.requiredPropertyResults,
         generateAuditSucceeded: result.generateAuditSucceeded,
         judgeAuditSucceeded: result.judgeAuditSucceeded,
-        reviewLinked: result.reviewLinked,
+        publicationBundleLinkageValidInMemory: result.publicationBundleLinkageValidInMemory,
         deterministicStateUnchanged: result.deterministicStateUnchanged,
       };
     },
@@ -133,7 +133,7 @@ describe('deterministic offline narrative eval harness', () => {
   it('runs 32 primary, eight exact sentinel repeats and four E2E contexts in stable order', async () => {
     const log: string[] = [];
     const dataset = frozenNarrativeQualityDataset();
-    const result = await runDeterministicOfflineEvaluation({
+    const result = await runDeterministicContractReplay({
       resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
       versions: evalContractVersions,
       adapter: inMemoryAdapter(log),
@@ -173,13 +173,13 @@ describe('deterministic offline narrative eval harness', () => {
       dataset,
       syntheticGroundedFixtureResolver,
     );
-    const first = await runDeterministicOfflineEvaluation({
+    const first = await runDeterministicContractReplay({
       resolvedDataset,
       versions: evalContractVersions,
       adapter: inMemoryAdapter(),
       operations,
     });
-    const second = await runDeterministicOfflineEvaluation({
+    const second = await runDeterministicContractReplay({
       resolvedDataset,
       versions: evalContractVersions,
       adapter: inMemoryAdapter(),
@@ -208,7 +208,7 @@ describe('deterministic offline narrative eval harness', () => {
 
   it('validates an exact passing baseline manifest and rejects any model/profile drift', async () => {
     const dataset = frozenNarrativeQualityDataset();
-    const { report } = await runDeterministicOfflineEvaluation({
+    const { report } = await runDeterministicContractReplay({
       resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
       versions: evalContractVersions,
       adapter: inMemoryAdapter(),
@@ -262,7 +262,7 @@ describe('deterministic offline narrative eval harness', () => {
       }),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
 
-    const { report: incompleteReport } = await runDeterministicOfflineEvaluation({
+    const { report: incompleteReport } = await runDeterministicContractReplay({
       resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
       versions: evalContractVersions,
       adapter: inMemoryAdapter(),
@@ -287,7 +287,7 @@ describe('deterministic offline narrative eval harness', () => {
     };
 
     await expect(
-      runDeterministicOfflineEvaluation({
+      runDeterministicContractReplay({
         resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
         versions: evalContractVersions,
         adapter: inMemoryAdapter(),
@@ -304,7 +304,7 @@ describe('deterministic offline narrative eval harness', () => {
     };
 
     await expect(
-      runDeterministicOfflineEvaluation({
+      runDeterministicContractReplay({
         resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
         versions: evalContractVersions,
         adapter,

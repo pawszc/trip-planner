@@ -5,9 +5,23 @@ Ten katalog przechowuje frozen kontrakty narrative-quality Fazy 3B3. `datasets/`
 i kryteria jakości. Implementacja loadera, metryk, offline harnessu, privacy-safe raportów,
 baseline binding, price arithmetic i live guard znajduje się w `srv/evals/`.
 
-Offline eval jest deterministyczny, credential-free i należy do standardowej weryfikacji.
-Nie wykonuje sieci ani paid calls i nie zastępuje testów twardych reguł, persistence lub
-arytmetyki domenowej.
+`npm run eval:offline` jest deterministycznym contract replay, credential-free i należy do
+standardowej weryfikacji. Frozen expected labels są w tym mechanizmie kopiowane do actual,
+więc wynik ma `evidenceKind=CONTRACT_REPLAY` i `modelQualityMeasured=false`: potwierdza
+integralność loadera, resolverów, kontraktów, metryk, gates i report pipeline, ale nie mierzy
+jakości `GENERATE` ani `JUDGE`. Nie wykonuje sieci ani paid calls i nie zastępuje testów
+twardych reguł, persistence, arytmetyki domenowej ani osobnego live baseline.
+
+Standardowy `verify` wykonuje przed replayem `npm run eval:schema:check`. Komenda generuje
+JSON Schema z runtime Zod i porównuje jego canonical form oraz fingerprint z frozen
+`schemas/narrative-quality-v1.schema.json`; nie aktualizuje golden artifact automatycznie.
+
+Live E2E wykonuje zamknięty, wersjonowany katalog deterministic `requiredProperties` na
+exact candidate/context/model view/constraint snapshot. Te oracle nie korzystają z decyzji,
+dimensions, findings ani reason codes `JUDGE`, dlatego all-`PASS` judge nie jest samodzielnym
+dowodem przejścia. Raport zawiera tylko allowlistowane property IDs, wynik i kontrolowany
+failure code. Pole `publicationBundleLinkageValidInMemory` dowodzi wyłącznie spójności bundle
+w pamięci; realny zapis i odczyt jest osobno testowany na produkcyjnych writerach CAP/SQLite.
 
 Finalny live baseline używa wyłącznie danych syntetycznych, jest poza CI i wymaga osobnej
 zgody, `AI_LIVE_EVAL_ENABLED=true`, przejścia preflightu oraz limitów 48 logical calls, 56

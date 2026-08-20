@@ -1,12 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { loadAiConfig, type AiConfig } from '../../srv/ai/config.ts';
-import {
-  AiTaskType,
-  createInputFingerprint,
-  type AiCallResult,
-  type StructuredAiRequest,
-} from '../../srv/ai/contracts.ts';
+import { AiTaskType, createInputFingerprint, type AiCallResult } from '../../srv/ai/contracts.ts';
 import { AiError } from '../../srv/ai/errors.ts';
 import { NARRATIVE_LIVE_BASELINE_OPERATION_PLAN } from '../../srv/evals/baseline.ts';
 import {
@@ -69,15 +64,26 @@ function configuredPriceSnapshot(config: AiConfig): AiPriceSnapshot {
   });
 }
 
-function fakeGenerateOutput(request: StructuredAiRequest<unknown>): OptionNarrativeOutput {
-  const view = request.input as NarrativeModelView;
+function fakeGenerateOutput(
+  descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
+): OptionNarrativeOutput {
+  const view = descriptor.request.input as NarrativeModelView;
+  const statusFacts = view.facts.filter(
+    ({ status }) => status === 'UNKNOWN' || status === 'MISSING',
+  );
   return {
     contextFingerprint: view.groundedContextFingerprint,
     blocks: [
       {
         kind: 'SUMMARY',
-        text: 'Synthetic evaluation summary.',
-        factReferences: [view.facts[0]!.factId],
+        text:
+          descriptor.caseId === 'E03'
+            ? 'Synthetic fixture: UNKNOWN values remain unknown; MISSING values remain missing.'
+            : 'Synthetic evaluation summary.',
+        factReferences:
+          descriptor.caseId === 'E03'
+            ? statusFacts.map(({ factId }) => factId)
+            : [view.facts[0]!.factId],
       },
     ],
   };
@@ -145,7 +151,7 @@ class SuccessfulOfflineExecutor implements NarrativeLiveEvalExecutor {
     this.calls.push(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
     const output =
       descriptor.request.taskType === AiTaskType.GENERATE
-        ? fakeGenerateOutput(descriptor.request)
+        ? fakeGenerateOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>)
         : fakeJudgeOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
     return { result: fakeResult(descriptor, output), auditSucceeded: true as const };
   }
@@ -294,6 +300,14 @@ describe('narrative live-eval execution without provider calls', () => {
     expect(result.report.semantic.metrics.strictJudgeOutputValidity.value).toBe(1);
     expect(result.report.stability.gates.passed).toBe(true);
     expect(result.report.endToEnd.gates.passed).toBe(true);
+    expect(result.report.endToEnd.requiredPropertyCatalogVersion).toBe(
+      'narrative-e2e-required-properties-v1',
+    );
+    expect(
+      result.report.endToEnd.cases.flatMap(({ requiredPropertyResults }) =>
+        requiredPropertyResults.map(({ passed }) => passed),
+      ),
+    ).toEqual(Array.from({ length: 16 }, () => true));
     expect(result.report.operationalSummary).toMatchObject({
       logicalCalls: 46,
       providerAttempts: 46,
@@ -307,6 +321,55 @@ describe('narrative live-eval execution without provider calls', () => {
     expect(serialized).not.toContain('sourceUrl');
     expect(serialized).not.toContain('externalItemId');
     expect(serialized).not.toContain('You write concise narrative blocks');
+  });
+
+  it('fails the E2E gate on an independent property despite an all-PASS JUDGE', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    const result = await runNarrativeQualityLiveEvaluation({
+      env: enabledEnvironment,
+      config,
+      priceSnapshot: configuredPriceSnapshot(config),
+      createExecutor: async () => ({
+        async call<TOutput>(descriptor: NarrativeLiveEvalCallDescriptor<TOutput>) {
+          let output: unknown;
+          if (descriptor.request.taskType === AiTaskType.JUDGE) {
+            output = fakeJudgeOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
+          } else if (descriptor.caseId === 'E02') {
+            const view = descriptor.request.input as NarrativeModelView;
+            output = {
+              contextFingerprint: view.groundedContextFingerprint,
+              blocks: [
+                {
+                  kind: 'SUMMARY',
+                  text: 'Synthetic cached offer is currently available.',
+                  factReferences: [view.facts[0]!.factId],
+                },
+              ],
+            };
+          } else {
+            output = fakeGenerateOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
+          }
+          return { result: fakeResult(descriptor, output), auditSucceeded: true as const };
+        },
+      }),
+    });
+
+    const vienna = result.endToEndOutcomes.find(({ caseId }) => caseId === 'E02')!;
+    expect(vienna.actualDecision).toBe('PUBLISH');
+    expect(
+      vienna.requiredPropertyResults.find(({ propertyId }) => propertyId === 'cached-not-live'),
+    ).toEqual({
+      propertyId: 'cached-not-live',
+      passed: false,
+      failureCode: 'CACHED_SOURCE_PRESENTED_AS_LIVE',
+    });
+    expect(result.report.endToEnd.gates).toEqual({
+      passed: false,
+      failures: ['REQUIRED_PROPERTY_FAILURE'],
+    });
+    const serialized = JSON.stringify(result.report);
+    expect(serialized).toContain('CACHED_SOURCE_PRESENTED_AS_LIVE');
+    expect(serialized).not.toContain('Synthetic cached offer is currently available.');
   });
 
   it('stops after the first thrown provider failure and exposes no partial report', async () => {

@@ -221,6 +221,10 @@ providera, a `SUCCEEDED` lub `FAILED` aktualizuje dokładnie ten sam UUID w kró
 niezależnej transakcji CAP. Brak zapisu blokuje wykonanie albo zwrot wyniku i kończy się
 `AI_AUDIT_FAILED`.
 
+Próba `GENERATE`/`JUDGE` przed durable `STARTED` nie ma prawdziwego UUID, nie tworzy review
+ani produktu i nie wywołuje providera. Niezależny sink otrzymuje dokładnie jeden zamknięty
+`AI_PRE_START_FAILURE` bez `aiRunId`, raw danych lub błędu; nie fabrykujemy audytu.
+
 Recorder jest obowiązkową zależnością `AiGateway`; jawna factory persistent składa oba
 adaptery, `PersistentAiRunRecorder` i `CapAiRunStore`. Test CAP + SQLite wykazał circular
 wait, gdy niezależny audit był uruchamiany po rozpoczęciu requestowej transakcji DB.
@@ -289,9 +293,10 @@ usuwa danych produktu.
 Po zbudowaniu pełnego `GroundedOptionContext` kod tworzy `narrative-model-view-v1`.
 Projection zachowuje referencjonowalne fakty, ich status, display values, `factId`, freshness,
 fixture/demo markers i deterministyczne lineage, ale nie wysyła raw `sourceUrl`,
-`externalItemId`, HTML, znaków kontrolnych ani zbędnych provider-shaped wartości. Model view
-zawiera fingerprint pełnego kontekstu i własny canonical SHA-256; pełny kontekst pozostaje
-lokalny.
+`externalItemId`, HTML, znaków kontrolnych ani zbędnych provider-shaped wartości. Provenance
+keys stają się opaque, wersjonowanymi hashami bezpiecznego `factId`, niezależnymi od raw
+source identity. Model view zawiera fingerprint pełnego kontekstu i własny canonical SHA-256;
+pełny kontekst pozostaje lokalny.
 
 Po `GENERATE` ten sam strict parser 3B2 ponownie wiąże każdy blok z exact grounded
 fingerprintem i fact IDs. Następnie deterministyczny precheck blokuje URL-e, Markdown/HTML,
@@ -304,9 +309,11 @@ exact-money pozostaje jawnym punktem review.
 Kod buduje osobny `narrative-quality-context-v1`: dokładny zwalidowany kandydat i jego
 fingerprint, model view i grounded fingerprints, potwierdzone strukturalne constraints oraz
 wersje wszystkich kontraktów. Nie mutuje to `grounded-option-context-v1`. Profil `JUDGE`
-zwraca dokładnie osiem wymiarów `PASS`/`FAIL` i findings z zamkniętego katalogu kodów,
-severity, block sequences i in-context fact IDs. Nie zwraca wiążącego overall verdict ani
-persistowalnego free-form rationale. Kod publikuje tylko przy ośmiu `PASS` i zerze findings.
+otrzymuje pełny golden-compatible rubric contract, exact version/fingerprint oraz quality i
+narrative fingerprints; zwraca dokładnie osiem wymiarów `PASS`/`FAIL` i findings z
+zamkniętego katalogu kodów, severity, block sequences i in-context fact IDs. Nie zwraca
+wiążącego overall verdict ani persistowalnego free-form rationale. Kod publikuje tylko przy
+ośmiu `PASS` i zerze findings.
 
 `NarrativeReviewRuns` i znormalizowane `NarrativeReviewFindings` przechowują wyłącznie
 kontrolowane metadata, fingerprints, wersje, wyniki wymiarów i scalar IDs audytów. Precheck
@@ -315,12 +322,15 @@ kandydata oraz zero rekordów produktu narracji. `PUBLISH` atomowo zapisuje revi
 tekst oceniony przez judge dopiero po terminalnych `SUCCEEDED` obu audytów. Nullable pola
 quality/review na legacy narracjach 3B2 nie mają defaultu ani backfillu.
 
-Synthetic dataset v1, offline harness, metryki i privacy-safe report są deterministyczne i
-credential-free. Live baseline jest osobną ścieżką: default `AI_LIVE_EVAL_ENABLED=false`,
-preflight wymaga znanych cen, credentiali i jawnych opt-inów, a guard rezerwuje koszt przed
-każdym wywołaniem i egzekwuje maksymalnie 48 logicznych calls, 56 attempts i USD 3.00.
-Baseline nie został uruchomiony; koszt implementacji wynosi USD 0 i Faza 3B3 pozostaje w
-`REVIEW` do osobnej zgody oraz przejścia wszystkich bramek.
+Synthetic dataset v1, runtime/frozen schema parity, deterministic contract replay, metryki i
+privacy-safe report są deterministyczne i credential-free. Replay kopiuje expected labels do
+actual i jawnie nie mierzy jakości modelu. Live E2E wykonuje niezależne deterministic
+`requiredProperties`; jego bundle-linkage evidence jest nazwane in-memory, podczas gdy
+osobny test produkcyjnych writerów dowodzi zapisu CAP/SQLite. Live baseline jest osobną
+ścieżką: default `AI_LIVE_EVAL_ENABLED=false`, preflight wymaga znanych cen, credentiali i
+jawnych opt-inów, a guard rezerwuje koszt przed każdym wywołaniem i egzekwuje maksymalnie 48
+logicznych calls, 56 attempts i USD 3.00. Baseline nie został uruchomiony; koszt implementacji
+wynosi USD 0 i Faza 3B3 pozostaje w `REVIEW` do osobnej zgody oraz przejścia wszystkich bramek.
 
 ## Stos technologiczny
 

@@ -37,6 +37,14 @@ Recorder jest fail-closed. Błąd dowolnego wymaganego zapisu kończy się
 `AI_AUDIT_FAILED`. Brak trwałego `STARTED` bezwzględnie blokuje request do providera, a brak
 trwałego `SUCCEEDED` blokuje użycie poprawnego outputu.
 
+Jeżeli `GENERATE` lub `JUDGE` nie osiągnie durable `STARTED` — w tym przy disabled/config,
+nieprawidłowym ID/fingerprint/time albo błędzie insertu — nie istnieje prawdziwy `AiRunId`,
+więc nie powstaje `NarrativeReviewRun` ani fikcyjny UUID. Gateway emituje dokładnie jedną
+próbę allowlistowanego `AI_PRE_START_FAILURE` do niezależnego operational sinka, zawsze z
+`providerCallAttempted=false`. Sygnał nie zawiera promptu, inputu, candidate, outputu, raw
+błędu/cause/stack, PII, sekretu ani `aiRunId`. Dla pre-`STARTED` `JUDGE` pozostaje wyłącznie
+prawdziwy, wcześniejszy audit `GENERATE`; produkt nadal nie jest zapisywany.
+
 `AiRuns` przechowuje tylko metadane wykonania i retencję. Prompt, instrukcje, wejście,
 output i surowe błędy nigdy nie są utrwalane. Encja jest wewnętrzna i nie ma endpointu
 OData. Jest efemeryczna: default retencji wynosi 30 dni, konfiguracja zachowuje zakres
@@ -61,14 +69,17 @@ schedulera. Narracje są danymi produktu i nie mają mandatory association do `A
    kontrakt PLN/EUR; model nie dzieli ani nie formatuje kwot.
 4. Kod tworzy `narrative-model-view-v1`. Zachowuje fakty potrzebne modelowi, provenance
    status, display, fact IDs i lineage, ale usuwa raw URL-e, external IDs, HTML, znaki
-   kontrolne oraz zbędne provider-shaped wartości. Model view wiąże fingerprint pełnego
-   kontekstu z własnym canonical fingerprintem.
+   kontrolne oraz zbędne provider-shaped wartości. Klucze provenance zmienia na
+   deterministyczne, wersjonowane opaque keys wyprowadzane tylko z bezpiecznego `factId`,
+   bez użycia `sourceKey`, provider identity, URL, external ID lub source contexts. Model
+   view wiąże fingerprint pełnego kontekstu z własnym canonical fingerprintem.
 5. Gateway wybiera wyłącznie profil `GENERATE`, zapisuje durable `STARTED`, wykonuje call
    bez transakcji produktu i zapisuje terminalny audit. Strict Zod wymaga dokładnego
    grounded fingerprintu i niepustych `factReferences`; lokalna walidacja odrzuca cały
    niezgodny output.
 6. Deterministyczny precheck blokuje formatowe i syntaktyczne przypadki bezpieczeństwa,
-   zanim powstanie płatny `JUDGE`: URL/Markdown, HTML/script/event handlers, control/bidi,
+   zanim powstanie płatny `JUDGE`: URL/Markdown (w tym reference-style definitions,
+   full/collapsed/image references i autolinks), HTML/script/event handlers, control/bidi,
    wykluczone wartości i mechanicznie wykrywalny niedozwolony reformat pieniędzy. Precheck
    reject wykonuje zero `JUDGE` calls i zapisuje wyłącznie safe review metadata.
 7. Semantyczna niezgodność kwoty, nowe obliczenie i uzupełnienie `UNKNOWN` nie są
@@ -76,9 +87,11 @@ schedulera. Narracje są danymi produktu i nie mają mandatory association do `A
    wraz z kandydatem, exact constraints, fingerprints i wersjami do
    `narrative-quality-context-v1`.
 8. Gateway wykonuje dokładnie jeden profil `JUDGE` z własnym durable lifecycle. Strict
-   validator wymaga wszystkich ośmiu wymiarów dokładnie raz, zamkniętych reason codes,
-   severity, istniejących block/fact references i exact fingerprintów. Model nie zwraca
-   wiążącego overall verdict ani persistowalnego rationale.
+   wejście zawiera pełny golden-compatible rubric contract, exact rubric version,
+   `rubricFingerprint`, `qualityContextFingerprint` i `narrativeFingerprint`. Validator
+   wymaga wszystkich ośmiu wymiarów dokładnie raz, zamkniętych reason codes/severity,
+   istniejących block/fact references i exact fingerprintów. Model nie definiuje własnej
+   rubryki i nie zwraca wiążącego overall verdict ani persistowalnego rationale.
 9. Kod wylicza decyzję: osiem `PASS` i zero findings daje `PUBLISH`; każdy `FAIL` albo
    finding daje `REJECT`. Semantic reject utrwala bezpieczne review metadata w osobnej
    krótkiej transakcji, bez tekstu kandydata i bez rekordów produktu narracji.
@@ -103,6 +116,11 @@ schedulera. Narracje są danymi produktu i nie mają mandatory association do `A
 9. Plan dzień po dniu powstaje dopiero po wyborze wariantu.
 
 Faza 3B3 implementuje dla narracji kroki 1, 3, 5–8 tego przepływu oraz deterministic offline
-eval. Nie wykonuje `DECIDE`. Finalny synthetic live baseline jest osobno guardowany i
-wymaga jawnej zgody; nie został uruchomiony, koszt wynosi USD 0, dlatego faza pozostaje w
-`REVIEW`.
+contract replay. Replay kopiuje frozen expected labels do actual, więc weryfikuje loader,
+resolvery, kontrakty, metryki, gates i report path, ale ma
+`modelQualityMeasured=false`. Standardowy `verify` chroni też parity runtime Zod z frozen
+JSON Schema. Live E2E ma osobne, deterministic `requiredProperties`, które nie korzystają z
+werdyktu ani findings `JUDGE`; sama walidacja publication bundle pozostaje dowodem in-memory,
+a realny zapis/linkage jest testowany na produkcyjnym CAP/SQLite. Faza nie wykonuje
+`DECIDE`. Finalny synthetic live baseline jest osobno guardowany i wymaga jawnej zgody; nie
+został uruchomiony, koszt wynosi USD 0, dlatego faza pozostaje w `REVIEW`.

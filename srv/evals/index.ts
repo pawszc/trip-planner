@@ -6,4 +6,5 @@ export * from './metrics.ts';
 export * from './offline-harness.ts';
 export * from './price-snapshot.ts';
 export * from './report.ts';
+export * from './required-properties.ts';
 export * from './synthetic-fixtures.ts';

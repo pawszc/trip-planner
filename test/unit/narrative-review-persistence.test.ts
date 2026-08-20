@@ -4,6 +4,7 @@ import {
   OPTION_NARRATIVE_SCHEMA_VERSION,
 } from '../../srv/narratives/option-narrative.js';
 import { NARRATIVE_MODEL_VIEW_VERSION } from '../../srv/narratives/narrative-model-view.js';
+import { NARRATIVE_QUALITY_RUBRIC_FINGERPRINT } from '../../srv/narratives/narrative-quality-rubric.js';
 import {
   NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
   NARRATIVE_JUDGE_PROMPT_VERSION,
@@ -186,6 +187,7 @@ describe('narrative review persistence bundles', () => {
       stage: 'PRECHECK',
       failureCode: 'PRECHECK_REJECTED',
       qualityContextFingerprint: null,
+      rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
       findings: [
         {
           reasonCode: 'UNTRUSTED_CONTENT_EXPOSED',
@@ -322,6 +324,7 @@ describe('narrative review persistence bundles', () => {
       modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
       qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
       rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+      rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
       publicationPolicyVersion: NARRATIVE_PUBLICATION_POLICY_VERSION,
     });
   });
@@ -340,6 +343,23 @@ describe('narrative review persistence bundles', () => {
         ...common(),
         stage: 'GENERATE',
         failureCode: 'AI_TIMEOUT',
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_REVIEW_PERSISTENCE' }));
+    expect(() =>
+      buildNarrativeReviewRejectionBundle({
+        ...common(),
+        judgeAudit: audit('JUDGE'),
+        stage: 'JUDGE',
+        failureCode: 'SEMANTIC_REJECTED',
+        dimensions: dimensions('FACTUAL_ENTAILMENT'),
+        findings: [
+          {
+            reasonCode: 'UNSUPPORTED_CLAIM',
+            severity: 'CRITICAL',
+            blockSequences: [1],
+            factIds: [],
+          },
+        ],
       }),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_REVIEW_PERSISTENCE' }));
   });

@@ -96,20 +96,25 @@ quality gate i evalami.
 
 - deterministyczny `narrative-model-view-v1`, który zachowuje wymagane fact IDs, display,
   status i lineage, ale usuwa raw source URLs, external IDs, HTML, control/bidi i zbędne
-  provider-shaped values;
+  provider-shaped values oraz zamienia model-facing provenance keys na opaque IDs;
 - osobny `narrative-quality-context-v1` z exact candidate, fingerprints, potwierdzonymi
   strukturalnymi constraints oraz wszystkimi wymaganymi wersjami kontraktów;
 - lokalny format/safety precheck przed `JUDGE`, bez semantycznego zgadywania money mismatch,
   calculations lub `UNKNOWN` fill przypisanych przez frozen dataset do `JUDGE`;
-- strict `JUDGE` z dokładnie ośmioma wymiarami i zamkniętymi findings oraz code-owned
-  all-pass publication policy;
+- strict `JUDGE` z pełnym fingerprintowanym golden-compatible rubric contract, dokładnie
+  ośmioma wymiarami i zamkniętymi findings oraz code-owned all-pass publication policy;
 - fazowa granica short read → audited `GENERATE` → precheck → audited `JUDGE` → short write,
   bez aktywnej transakcji produktu podczas provider calls;
 - bezpieczne `NarrativeReviewRuns`/`NarrativeReviewFindings`: reject nie zapisuje candidate
   text ani rekordów produktu, a publish atomowo zapisuje review i dokładny oceniony tekst po
   dwóch terminalnych `SUCCEEDED`;
-- synthetic dataset v1, offline loader/harness, metryki, privacy-safe report, baseline
-  binding, integer-only price arithmetic i guarded live preflight;
+- brak review/fake UUID przed durable `STARTED` oraz osobny privacy-safe operational signal
+  z `providerCallAttempted=false`;
+- synthetic dataset v1, runtime/frozen schema parity, deterministic contract replay bez
+  pomiaru jakości modelu, niezależne executable E2E properties, metryki, privacy-safe report,
+  baseline binding, integer-only price arithmetic i guarded live preflight;
+- in-memory bundle linkage nazwane jako takie oraz osobny realny persistence proof na
+  produkcyjnych writerach CAP/SQLite;
 - zero live calls i USD 0 podczas implementacji. Finalny baseline wymaga osobnej zgody i
   limitów 48 calls, 56 attempts oraz USD 3.00; bez niego faza nie jest `DONE`.
 

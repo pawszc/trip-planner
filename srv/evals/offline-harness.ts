@@ -28,7 +28,7 @@ export interface OfflineNarrativeEvalAdapter {
   ): Promise<OfflineEndToEndAdapterResult>;
 }
 
-export interface RunOfflineEvaluationInput {
+export interface RunContractReplayInput {
   readonly resolvedDataset: ResolvedNarrativeQualityDataset;
   readonly versions: EvalContractVersions;
   readonly adapter: OfflineNarrativeEvalAdapter;
@@ -36,7 +36,7 @@ export interface RunOfflineEvaluationInput {
   readonly operations?: readonly EvalOperationEvidence[];
 }
 
-export interface OfflineEvaluationResult {
+export interface ContractReplayResult {
   readonly primaryOutcomes: readonly SemanticCaseOutcome[];
   readonly repeatedSentinelOutcomes: readonly SemanticCaseOutcome[];
   readonly endToEndOutcomes: readonly EndToEndCaseOutcome[];
@@ -48,9 +48,9 @@ export interface OfflineEvaluationResult {
  * four synthetic E2E contexts. The injected adapter is the sole execution seam; this module has
  * no provider, credential, environment, clock, random or network dependency.
  */
-export async function runDeterministicOfflineEvaluation(
-  input: RunOfflineEvaluationInput,
-): Promise<OfflineEvaluationResult> {
+export async function runDeterministicContractReplay(
+  input: RunContractReplayInput,
+): Promise<ContractReplayResult> {
   const primaryOutcomes: SemanticCaseOutcome[] = [];
   for (const qualityCase of input.resolvedDataset.cases) {
     primaryOutcomes.push({
@@ -90,3 +90,12 @@ export async function runDeterministicOfflineEvaluation(
   });
   return { primaryOutcomes, repeatedSentinelOutcomes, endToEndOutcomes, report };
 }
+
+/** @deprecated Use the evidence-accurate deterministic contract replay name. */
+export const runDeterministicOfflineEvaluation = runDeterministicContractReplay;
+
+/** @deprecated Use RunContractReplayInput. */
+export type RunOfflineEvaluationInput = RunContractReplayInput;
+
+/** @deprecated Use ContractReplayResult. */
+export type OfflineEvaluationResult = ContractReplayResult;

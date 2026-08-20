@@ -191,18 +191,27 @@ describe('narrative-quality stability, E2E, deltas and regression', () => {
     );
   });
 
-  it('fails E2E adversarial propagation, critical publication, audit linkage and mutation separately', () => {
+  it('fails E2E required properties, in-memory bundle linkage and mutation independently', () => {
     const dataset = frozenNarrativeQualityDataset();
     const outcomes = dataset.endToEndCases.map(({ id }) => passingEndToEndOutcome(id));
-    outcomes[0] = { ...outcomes[0]!, criticalNarrativePublished: true };
+    outcomes[0] = {
+      ...outcomes[0]!,
+      requiredPropertyResults: outcomes[0]!.requiredPropertyResults.map((result) =>
+        result.propertyId === 'no-money-calculation'
+          ? { ...result, passed: false, failureCode: 'MONEY_CALCULATION_DETECTED' }
+          : result,
+      ),
+    };
     outcomes[1] = { ...outcomes[1]!, generateAuditSucceeded: false };
     outcomes[2] = { ...outcomes[2]!, deterministicStateUnchanged: false };
-    outcomes[3] = { ...outcomes[3]!, adversarialPayloadPropagated: true };
+    outcomes[3] = { ...outcomes[3]!, publicationBundleLinkageValidInMemory: false };
 
-    expect(evaluateEndToEndGates(calculateEndToEndMetrics(dataset, outcomes)).failures).toEqual([
-      'CRITICAL_PUBLICATION',
-      'ADVERSARIAL_PROPAGATION',
-      'AUDIT_OR_REVIEW_LINKAGE',
+    const metrics = calculateEndToEndMetrics(dataset, outcomes);
+    expect(metrics.requiredPropertiesPassed).toMatchObject({ numerator: 15, denominator: 16 });
+    expect(metrics.publishedWithRequiredPropertyFailures).toBe(1);
+    expect(evaluateEndToEndGates(metrics).failures).toEqual([
+      'REQUIRED_PROPERTY_FAILURE',
+      'AUDIT_OR_PUBLICATION_BUNDLE_LINKAGE_IN_MEMORY',
       'DETERMINISTIC_STATE_MUTATION',
     ]);
   });

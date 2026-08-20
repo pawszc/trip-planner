@@ -20,7 +20,8 @@ budżetu.
 - `srv/ai/ai-gateway.ts` — task routing, UUID runu, fail-closed lifecycle i walidacja
   metadanych;
 - `srv/ai/adapters/` — izolowane adaptery oficjalnych SDK, bez stałego modelu;
-- `srv/ai/telemetry.ts` — asynchroniczny kontrakt bez payloadów;
+- `srv/ai/telemetry.ts` — asynchroniczny audit oraz niezależny, privacy-safe operational
+  signal dla prób przed durable `STARTED`;
 - `srv/ai/persistence/` — store CAP i persistent recorder;
 - `srv/ai/live-smoke.ts` — osobna ścieżka operator-only;
 - `srv/narratives/` — grounded context, model-safe/quality contexts, kontrakty
@@ -194,6 +195,16 @@ Polityka jest zawsze fail-closed:
 
 Nie ma opcji fail-open.
 
+Próba, która nie osiągnęła durable `STARTED`, nie ma prawdziwego `AiRunId` i nie tworzy
+`NarrativeReviewRun`. Gateway nie fabrykuje UUID, nie wywołuje providera i nie zapisuje
+candidate ani produktu. Zamiast zapisu do potencjalnie niedostępnej bazy wstrzykiwalny
+`AiOperationalSignalSink` otrzymuje dokładnie jedną próbę emisji
+`AI_PRE_START_FAILURE/BEFORE_DURABLE_STARTED` dla `GENERATE` lub `JUDGE`, z zamkniętym
+failure code, allowlistowanym lineage/version/fingerprint i
+`providerCallAttempted=false`. Kontrakt sygnału nie ma pól na `aiRunId`, prompt, input,
+candidate, output, raw error/cause/stack, PII ani sekret. Wyjątek sinka nie zastępuje
+pierwotnego fail-closed błędu.
+
 ## Wewnętrzne AiRuns
 
 `AiRuns.ID` jest UUID gatewaya. Opcjonalne `planningRun` wiąże wykonanie narracji z planem w
@@ -233,7 +244,7 @@ przez produkt. Realny test CAP/SQLite wygasza oba audyty udanej narracji, wykonu
 `deleteExpired(now)`, potwierdza usunięcie `AiRuns` oraz dalszą czytelność i spójność review
 i rekordów narracji.
 
-## Offline testy, eval i ręczny smoke
+## Offline testy, contract replay i ręczny smoke
 
 Standardowe testy używają transportów HTTP in-memory i SQLite in-memory. Obejmują pełną
 kompozycję gateway + mock adapter + persistent recorder + real store, a także test-only
@@ -254,11 +265,22 @@ Brak profilu providera kończy się `INVALID_AI_CONFIGURATION`; nie ma ukrytego 
 Credential checker pokazuje wyłącznie presence flags, trzy profile, stan opt-in i retencję —
 bez wartości, fragmentów lub długości kluczy.
 
-Offline narrative-quality eval jest częścią standardowej weryfikacji. Ładuje dokładnie 32
-synthetic semantic cases i cztery synthetic end-to-end contexts, waliduje frozen canonical
-fingerprint, exact distribution i kontrakty, a następnie uruchamia deterministic in-memory
-harness. Metryki, progi i privacy-safe raporty nie zawierają promptów, kontekstów,
+`npm run eval:schema:check` jest częścią standardowej weryfikacji i porównuje canonical
+runtime Zod z frozen JSON Schema. Po nim `npm run eval:offline` ładuje dokładnie 32 synthetic
+semantic cases i cztery synthetic end-to-end contexts, waliduje frozen fingerprint, exact
+distribution i kontrakty, a następnie wykonuje deterministic contract replay. Replay kopiuje
+frozen expected labels do actual, dlatego raportuje `evidenceKind=CONTRACT_REPLAY` i
+`modelQualityMeasured=false`: sprawdza loader, resolvery, metryki, gates i report path, lecz
+nie jakość modelu. Metryki, progi i privacy-safe raporty nie zawierają promptów, kontekstów,
 kandydatów ani raw provider payloads.
+
+Live E2E ma dodatkowo zamknięty katalog executable `requiredProperties`. Każdy evaluator
+działa na exact candidate/context/model view/constraints i nie korzysta z decyzji,
+dimensions, findings ani reason codes `JUDGE`; naruszenie przegrywa nawet przy ośmiu `PASS`.
+Raportowane `publicationBundleLinkageValidInMemory` jest tylko dowodem konstrukcji exact
+bundle w pamięci. Osobny test CAP/SQLite używa produkcyjnego recordera/store/writera i po
+realnym zapisie odczytuje exact lineage/fingerprint/bloki/references, sprawdza atomowość oraz
+zachowanie review i produktu po cleanup obu `AiRuns`.
 
 Finalny live baseline jest oddzielony od smoke i CI. Wymaga osobnej zgody na dokładny plan
 wywołań i konserwatywny koszt, a preflight/guard egzekwują maksymalnie 48 logical calls, 56
@@ -291,7 +313,9 @@ Prompt `grounded-option-narrative-prompt-v2` i strict schema
 Nieznana, pusta, nieaktualna albo pochodząca z innego kontekstu referencja odrzuca cały
 output. `GENERATE` otrzymuje jednak model-safe projection zamiast pełnego kontekstu: raw
 source URL/external ID, HTML, znaki kontrolne i inne niepotrzebne provider-shaped values są
-usuwane, podczas gdy exact fact IDs, display, status i lineage pozostają dostępne.
+usuwane, podczas gdy exact fact IDs, display, status i lineage pozostają dostępne. Klucze
+provenance są zastępowane wersjonowanym opaque key wyprowadzonym wyłącznie z bezpiecznego
+`factId`; nie używa on `sourceKey`, provider identity, external ID, URL ani contexts.
 
 Po lokalnej walidacji deterministyczny precheck blokuje syntaktyczne/formatowe zagrożenia.
 Semantyczna niezgodność kwoty, nowe obliczenie lub wypełnienie `UNKNOWN` celowo trafiają do
@@ -300,11 +324,15 @@ które przechwyciłoby te przypadki w prechecku, jest jawnym punktem review i ni
 golden labels.
 
 `narrative-quality-context-v1` wiąże exact candidate, fingerprints, potwierdzone constraints
-i wszystkie wymagane wersje. Strict `JUDGE` output ma osiem wymiarów oraz kontrolowane
-findings; code-owned policy publikuje wyłącznie osiem `PASS` i zero findings. Reject zapisuje
-tylko safe review metadata w osobnej krótkiej transakcji i zero tekstu produktu. Publish
-wymaga dokładnych terminalnych audytów obu tasków, a następnie atomowo zapisuje review,
-`NarrativeRuns`, `OptionNarratives` i znormalizowane `NarrativeFactReferences`.
+i wszystkie wymagane wersje. Wejście `JUDGE` zawiera dodatkowo pełny, checked-in-golden
+compatible rubric contract, exact `rubricVersion`, canonical `rubricFingerprint`,
+`qualityContextFingerprint` i `narrativeFingerprint`. Strict output ma osiem wymiarów oraz
+kontrolowane findings; code-owned policy publikuje wyłącznie osiem `PASS` i zero findings.
+Nowe review i narracje przechowują exact rubric fingerprint, a addytywne legacy rows
+pozostają `null`. Reject zapisuje tylko safe review metadata w osobnej krótkiej transakcji i
+zero tekstu produktu. Publish wymaga dokładnych terminalnych audytów obu tasków, a następnie
+atomowo zapisuje review, `NarrativeRuns`, `OptionNarratives` i znormalizowane
+`NarrativeFactReferences`.
 
 Trwałe linkage używa historycznych scalar IDs, więc 30-dniowy domyślny cleanup audytu nie
 narusza produktu ani durable review. Szczegółową decyzję grounded 3B2 opisuje ADR 0007, a

@@ -11,14 +11,21 @@ import type {
   StructuredAiRequest,
 } from '../../srv/ai/contracts.js';
 import { AiError } from '../../srv/ai/errors.js';
-import { NoopAiRunRecorder } from '../../srv/ai/telemetry.js';
-import type { AiRunRecorder, AiRunTelemetryEvent } from '../../srv/ai/telemetry.js';
+import { NoopAiOperationalSignalSink, NoopAiRunRecorder } from '../../srv/ai/telemetry.js';
+import type {
+  AiOperationalSignalSink,
+  AiPreStartFailureSignal,
+  AiRunRecorder,
+  AiRunTelemetryEvent,
+} from '../../srv/ai/telemetry.js';
 
 const outputSchema = z.object({ decision: z.literal('ok') }).strict();
 const fixedRunIds = [
   '00000000-0000-4000-8000-000000000001',
   '00000000-0000-4000-8000-000000000002',
 ];
+const planningRunId = '00000000-0000-4000-8000-000000000101';
+const rankedOptionId = '00000000-0000-4000-8000-000000000102';
 
 function request(taskType: AiTaskType): StructuredAiRequest<{ decision: 'ok' }> {
   return {
@@ -80,13 +87,24 @@ class FakeAdapter implements StructuredAiAdapter {
 class MemoryRecorder implements AiRunRecorder {
   readonly events: AiRunTelemetryEvent[] = [];
   failStatus?: AiRunTelemetryEvent['status'];
+  failureMessage = 'recorder-failed';
 
   constructor(private readonly order?: string[]) {}
 
   async record(event: AiRunTelemetryEvent): Promise<void> {
     this.order?.push(event.status);
-    if (event.status === this.failStatus) throw new Error(`recorder-${event.status}-failed`);
+    if (event.status === this.failStatus) throw new Error(this.failureMessage);
     this.events.push(event);
+  }
+}
+
+class MemoryOperationalSignalSink implements AiOperationalSignalSink {
+  readonly signals: AiPreStartFailureSignal[] = [];
+  failWith?: Error;
+
+  async emit(signal: AiPreStartFailureSignal): Promise<void> {
+    this.signals.push(signal);
+    if (this.failWith !== undefined) throw this.failWith;
   }
 }
 
@@ -104,6 +122,7 @@ function gateway(
     new Date('2026-08-12T10:00:01.000Z'),
     new Date('2026-08-12T10:00:02.000Z'),
   ],
+  operationalSignalSink: AiOperationalSignalSink = new NoopAiOperationalSignalSink(),
 ): AiGateway {
   return new AiGateway(
     config,
@@ -111,7 +130,23 @@ function gateway(
     recorder,
     () => ids.shift() ?? fixedRunIds[1]!,
     () => timestamps.shift() ?? new Date('2026-08-12T10:00:03.000Z'),
+    operationalSignalSink,
   );
+}
+
+function narrativeRequest(
+  taskType: typeof AiTaskType.GENERATE | typeof AiTaskType.JUDGE,
+): StructuredAiRequest<{ decision: 'ok' }> {
+  return {
+    ...request(taskType),
+    planningRunId,
+    rankedOptionId,
+    instructions: 'RAW_PROMPT_SENTINEL must never enter operational telemetry.',
+    input: {
+      candidate: 'RAW_CANDIDATE_SENTINEL',
+      providerPayload: 'RAW_INPUT_SENTINEL',
+    },
+  };
 }
 
 const metadataMismatchCases: readonly [string, ResultMutator][] = [
@@ -276,6 +311,174 @@ describe('task-aware AI gateway', () => {
     });
     expect(openai.calls).toBe(0);
   });
+
+  it.each([AiTaskType.GENERATE, AiTaskType.JUDGE] as const)(
+    'emits exactly one privacy-safe %s signal when durable STARTED fails',
+    async (taskType) => {
+      const config = enabledConfig();
+      const adapter = new FakeAdapter(config.taskProfiles[taskType].provider);
+      const recorder = new MemoryRecorder();
+      recorder.failStatus = 'STARTED';
+      recorder.failureMessage = 'RAW_ERROR_SENTINEL from persistence';
+      const sink = new MemoryOperationalSignalSink();
+      const value = narrativeRequest(taskType);
+      const subject = gateway(
+        config,
+        [adapter],
+        recorder,
+        [fixedRunIds[0]!],
+        [new Date('2026-08-12T10:00:00.000Z')],
+        sink,
+      );
+
+      await expect(subject.call(value)).rejects.toMatchObject({
+        code: 'AI_AUDIT_FAILED',
+        details: { stage: 'STARTED' },
+      });
+
+      expect(adapter.calls).toBe(0);
+      expect(recorder.events).toHaveLength(0);
+      expect(sink.signals).toEqual([
+        {
+          eventType: 'AI_PRE_START_FAILURE',
+          stage: 'BEFORE_DURABLE_STARTED',
+          taskType,
+          failureCode: 'AI_AUDIT_FAILED',
+          planningRunId,
+          rankedOptionId,
+          promptVersion: 'prompt-v1',
+          schemaVersion: 'schema-v1',
+          inputFingerprint: createInputFingerprint(value.input),
+          providerCallAttempted: false,
+          occurredAt: '2026-08-12T10:00:00.000Z',
+        },
+      ]);
+      expect(sink.signals[0]).not.toHaveProperty('aiRunId');
+      expect(JSON.stringify(sink.signals)).not.toMatch(
+        /RAW_PROMPT_SENTINEL|RAW_CANDIDATE_SENTINEL|RAW_INPUT_SENTINEL|RAW_ERROR_SENTINEL/u,
+      );
+    },
+  );
+
+  it.each([AiTaskType.GENERATE, AiTaskType.JUDGE] as const)(
+    'emits exactly one %s signal for AI_DISABLED without fingerprinting or creating an ID',
+    async (taskType) => {
+      const config = loadAiConfig({});
+      const adapter = new FakeAdapter(config.taskProfiles[taskType].provider);
+      const recorder = new MemoryRecorder();
+      const sink = new MemoryOperationalSignalSink();
+      sink.failWith = new Error('RAW_SINK_ERROR_SENTINEL');
+      let generatedIds = 0;
+      const subject = new AiGateway(
+        config,
+        [adapter],
+        recorder,
+        () => {
+          generatedIds += 1;
+          return fixedRunIds[0]!;
+        },
+        () => new Date('2026-08-12T10:00:00.000Z'),
+        sink,
+      );
+
+      await expect(subject.call(narrativeRequest(taskType))).rejects.toMatchObject({
+        code: 'AI_DISABLED',
+      });
+
+      expect(generatedIds).toBe(0);
+      expect(adapter.calls).toBe(0);
+      expect(recorder.events).toHaveLength(0);
+      expect(sink.signals).toHaveLength(1);
+      expect(sink.signals[0]).toMatchObject({
+        eventType: 'AI_PRE_START_FAILURE',
+        stage: 'BEFORE_DURABLE_STARTED',
+        taskType,
+        failureCode: 'AI_DISABLED',
+        planningRunId,
+        rankedOptionId,
+        providerCallAttempted: false,
+        occurredAt: '2026-08-12T10:00:00.000Z',
+      });
+      expect(sink.signals[0]).not.toHaveProperty('inputFingerprint');
+      expect(sink.signals[0]).not.toHaveProperty('aiRunId');
+      expect(JSON.stringify(sink.signals)).not.toMatch(/RAW_|candidate|instructions|cause|stack/iu);
+    },
+  );
+
+  it.each([AiTaskType.GENERATE, AiTaskType.JUDGE] as const)(
+    'emits one controlled %s signal for invalid profile configuration before STARTED',
+    async (taskType) => {
+      const config = enabledConfig();
+      const invalidConfig = {
+        ...config,
+        taskProfiles: {
+          ...config.taskProfiles,
+          [taskType]: { ...config.taskProfiles[taskType], maxOutputTokens: 0 },
+        },
+      };
+      const adapter = new FakeAdapter(config.taskProfiles[taskType].provider);
+      const recorder = new MemoryRecorder();
+      const sink = new MemoryOperationalSignalSink();
+      const subject = new AiGateway(
+        invalidConfig,
+        [adapter],
+        recorder,
+        () => fixedRunIds[0]!,
+        () => new Date('2026-08-12T10:00:00.000Z'),
+        sink,
+      );
+
+      await expect(subject.call(narrativeRequest(taskType))).rejects.toMatchObject({
+        code: 'INVALID_AI_CONFIGURATION',
+      });
+
+      expect(adapter.calls).toBe(0);
+      expect(recorder.events).toHaveLength(0);
+      expect(sink.signals).toHaveLength(1);
+      expect(sink.signals[0]).toMatchObject({
+        taskType,
+        failureCode: 'INVALID_AI_CONFIGURATION',
+        providerCallAttempted: false,
+      });
+      expect(sink.signals[0]).not.toHaveProperty('aiRunId');
+    },
+  );
+
+  it.each([AiTaskType.GENERATE, AiTaskType.JUDGE] as const)(
+    'never exposes an invalid generated ID in the %s pre-STARTED signal',
+    async (taskType) => {
+      const config = enabledConfig();
+      const adapter = new FakeAdapter(config.taskProfiles[taskType].provider);
+      const recorder = new MemoryRecorder();
+      const sink = new MemoryOperationalSignalSink();
+      const value = narrativeRequest(taskType);
+      const subject = new AiGateway(
+        config,
+        [adapter],
+        recorder,
+        () => 'RAW_FAKE_AI_RUN_ID_SENTINEL',
+        () => new Date('2026-08-12T10:00:00.000Z'),
+        sink,
+      );
+
+      await expect(subject.call(value)).rejects.toMatchObject({
+        code: 'INVALID_AI_CONFIGURATION',
+        details: { field: 'aiRunId' },
+      });
+
+      expect(adapter.calls).toBe(0);
+      expect(recorder.events).toHaveLength(0);
+      expect(sink.signals).toHaveLength(1);
+      expect(sink.signals[0]).toMatchObject({
+        taskType,
+        failureCode: 'INVALID_AI_CONFIGURATION',
+        inputFingerprint: createInputFingerprint(value.input),
+        providerCallAttempted: false,
+      });
+      expect(sink.signals[0]).not.toHaveProperty('aiRunId');
+      expect(JSON.stringify(sink.signals)).not.toContain('RAW_FAKE_AI_RUN_ID_SENTINEL');
+    },
+  );
 
   it('fails closed without returning output when SUCCEEDED recording fails', async () => {
     const recorder = new MemoryRecorder();

@@ -10,6 +10,11 @@ import {
   type NarrativeQualityDimension,
   type NarrativeQualityReasonCode,
 } from './dataset.ts';
+import {
+  validateNarrativeE2eRequiredPropertyResults,
+  type NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+  type NarrativeE2eRequiredPropertyResult,
+} from './required-properties.ts';
 
 export const DIMENSION_MACRO_F1_CONVENTION_VERSION =
   'dimension-fail-positive-empty-agreement-one-v1';
@@ -435,11 +440,12 @@ export interface EndToEndCaseOutcome {
   readonly generatedSchemaValid: boolean;
   readonly exactReferencesValid: boolean;
   readonly actualDecision: NarrativeDecision;
-  readonly criticalNarrativePublished: boolean;
-  readonly adversarialPayloadPropagated: boolean;
+  readonly requiredPropertyCatalogVersion: typeof NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION;
+  readonly requiredPropertyResults: readonly NarrativeE2eRequiredPropertyResult[];
   readonly generateAuditSucceeded: boolean;
   readonly judgeAuditSucceeded: boolean;
-  readonly reviewLinked: boolean;
+  /** Validates only publication-bundle construction and exact linkage in memory, not DB writes. */
+  readonly publicationBundleLinkageValidInMemory: boolean;
   readonly deterministicStateUnchanged: boolean;
 }
 
@@ -449,9 +455,10 @@ export interface EndToEndMetrics {
   readonly judgeLogicalCalls: number;
   readonly locallyValidCandidates: MetricRatio;
   readonly published: MetricRatio;
-  readonly criticalNarrativesPublished: number;
-  readonly adversarialPayloadsPropagated: number;
-  readonly acceptedWithExactAuditAndReviewLinkage: MetricRatio;
+  readonly requiredPropertiesPassed: MetricRatio;
+  readonly casesWithRequiredPropertyFailures: number;
+  readonly publishedWithRequiredPropertyFailures: number;
+  readonly acceptedWithExactAuditAndPublicationBundleLinkageInMemory: MetricRatio;
   readonly deterministicStateUnchanged: MetricRatio;
 }
 
@@ -461,9 +468,8 @@ export interface EndToEndGateResult {
     | 'LOCAL_VALIDITY'
     | 'LOGICAL_CALL_COUNTS'
     | 'PUBLICATION_COUNT'
-    | 'CRITICAL_PUBLICATION'
-    | 'ADVERSARIAL_PROPAGATION'
-    | 'AUDIT_OR_REVIEW_LINKAGE'
+    | 'REQUIRED_PROPERTY_FAILURE'
+    | 'AUDIT_OR_PUBLICATION_BUNDLE_LINKAGE_IN_MEMORY'
     | 'DETERMINISTIC_STATE_MUTATION'
   )[];
 }
@@ -503,9 +509,21 @@ export function calculateEndToEndMetrics(
     );
   }
   const published = ordered.filter(({ actualDecision }) => actualDecision === 'PUBLISH');
+  const authoredById = new Map(dataset.endToEndCases.map((authored) => [authored.id, authored]));
+  const requiredPropertyResults = ordered.map((outcome) =>
+    validateNarrativeE2eRequiredPropertyResults({
+      catalogVersion: outcome.requiredPropertyCatalogVersion,
+      requiredPropertyIds: authoredById.get(outcome.caseId)!.requiredProperties,
+      results: outcome.requiredPropertyResults,
+    }),
+  );
+  const flattenedRequiredPropertyResults = requiredPropertyResults.flat();
+  const casesWithRequiredPropertyFailures = requiredPropertyResults.filter((results) =>
+    results.some(({ passed }) => !passed),
+  ).length;
   const linkedAccepted = published.filter(
-    ({ generateAuditSucceeded, judgeAuditSucceeded, reviewLinked }) =>
-      generateAuditSucceeded && judgeAuditSucceeded && reviewLinked,
+    ({ generateAuditSucceeded, judgeAuditSucceeded, publicationBundleLinkageValidInMemory }) =>
+      generateAuditSucceeded && judgeAuditSucceeded && publicationBundleLinkageValidInMemory,
   );
   return {
     caseCount: 4,
@@ -519,13 +537,21 @@ export function calculateEndToEndMetrics(
       4,
     ),
     published: ratio(published.length, 4),
-    criticalNarrativesPublished: ordered.filter(
-      ({ criticalNarrativePublished }) => criticalNarrativePublished,
+    requiredPropertiesPassed: ratio(
+      flattenedRequiredPropertyResults.filter(({ passed }) => passed).length,
+      flattenedRequiredPropertyResults.length,
+    ),
+    casesWithRequiredPropertyFailures,
+    publishedWithRequiredPropertyFailures: ordered.filter(
+      ({ actualDecision }, index) =>
+        actualDecision === 'PUBLISH' &&
+        requiredPropertyResults[index]!.some(({ passed }) => !passed),
     ).length,
-    adversarialPayloadsPropagated: ordered.filter(
-      ({ adversarialPayloadPropagated }) => adversarialPayloadPropagated,
-    ).length,
-    acceptedWithExactAuditAndReviewLinkage: ratio(linkedAccepted.length, published.length, 1),
+    acceptedWithExactAuditAndPublicationBundleLinkageInMemory: ratio(
+      linkedAccepted.length,
+      published.length,
+      1,
+    ),
     deterministicStateUnchanged: ratio(
       ordered.filter(({ deterministicStateUnchanged }) => deterministicStateUnchanged).length,
       4,
@@ -540,15 +566,19 @@ export function evaluateEndToEndGates(metrics: EndToEndMetrics): EndToEndGateRes
   if (metrics.locallyValidCandidates.numerator !== 4) failures.push('LOCAL_VALIDITY');
   if (!ratioAtLeast(metrics.published, { numerator: 3, denominator: 4 }))
     failures.push('PUBLICATION_COUNT');
-  if (metrics.criticalNarrativesPublished !== 0) failures.push('CRITICAL_PUBLICATION');
-  if (metrics.adversarialPayloadsPropagated !== 0) failures.push('ADVERSARIAL_PROPAGATION');
   if (
-    !ratioAtLeast(metrics.acceptedWithExactAuditAndReviewLinkage, {
+    metrics.casesWithRequiredPropertyFailures !== 0 ||
+    !ratioAtLeast(metrics.requiredPropertiesPassed, { numerator: 1, denominator: 1 })
+  ) {
+    failures.push('REQUIRED_PROPERTY_FAILURE');
+  }
+  if (
+    !ratioAtLeast(metrics.acceptedWithExactAuditAndPublicationBundleLinkageInMemory, {
       numerator: 1,
       denominator: 1,
     })
   )
-    failures.push('AUDIT_OR_REVIEW_LINKAGE');
+    failures.push('AUDIT_OR_PUBLICATION_BUNDLE_LINKAGE_IN_MEMORY');
   if (!ratioAtLeast(metrics.deterministicStateUnchanged, { numerator: 1, denominator: 1 }))
     failures.push('DETERMINISTIC_STATE_MUTATION');
   return { passed: failures.length === 0, failures };

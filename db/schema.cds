@@ -337,6 +337,7 @@ entity NarrativeRuns : cuid, managed {
   judgePromptVersion : String(120);
   judgeSchemaVersion : String(120);
   rubricVersion : String(120);
+  rubricFingerprint : String(64);
   publicationPolicyVersion : String(120);
   datasetVersion : String(120);
   modelProfileVersion : String(120);
@@ -370,6 +371,9 @@ entity NarrativeReviewRuns : cuid, managed {
   judgePromptVersion : String(120) not null;
   judgeSchemaVersion : String(120) not null;
   rubricVersion : String(120) not null;
+  // Nullable/no-default keeps already persisted reviews compatible;
+  // every new 3B3 review sets it.
+  rubricFingerprint : String(64);
   publicationPolicyVersion : String(120) not null;
   datasetVersion : String(120) not null;
   modelProfileVersion : String(120) not null;

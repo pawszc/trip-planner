@@ -76,7 +76,10 @@ fail-closed, podobnie jak lineage wersji fixture/scoringu na wszystkich rekordac
 Model nie dzieli ani nie formatuje pieniędzy. Do providera trafia deterministyczny
 `narrative-model-view-v1`, który zachowuje wymagane fakty, `factId`, lineage i jawne braki,
 ale usuwa między innymi raw `sourceUrl`, `externalItemId`, HTML, kontrolne znaki oraz zbędne
-provider-shaped wartości. Pełny kontekst pozostaje lokalnym źródłem walidacji.
+provider-shaped wartości. Klucze faktów provenance są na tej granicy zastępowane
+wersjonowanymi, deterministycznymi opaque keys wyprowadzonymi wyłącznie z bezpiecznego
+`factId`, nigdy z `provider`, `sourceKey`, `externalItemId`, `sourceUrl` ani `contexts`.
+Pełny kontekst pozostaje lokalnym źródłem walidacji i lineage.
 
 Strict output `GENERATE` wymaga exact context fingerprint i niepustych `factReferences`
 każdego bloku; nieznany, pusty, nieaktualny albo obcy identyfikator odrzuca cały output.
@@ -85,7 +88,10 @@ znaki, wykluczone identyfikatory oraz mechanicznie niedozwolony reformat kwoty. 
 zmiana kwoty, nowe obliczenie lub wypełnienie `UNKNOWN` trafia do `JUDGE`, zgodnie z frozen
 stage labels datasetu. Sędzia otrzymuje wersjonowany `narrative-quality-context-v1`, zwraca
 dokładnie osiem wymiarów i kontrolowane findings; końcową decyzję wylicza kod: wyłącznie
-osiem `PASS` i zero findings daje `PUBLISH`.
+osiem `PASS` i zero findings daje `PUBLISH`. Wejście `JUDGE` zawiera pełny, strukturalny
+kontrakt `narrative-quality-rubric-v1` wraz z exact version, canonical fingerprintem,
+definicjami `PASS`/`FAIL` i zamkniętym mapowaniem reason → dimension/severity. Runtime jest
+sprawdzany względem checked-in golden JSON.
 
 Precheck lub semantyczny `REJECT` zapisuje w osobnej krótkiej transakcji wyłącznie bezpieczne
 review metadata i nie zapisuje tekstu kandydata. `PUBLISH` atomowo utrwala review,
@@ -94,6 +100,11 @@ terminalnych audytach `SUCCEEDED` dla `GENERATE` i `JUDGE`. Produkt zachowuje hi
 scalar IDs audytów bez mandatory associations blokujących cleanup. Błąd AI, audytu,
 walidacji lub zapisu nie zmienia deterministycznej opcji, rankingu, constraints ani
 budżetu. Akcja nie jest automatycznie wywoływana przez `startPlanning` ani obecne UI.
+
+Próba `GENERATE` lub `JUDGE`, która nie osiągnęła durable `AiRuns.STARTED`, nie tworzy
+`NarrativeReviewRun` i nie dostaje fikcyjnego UUID. Provider nie jest wywoływany, produkt
+pozostaje pusty, a niezależny sink otrzymuje dokładnie jeden allowlistowany
+`AI_PRE_START_FAILURE` bez promptu, inputu, candidate, raw błędu, stack trace ani `aiRunId`.
 
 Wewnętrzne `AiRuns` nie jest publikowane przez OData. Przechowuje wyłącznie bezpieczne
 metadane i domyślny `expiresAt` po 30 dniach — bez promptów, wejść, wyjść i surowych błędów.
@@ -115,8 +126,22 @@ npm run ai:smoke
 ```
 
 Smoke test jest osobnym, płatnym wywołaniem opt-in i nie należy do `verify` ani
-`verify:full`. Offline eval Fazy 3B3 jest deterministyczny i należy do standardowej
-weryfikacji. Finalny live baseline używa wyłącznie danych syntetycznych, wymaga osobnej
+`verify:full`. `npm run eval:offline` wykonuje deterministic contract replay: sprawdza
+loader, resolvery, kontrakty, metryki, gates i bezpieczny report path, ale kopiuje frozen
+expected labels do actual, więc jawnie raportuje `evidenceKind=CONTRACT_REPLAY` oraz
+`modelQualityMeasured=false`. Standardowy `verify` uruchamia wcześniej
+`npm run eval:schema:check`, który fail-closed porównuje runtime Zod z frozen JSON Schema.
+Żaden z tych dowodów nie jest live baseline ani pomiarem jakości modelu.
+
+Live E2E ma ponadto zamknięty katalog niezależnych executable `requiredProperties`.
+Deterministyczne oracle sprawdzają dokładny candidate/context/model view/constraints bez
+użycia decyzji, dimensions, findings ani reason codes tego samego `JUDGE`; all-`PASS` judge
+nie może zamaskować naruszenia właściwości. Raportowany
+`publicationBundleLinkageValidInMemory` oznacza wyłącznie konstrukcję bundle i exact lineage
+w pamięci. Osobny test integracyjny na produkcyjnych writerach CAP i SQLite dowodzi realnego
+zapisu, odczytu, atomowości oraz przetrwania cleanupu obu `AiRuns`.
+
+Finalny live baseline używa wyłącznie danych syntetycznych, wymaga osobnej
 zgody, preflightu oraz limitów 48 logicznych wywołań, 56 prób i USD 3.00. Runner v1 planuje
 dokładnie 46 wywołań i wymaga `AI_MAX_RETRIES=0`, ponieważ błąd providera nie udostępnia
 jeszcze bezpiecznego rozliczenia prób. Wersjonowany katalog cen nie zawiera niezatwierdzonych
@@ -145,6 +170,8 @@ Kontrolowany niedobór trzech opcji zwraca trwały `PlanningRun` ze statusem
 ```sh
 npm run lint
 npm run typecheck
+npm run eval:schema:check
+npm run eval:offline
 npm run test:unit
 npm run test:integration
 npm run build

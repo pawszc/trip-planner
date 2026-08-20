@@ -118,5 +118,6 @@ export function createOptionNarrativeRequest(
     input: modelView,
     outputSchema: createOptionNarrativeOutputSchema(context),
     planningRunId: context.planningRun.id,
+    rankedOptionId: context.rankedOption.id,
   };
 }

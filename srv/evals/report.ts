@@ -44,6 +44,11 @@ import {
   type StabilityMetrics,
 } from './metrics.ts';
 import { AI_PRICE_ARITHMETIC_VERSION, sumUsdMicros } from './price-snapshot.ts';
+import {
+  NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+  validateNarrativeE2eRequiredPropertyResults,
+  type NarrativeE2eRequiredPropertyResult,
+} from './required-properties.ts';
 
 export const NARRATIVE_EVAL_REPORT_VERSION = 'narrative-quality-eval-report-v1';
 export const LATENCY_PERCENTILE_CONVENTION_VERSION = 'nearest-rank-ms-v1';
@@ -176,6 +181,15 @@ export interface EvalOperationalSummary {
   readonly estimatedCostUsdMicros: number;
 }
 
+export interface EvalEndToEndCaseReportRow {
+  readonly caseId: string;
+  readonly expectedDecision: 'PUBLISH';
+  readonly actualDecision: 'PUBLISH' | 'REJECT';
+  readonly requiredPropertyResults: readonly NarrativeE2eRequiredPropertyResult[];
+  /** In-memory bundle construction/linkage evidence only; this is not a persistence result. */
+  readonly publicationBundleLinkageValidInMemory: boolean;
+}
+
 export interface NarrativeEvalReport {
   readonly reportVersion: typeof NARRATIVE_EVAL_REPORT_VERSION;
   readonly datasetVersion: typeof NARRATIVE_QUALITY_DATASET_VERSION;
@@ -193,6 +207,8 @@ export interface NarrativeEvalReport {
     readonly gates: StabilityGateResult;
   };
   readonly endToEnd: {
+    readonly requiredPropertyCatalogVersion: typeof NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION;
+    readonly cases: readonly EvalEndToEndCaseReportRow[];
     readonly metrics: EndToEndMetrics;
     readonly gates: EndToEndGateResult;
   };
@@ -320,6 +336,30 @@ export function buildPrivacySafeEvalReport(input: BuildEvalReportInput): Narrati
     input.repeatedSentinelOutcomes,
   );
   const stabilityGates = evaluateStabilityGates(stabilityMetrics);
+  const endToEndOutcomeById = new Map(
+    input.endToEndOutcomes.map((outcome) => [outcome.caseId, outcome]),
+  );
+  const endToEndCases = input.dataset.endToEndCases.map((authored): EvalEndToEndCaseReportRow => {
+    const outcome = endToEndOutcomeById.get(authored.id);
+    if (outcome === undefined) {
+      throw new EvalContractError(
+        'INVALID_EVAL_INPUT',
+        'The report is missing an end-to-end outcome.',
+      );
+    }
+    const requiredPropertyResults = validateNarrativeE2eRequiredPropertyResults({
+      catalogVersion: outcome.requiredPropertyCatalogVersion,
+      requiredPropertyIds: authored.requiredProperties,
+      results: outcome.requiredPropertyResults,
+    });
+    return {
+      caseId: authored.id,
+      expectedDecision: authored.expectedDecision,
+      actualDecision: outcome.actualDecision,
+      requiredPropertyResults,
+      publicationBundleLinkageValidInMemory: outcome.publicationBundleLinkageValidInMemory,
+    };
+  });
   const endToEndMetrics = calculateEndToEndMetrics(input.dataset, input.endToEndOutcomes);
   const endToEndGates = evaluateEndToEndGates(endToEndMetrics);
   const basis: Omit<NarrativeEvalReport, 'reportFingerprint'> = {
@@ -332,7 +372,12 @@ export function buildPrivacySafeEvalReport(input: BuildEvalReportInput): Narrati
     cases,
     semantic: { metrics: semanticMetrics, gates: semanticGates },
     stability: { metrics: stabilityMetrics, gates: stabilityGates },
-    endToEnd: { metrics: endToEndMetrics, gates: endToEndGates },
+    endToEnd: {
+      requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+      cases: endToEndCases,
+      metrics: endToEndMetrics,
+      gates: endToEndGates,
+    },
     operations,
     operationalSummary: buildOperationalSummary(operations),
   };

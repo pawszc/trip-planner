@@ -13,8 +13,12 @@ import {
 } from './grounded-option-context.ts';
 
 export const NARRATIVE_MODEL_VIEW_VERSION = 'narrative-model-view-v1';
+export const NARRATIVE_PROVENANCE_FACT_KEY_VERSION = 'narrative-provenance-fact-key-v1';
 export const NARRATIVE_MODEL_VIEW_MAX_BYTES = 64 * 1024;
 export const NARRATIVE_REDACTED_VALUE = '[EXCLUDED_UNTRUSTED_VALUE]';
+
+const GROUNDED_PROVENANCE_FACT_KEY_PREFIX = 'provenance.';
+const MODEL_PROVENANCE_FACT_KEY_PREFIX = 'provenance.opaque-v1.';
 
 const EXCLUDED_FIELD_NAMES = new Set([
   'sourceurl',
@@ -159,6 +163,17 @@ function sanitizeValue(value: JsonValue): JsonValue {
   return sanitized;
 }
 
+function projectFactKey(fact: GroundedFact, factId: string): string {
+  if (!fact.key.startsWith(GROUNDED_PROVENANCE_FACT_KEY_PREFIX)) {
+    return requireSafeMetadata(fact.key, 'facts.key');
+  }
+  const opaqueId = createInputFingerprint({
+    version: NARRATIVE_PROVENANCE_FACT_KEY_VERSION,
+    factId,
+  });
+  return `${MODEL_PROVENANCE_FACT_KEY_PREFIX}${opaqueId}`;
+}
+
 function projectFact(fact: GroundedFact): NarrativeModelFact {
   const factId = requireSafeMetadata(fact.factId, 'facts.factId');
   if (!/^fact_[0-9a-f]{64}$/u.test(factId)) {
@@ -166,7 +181,7 @@ function projectFact(fact: GroundedFact): NarrativeModelFact {
   }
   return {
     factId,
-    key: requireSafeMetadata(fact.key, 'facts.key'),
+    key: projectFactKey(fact, factId),
     status: fact.status,
     value: sanitizeValue(fact.value),
     sourceSnapshotIds: fact.sourceSnapshotIds.map((id) =>
@@ -206,6 +221,10 @@ export function buildNarrativeModelView(context: GroundedOptionContext): Narrati
       `Narrative model view requires exact ${GROUNDED_OPTION_CONTEXT_VERSION} input.`,
     );
   }
+  const projectedFacts = context.facts.map(projectFact);
+  if (new Set(projectedFacts.map(({ key }) => key)).size !== projectedFacts.length) {
+    invalidModelView('Narrative model-view fact keys must remain unique after projection.');
+  }
   const fingerprintBasis: JsonObject = {
     version: NARRATIVE_MODEL_VIEW_VERSION,
     groundedContextVersion: requireSafeMetadata(context.version, 'groundedContextVersion'),
@@ -241,7 +260,7 @@ export function buildNarrativeModelView(context: GroundedOptionContext): Narrati
       rank: context.rankedOption.rank,
       role: requireSafeMetadata(context.rankedOption.role, 'rankedOption.role'),
     },
-    facts: context.facts.map(projectFact),
+    facts: projectedFacts,
     sourceSnapshots: context.sourceSnapshots.map((source): NarrativeModelSource => ({
       id: requireSafeMetadata(source.id, 'sourceSnapshots.id'),
       fetchedAt: requireFetchedAt(source.fetchedAt),

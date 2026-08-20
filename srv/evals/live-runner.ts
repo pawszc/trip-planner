@@ -20,7 +20,6 @@ import {
 } from '../narratives/narrative-judge.ts';
 import {
   buildNarrativeModelView,
-  collectNarrativeExcludedValues,
   type NarrativeModelView,
 } from '../narratives/narrative-model-view.ts';
 import { buildNarrativePersistenceBundle } from '../narratives/narrative-persistence.ts';
@@ -68,6 +67,10 @@ import {
   type EvalOperationEvidence,
   type NarrativeEvalReport,
 } from './report.ts';
+import {
+  NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+  evaluateNarrativeE2eRequiredProperties,
+} from './required-properties.ts';
 import {
   buildSyntheticNarrativeConstraintSnapshot,
   resolveSyntheticNarrativeQualityFixture,
@@ -788,7 +791,7 @@ function succeededAudit(
   };
 }
 
-function validateInMemoryReviewLinkage(input: {
+function validatePublicationBundleLinkageInMemory(input: {
   readonly context: GroundedOptionContext;
   readonly modelView: NarrativeModelView;
   readonly candidate: OptionNarrativeOutput;
@@ -808,7 +811,7 @@ function validateInMemoryReviewLinkage(input: {
       aiRunId: input.generateResult.aiRunId,
       completedAt,
     });
-    const linked = buildNarrativeReviewPublicationBundle({
+    const publicationBundle = buildNarrativeReviewPublicationBundle({
       planningRunId: input.context.planningRun.id,
       rankedOptionId: input.context.rankedOption.id,
       generateAudit,
@@ -824,23 +827,16 @@ function validateInMemoryReviewLinkage(input: {
       completedAt,
     });
     return (
-      linked.expectedGenerateAiRun.ID === input.generateResult.aiRunId &&
-      linked.expectedJudgeAiRun.ID === input.judgeResult.aiRunId &&
-      linked.narrativeRun.contextFingerprint === input.context.fingerprint &&
-      linked.narrativeRun.narrativeFingerprint === input.qualityContext.narrativeFingerprint &&
-      linked.narrativeRun.qualityContextFingerprint === input.qualityContext.fingerprint
+      publicationBundle.expectedGenerateAiRun.ID === input.generateResult.aiRunId &&
+      publicationBundle.expectedJudgeAiRun.ID === input.judgeResult.aiRunId &&
+      publicationBundle.narrativeRun.contextFingerprint === input.context.fingerprint &&
+      publicationBundle.narrativeRun.narrativeFingerprint ===
+        input.qualityContext.narrativeFingerprint &&
+      publicationBundle.narrativeRun.qualityContextFingerprint === input.qualityContext.fingerprint
     );
   } catch {
     return false;
   }
-}
-
-function containsExcludedValue(
-  context: GroundedOptionContext,
-  candidate: OptionNarrativeOutput,
-): boolean {
-  const excluded = collectNarrativeExcludedValues(context);
-  return candidate.blocks.some(({ text }) => [...excluded].some((value) => text.includes(value)));
 }
 
 function findCall<TOutput>(
@@ -1002,12 +998,19 @@ export async function runNarrativeQualityLiveEvaluation(
     const generateDescriptor = findCall<OptionNarrativeOutput>(plan, caseId, 'END_TO_END_GENERATE');
     const generated = await execute(generateDescriptor);
     const candidate = parseOptionNarrativeOutput(generated.result.output, context);
+    const requiredPropertyResults = evaluateNarrativeE2eRequiredProperties({
+      caseId,
+      requiredPropertyIds: prepared.qualityCase.authored.requiredProperties,
+      candidate,
+      context,
+      modelView: prepared.modelView,
+      constraints: prepared.constraints,
+    });
     const precheck = runNarrativeSafetyPrecheck({
       context,
       modelView: prepared.modelView,
       narrativeOutput: candidate,
     });
-    const adversarialPayloadPropagated = containsExcludedValue(context, candidate);
     if (!precheck.passed) {
       endToEndOutcomes.push({
         caseId,
@@ -1016,11 +1019,11 @@ export async function runNarrativeQualityLiveEvaluation(
         generatedSchemaValid: true,
         exactReferencesValid: true,
         actualDecision: 'REJECT',
-        criticalNarrativePublished: false,
-        adversarialPayloadPropagated,
+        requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+        requiredPropertyResults,
         generateAuditSucceeded: generated.auditSucceeded,
         judgeAuditSucceeded: false,
-        reviewLinked: false,
+        publicationBundleLinkageValidInMemory: false,
         deterministicStateUnchanged: canonicalizeJson(context) === initialDeterministicState,
       });
       continue;
@@ -1037,10 +1040,9 @@ export async function runNarrativeQualityLiveEvaluation(
     const judged = await execute(judgeDescriptor, judgeRequest);
     const judgeOutput = parseNarrativeJudgeOutput(judged.result.output, qualityContext);
     const actualDecision = decideNarrativePublication(judgeOutput);
-    const criticalFinding = judgeOutput.findings.some(({ severity }) => severity === 'CRITICAL');
-    const reviewLinked =
+    const publicationBundleLinkageValidInMemory =
       actualDecision === 'PUBLISH' &&
-      validateInMemoryReviewLinkage({
+      validatePublicationBundleLinkageInMemory({
         context,
         modelView: prepared.modelView,
         candidate,
@@ -1056,11 +1058,11 @@ export async function runNarrativeQualityLiveEvaluation(
       generatedSchemaValid: true,
       exactReferencesValid: true,
       actualDecision,
-      criticalNarrativePublished: actualDecision === 'PUBLISH' && criticalFinding,
-      adversarialPayloadPropagated,
+      requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+      requiredPropertyResults,
       generateAuditSucceeded: generated.auditSucceeded,
       judgeAuditSucceeded: judged.auditSucceeded,
-      reviewLinked,
+      publicationBundleLinkageValidInMemory,
       deterministicStateUnchanged: canonicalizeJson(context) === initialDeterministicState,
     });
   }

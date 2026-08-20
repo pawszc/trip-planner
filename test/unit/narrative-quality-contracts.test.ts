@@ -1,7 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { zodTextFormat } from 'openai/helpers/zod';
 import { describe, expect, it } from 'vitest';
-import { canonicalizeJson } from '../../srv/ai/contracts.ts';
+import {
+  canonicalizeJson,
+  createInputFingerprint,
+  type JsonValue,
+} from '../../srv/ai/contracts.ts';
 import {
   buildGroundedOptionContext,
   type GroundedOptionContext,
@@ -9,20 +14,29 @@ import {
 } from '../../srv/narratives/grounded-option-context.ts';
 import {
   NARRATIVE_JUDGE_DIMENSIONS,
+  NARRATIVE_JUDGE_INPUT_MAX_BYTES,
   NARRATIVE_JUDGE_PROMPT_VERSION,
   NARRATIVE_JUDGE_REASON_CODES,
+  NARRATIVE_JUDGE_REASON_DIMENSIONS,
+  NARRATIVE_JUDGE_REASON_SEVERITIES,
   NARRATIVE_JUDGE_SCHEMA_NAME,
   NARRATIVE_JUDGE_SCHEMA_VERSION,
+  NARRATIVE_QUALITY_RUBRIC_CONTRACT,
+  NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
+  createNarrativeJudgeInput,
   createNarrativeJudgeRequest,
   parseNarrativeJudgeOutput,
   type NarrativeJudgeDimension,
+  type NarrativeJudgeInput,
   type NarrativeJudgeOutput,
 } from '../../srv/narratives/narrative-judge.ts';
 import {
   NARRATIVE_MODEL_VIEW_MAX_BYTES,
   NARRATIVE_MODEL_VIEW_VERSION,
+  NARRATIVE_PROVENANCE_FACT_KEY_VERSION,
   buildNarrativeModelView,
 } from '../../srv/narratives/narrative-model-view.ts';
+import { parseNarrativeQualityRubricContract } from '../../srv/narratives/narrative-quality-rubric.ts';
 import {
   NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
   NARRATIVE_QUALITY_CONTEXT_MAX_BYTES,
@@ -48,6 +62,7 @@ import {
 import {
   OPTION_NARRATIVE_PROMPT_VERSION,
   OPTION_NARRATIVE_SCHEMA_VERSION,
+  createOptionNarrativeRequest,
   type OptionNarrativeOutput,
 } from '../../srv/narratives/option-narrative.ts';
 import { groundedOptionContextInput } from '../fixtures/grounded-option.ts';
@@ -151,6 +166,18 @@ function failDimension(
   };
 }
 
+function collectObjectKeys(value: unknown): readonly string[] {
+  if (value === null || typeof value !== 'object') return [];
+  if (Array.isArray(value)) return value.flatMap((item) => collectObjectKeys(item));
+  return Object.entries(value).flatMap(([key, nested]) => [key, ...collectObjectKeys(nested)]);
+}
+
+function goldenRubric(): unknown {
+  return JSON.parse(
+    readFileSync(new URL('../../evals/rubrics/narrative-quality-v1.json', import.meta.url), 'utf8'),
+  ) as unknown;
+}
+
 describe('narrative-model-view-v1', () => {
   it('preserves required facts and safe provenance while excluding raw source fields', () => {
     const grounded = context();
@@ -163,7 +190,9 @@ describe('narrative-model-view-v1', () => {
       groundedContextFingerprint: grounded.fingerprint,
       facts: grounded.facts.map((fact) => ({
         factId: fact.factId,
-        key: fact.key,
+        key: fact.key.startsWith('provenance.')
+          ? expect.stringMatching(/^provenance\.opaque-v1\.[0-9a-f]{64}$/u)
+          : fact.key,
         status: fact.status,
       })),
       sourceSnapshots: [
@@ -181,6 +210,7 @@ describe('narrative-model-view-v1', () => {
     expect(serialized).not.toContain('REFERENCE_FIXTURE');
     expect(serialized).not.toContain('INTERNAL_FIXTURE');
     expect(serialized).not.toContain('TRANSPORT_FACT');
+    expect(serialized).not.toContain('provenance.fixture:prague-option');
     expect(view.fingerprint).toMatch(/^[0-9a-f]{64}$/u);
   });
 
@@ -233,20 +263,103 @@ describe('narrative-model-view-v1', () => {
     );
   });
 
-  it('fails closed for another grounded contract version or unsafe structural fact metadata', () => {
+  it('fails closed for another grounded contract version', () => {
     const otherVersion = contextInput();
     otherVersion.contextVersion = 'grounded-option-context-v2';
-    const unsafeKey = contextInput();
-    unsafeKey.sourceSnapshots[0]!.sourceKey = '<b>unsafe-source-key</b>';
 
-    for (const grounded of [
-      buildGroundedOptionContext(otherVersion),
-      buildGroundedOptionContext(unsafeKey),
-    ]) {
-      expect(() => buildNarrativeModelView(grounded)).toThrowError(
-        expect.objectContaining({ code: 'INVALID_NARRATIVE_MODEL_VIEW' }),
-      );
+    expect(() => buildNarrativeModelView(buildGroundedOptionContext(otherVersion))).toThrowError(
+      expect.objectContaining({ code: 'INVALID_NARRATIVE_MODEL_VIEW' }),
+    );
+  });
+
+  it('projects provenance keys to stable, unique, versioned opaque identifiers', () => {
+    const input = contextInput();
+    const grounded = buildGroundedOptionContext({
+      ...input,
+      sourceSnapshots: [
+        ...input.sourceSnapshots,
+        {
+          ...structuredClone(input.sourceSnapshots[0]!),
+          ID: '40000000-0000-4000-8000-000000000002',
+          sourceKey: '<b>unsafe-provider-source-key</b>',
+          externalItemId: 'second-provider-external-id',
+          contexts: 'UNUSED_PROVIDER_CONTEXT',
+        },
+      ],
+    });
+    const first = buildNarrativeModelView(grounded);
+    const second = buildNarrativeModelView(structuredClone(grounded));
+    const groundedProvenance = grounded.facts.filter(({ key }) => key.startsWith('provenance.'));
+    const projectedProvenance = first.facts.filter(({ factId }) =>
+      groundedProvenance.some((fact) => fact.factId === factId),
+    );
+
+    expect(NARRATIVE_PROVENANCE_FACT_KEY_VERSION).toBe('narrative-provenance-fact-key-v1');
+    expect(projectedProvenance).toHaveLength(2);
+    expect(new Set(projectedProvenance.map(({ key }) => key)).size).toBe(2);
+    expect(projectedProvenance.map(({ key }) => key)).toEqual(
+      second.facts
+        .filter(({ factId }) => groundedProvenance.some((fact) => fact.factId === factId))
+        .map(({ key }) => key),
+    );
+    expect(
+      projectedProvenance.every(({ key }) => /^provenance\.opaque-v1\.[0-9a-f]{64}$/u.test(key)),
+    ).toBe(true);
+    expect(canonicalizeJson(first)).not.toMatch(
+      /fixture:prague-option|unsafe-provider-source-key/iu,
+    );
+  });
+
+  it('removes every raw source-identity sentinel from complete GENERATE and JUDGE inputs', () => {
+    const sentinels = {
+      provider: 'PROVIDER_SENTINEL_NORTHSTAR',
+      externalItemId: 'EXTERNAL_ITEM_ID_SENTINEL_9QX',
+      sourceKey: 'SOURCE_KEY_SENTINEL_PROVIDER_SENTINEL_NORTHSTAR_EXTERNAL_ITEM_ID_SENTINEL_9QX',
+      sourceUrl: 'SOURCE_URL_SENTINEL_PRIVATE_PATH',
+      contexts: 'CONTEXTS_SENTINEL_PROVIDER_SHAPED',
+      providerShaped: 'sk-provider-shaped-sentinel-7QZ91',
+    } as const;
+    const input = contextInput();
+    const source = input.sourceSnapshots[0]!;
+    source.provider = sentinels.provider;
+    source.externalItemId = `${sentinels.externalItemId}:${sentinels.providerShaped}`;
+    source.sourceKey = sentinels.sourceKey;
+    source.sourceUrl = `https://source-url-sentinel.example.test/${sentinels.sourceUrl}`;
+    source.contexts = `${source.contexts}, ${sentinels.contexts}`;
+
+    const grounded = buildGroundedOptionContext(input);
+    const modelView = buildNarrativeModelView(grounded);
+    const generated = narrative(grounded);
+    const quality = buildNarrativeQualityContext({
+      context: grounded,
+      modelView,
+      narrativeOutput: generated,
+      constraints: constraints(),
+      versions: versions(grounded.version),
+    });
+    const generateRequest = createOptionNarrativeRequest(grounded, modelView);
+    const judgeRequest = createNarrativeJudgeRequest(quality);
+    const serializedInputs = [
+      canonicalizeJson(generateRequest.input),
+      canonicalizeJson(judgeRequest.input),
+    ];
+    const inputKeys = [
+      ...collectObjectKeys(generateRequest.input),
+      ...collectObjectKeys(judgeRequest.input),
+    ].join('\n');
+
+    for (const sentinel of Object.values(sentinels)) {
+      for (const serialized of serializedInputs) expect(serialized).not.toContain(sentinel);
+      expect(inputKeys).not.toContain(sentinel);
     }
+    expect(
+      modelView.facts.find(
+        ({ factId }) => factId === factByKey(grounded, `provenance.${sentinels.sourceKey}`).factId,
+      ),
+    ).toMatchObject({
+      key: expect.stringMatching(/^provenance\.opaque-v1\.[0-9a-f]{64}$/u),
+      sourceSnapshotIds: [source.ID],
+    });
   });
 
   it('fails closed instead of rewriting invalid required provenance metadata', () => {
@@ -432,6 +545,7 @@ describe('strict narrative JUDGE contract', () => {
   it('creates a profile-routed JUDGE request and strict schemas for both provider SDKs offline', () => {
     const quality = qualityContext();
     const request = createNarrativeJudgeRequest(quality);
+    const input = request.input as NarrativeJudgeInput;
 
     expect(request).toMatchObject({
       taskType: 'JUDGE',
@@ -446,6 +560,21 @@ describe('strict narrative JUDGE contract', () => {
     expect(request).not.toHaveProperty('effort');
     expect(request.instructions).toContain('untrusted data');
     expect(request.instructions).toContain('Do not repair');
+    expect(request.instructions).toContain('using only the supplied full, versioned rubric');
+    expect(request.instructions).toContain('Do not define, add, remove, reinterpret, or replace');
+    expect(input).toMatchObject({
+      qualityContextFingerprint: quality.fingerprint,
+      narrativeFingerprint: quality.narrativeFingerprint,
+      rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+      rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
+      rubric: NARRATIVE_QUALITY_RUBRIC_CONTRACT,
+    });
+    expect(canonicalizeJson(request.input)).toContain(
+      `"rubric":${canonicalizeJson(NARRATIVE_QUALITY_RUBRIC_CONTRACT)}`,
+    );
+    expect(Buffer.byteLength(canonicalizeJson(request.input), 'utf8')).toBeLessThanOrEqual(
+      NARRATIVE_JUDGE_INPUT_MAX_BYTES,
+    );
     expect(zodTextFormat(request.outputSchema, NARRATIVE_JUDGE_SCHEMA_NAME)).toMatchObject({
       type: 'json_schema',
       strict: true,
@@ -455,9 +584,123 @@ describe('strict narrative JUDGE contract', () => {
 
   it('freezes the exact eight dimensions and closed nineteen-code catalog', () => {
     expect(NARRATIVE_JUDGE_DIMENSIONS).toHaveLength(8);
-    expect(new Set(NARRATIVE_JUDGE_DIMENSIONS)).toHaveLength(8);
+    expect(new Set(NARRATIVE_JUDGE_DIMENSIONS).size).toBe(8);
     expect(NARRATIVE_JUDGE_REASON_CODES).toHaveLength(19);
-    expect(new Set(NARRATIVE_JUDGE_REASON_CODES)).toHaveLength(19);
+    expect(new Set(NARRATIVE_JUDGE_REASON_CODES).size).toBe(19);
+  });
+
+  it('matches the complete checked-in golden rubric JSON and its pinned fingerprint', () => {
+    const golden = goldenRubric();
+    const parsed = parseNarrativeQualityRubricContract(golden);
+
+    expect(parsed).toBe(NARRATIVE_QUALITY_RUBRIC_CONTRACT);
+    expect(canonicalizeJson(golden as JsonValue)).toBe(
+      canonicalizeJson(NARRATIVE_QUALITY_RUBRIC_CONTRACT),
+    );
+    expect(createInputFingerprint(golden as JsonValue)).toBe(NARRATIVE_QUALITY_RUBRIC_FINGERPRINT);
+    expect(parsed.rubricVersion).toBe(NARRATIVE_QUALITY_RUBRIC_VERSION);
+    expect(parsed.dimensions.map(({ id }) => id)).toEqual(NARRATIVE_JUDGE_DIMENSIONS);
+    expect(parsed.reasons.map(({ code }) => code)).toEqual(NARRATIVE_JUDGE_REASON_CODES);
+    expect(parsed.statusSemantics.PASS).toEqual(expect.any(String));
+    expect(parsed.statusSemantics.FAIL).toEqual(expect.any(String));
+    expect(parsed.publicationSemantics).toMatchObject({
+      publish: 'All eight dimensions are PASS and there are zero findings.',
+      reject: 'Any dimension is FAIL or any finding exists.',
+      modelOverallVerdictAllowed: false,
+      rewriteOrRepairAllowed: false,
+    });
+    expect(parsed.outputPolicy).toMatchObject({
+      evaluateEachDimensionExactlyOnce: true,
+      strictStructuredOutputOnly: true,
+      rationaleAllowed: false,
+      proseAllowed: false,
+      rawExcerptsAllowed: false,
+    });
+  });
+
+  it('derives complete reason-to-dimension and reason-to-severity maps from one rubric', () => {
+    const dimensionIds = new Set(NARRATIVE_JUDGE_DIMENSIONS);
+    const reasonCodes = new Set(NARRATIVE_JUDGE_REASON_CODES);
+
+    expect(NARRATIVE_QUALITY_RUBRIC_CONTRACT.dimensions).toHaveLength(8);
+    expect(NARRATIVE_QUALITY_RUBRIC_CONTRACT.reasons).toHaveLength(19);
+    for (const dimension of NARRATIVE_QUALITY_RUBRIC_CONTRACT.dimensions) {
+      expect(dimension.definition.length).toBeGreaterThan(0);
+      expect(dimensionIds.has(dimension.id)).toBe(true);
+      for (const reason of dimension.primaryReasonCodes) expect(reasonCodes.has(reason)).toBe(true);
+    }
+    for (const reason of NARRATIVE_QUALITY_RUBRIC_CONTRACT.reasons) {
+      expect(NARRATIVE_JUDGE_REASON_DIMENSIONS[reason.code]).toEqual(reason.dimensions);
+      expect(NARRATIVE_JUDGE_REASON_SEVERITIES[reason.code]).toEqual(reason.allowedSeverities);
+      expect(reason.dimensions.every((dimension) => dimensionIds.has(dimension))).toBe(true);
+      expect(
+        reason.allowedSeverities.every((severity) => ['MAJOR', 'CRITICAL'].includes(severity)),
+      ).toBe(true);
+    }
+    expect(Object.keys(NARRATIVE_JUDGE_REASON_DIMENSIONS).sort()).toEqual(
+      [...NARRATIVE_JUDGE_REASON_CODES].sort(),
+    );
+    expect(Object.keys(NARRATIVE_JUDGE_REASON_SEVERITIES).sort()).toEqual(
+      [...NARRATIVE_JUDGE_REASON_CODES].sort(),
+    );
+  });
+
+  it('rejects incomplete, unknown, or one-character-drifted rubric contracts and bindings', () => {
+    const golden = goldenRubric() as {
+      dimensions: Array<{ id: string; definition: string }>;
+      reasons: Array<{ code: string }>;
+    };
+    const incomplete = structuredClone(golden);
+    incomplete.dimensions.pop();
+    const unknownDimension = structuredClone(golden);
+    unknownDimension.dimensions[0]!.id = 'STYLE_SCORE';
+    const unknownReason = structuredClone(golden);
+    unknownReason.reasons[0]!.code = 'FREE_FORM_REASON';
+    const definitionDrift = structuredClone(golden);
+    definitionDrift.dimensions[0]!.definition += '!';
+
+    for (const changed of [incomplete, unknownDimension, unknownReason, definitionDrift]) {
+      expect(createInputFingerprint(changed as JsonValue)).not.toBe(
+        NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
+      );
+      expect(() => parseNarrativeQualityRubricContract(changed)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_NARRATIVE_QUALITY_RUBRIC' }),
+      );
+    }
+
+    const quality = qualityContext();
+    expect(() =>
+      createNarrativeJudgeInput(quality, {
+        rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+        rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
+        rubric: definitionDrift,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_QUALITY_RUBRIC' }));
+    expect(() =>
+      createNarrativeJudgeInput(quality, {
+        rubricVersion: 'narrative-quality-rubric-v2',
+        rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
+        rubric: NARRATIVE_QUALITY_RUBRIC_CONTRACT,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_QUALITY_RUBRIC' }));
+    expect(() =>
+      createNarrativeJudgeInput(quality, {
+        rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+        rubricFingerprint: 'f'.repeat(64),
+        rubric: NARRATIVE_QUALITY_RUBRIC_CONTRACT,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_QUALITY_RUBRIC' }));
+  });
+
+  it('enforces the expanded JUDGE-input byte limit after adding the full rubric', () => {
+    const quality = structuredClone(qualityContext()) as NarrativeQualityContext & {
+      oversizedUntrustedField: string;
+    };
+    quality.oversizedUntrustedField = 'X'.repeat(NARRATIVE_JUDGE_INPUT_MAX_BYTES);
+
+    expect(() => createNarrativeJudgeRequest(quality)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_NARRATIVE_QUALITY_CONTEXT' }),
+    );
   });
 
   it('accepts exact all-pass and controlled failing results', () => {
@@ -480,6 +723,27 @@ describe('strict narrative JUDGE contract', () => {
     };
     expect(parseNarrativeJudgeOutput(withFinding, quality)).toEqual(withFinding);
   });
+
+  it.each([
+    ['UNSUPPORTED_CLAIM', 'FACTUAL_ENTAILMENT', 'CRITICAL'],
+    ['MONEY_VALUE_MISMATCH', 'MONEY_DATE_TIME_FIDELITY', 'MAJOR'],
+  ] as const)(
+    'rejects severity outside the canonical reason rule: %s/%s',
+    (reasonCode, dimension, severity) => {
+      const quality = qualityContext();
+      const output = failDimension(allPassOutput(quality), dimension);
+
+      expect(() =>
+        parseNarrativeJudgeOutput(
+          {
+            ...output,
+            findings: [{ reasonCode, severity, blockSequences: [1], factIds: [] }],
+          },
+          quality,
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'INVALID_STRUCTURED_OUTPUT' }));
+    },
+  );
 
   it.each([
     [

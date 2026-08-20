@@ -97,6 +97,20 @@ describe('deterministic narrative safety precheck', () => {
     ['bare domain', 'Sprawdź booking.example.com teraz.'],
     ['Markdown link', 'Sprawdź [ofertę](/book-now).'],
     ['image Markdown', 'Źródło: ![hotel](image.png).'],
+    ['full reference link', 'Sprawdź [ofertę][provider-reference].'],
+    ['full image reference link', 'Źródło: ![hotel][provider-reference].'],
+    ['collapsed reference link', 'Sprawdź [ofertę][].'],
+    ['reference link with horizontal whitespace', 'Sprawdź [ofertę]  [provider-reference].'],
+    ['reference link with line whitespace', 'Sprawdź [ofertę]\n  [provider-reference].'],
+    ['reference definition', '[provider-reference]: https://example.test/path'],
+    ['indented reference definition with title', '   [provider-reference]: /relative/path "Tytuł"'],
+    [
+      'reference definition with destination on the next line',
+      '[provider-reference]:\n  /relative/path',
+    ],
+    ['URI autolink', 'Identyfikator <urn:example:test>.'],
+    ['web autolink', 'Sprawdź <https://example.test/path>.'],
+    ['email autolink', 'Kontakt <safe@example.test>.'],
     ['HTML', 'Dobry <strong>hotel</strong>.'],
     ['script protocol', 'Otwórz javascript:alert(1).'],
     ['event handler', 'Opis onload=alert(1).'],
@@ -108,6 +122,7 @@ describe('deterministic narrative safety precheck', () => {
 
     expect(result.passed).toBe(false);
     expect(reasonCodes(result)).toContain('UNTRUSTED_CONTENT_EXPOSED');
+    expect(JSON.stringify(result)).not.toContain(text);
   });
 
   it('rejects exact excluded URL/external/provider-shaped values and marks secret exposure', () => {
@@ -172,6 +187,7 @@ describe('deterministic narrative safety precheck', () => {
     const grounded = context();
     const safeTexts = [
       'Praga jest opcją [wybraną] (deterministycznie).',
+      'Wybierz [wariant A] na weekend.',
       'Pobyt trwa 3 noce od 2026-10-10 do 2026-10-13.',
       'Ocena 4.8 na 5 jest tylko przykładem składni bez waluty.',
       'Porównanie 2 < 3 nie jest znacznikiem HTML.',

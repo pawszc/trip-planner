@@ -46,24 +46,33 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - strict schema narracji, niepuste `factReferences`, exact context fingerprint i odrzucenie
   brakujących, pustych, obcych, nieaktualnych, powtórzonych lub częściowo błędnych referencji;
 - deterministic `narrative-model-view-v1`, usunięcie raw URL/external ID, HTML, znaków
-  control/bidi i secret-shaped values, zachowanie dozwolonych faktów oraz canonical
-  fingerprint/size/immutability;
+  control/bidi i secret-shaped values, opaque provenance keys wyprowadzane wyłącznie z
+  bezpiecznych `factId`, pełnoserializacyjne sentinel regression dla wejść `GENERATE` i
+  `JUDGE` oraz zachowanie dozwolonych faktów i canonical fingerprint/size/immutability;
 - `narrative-quality-context-v1`, exact constraint snapshot, candidate/model/grounded
   fingerprints oraz kompletne version bindings;
-- strict `JUDGE` input/output: dokładnie osiem wymiarów, zamknięty katalog reason codes i
-  severity, istniejące block/fact references, spójność findings z wymiarami i odrzucenie
-  unknown fields lub mismatched fingerprints;
-- safety precheck dla URL/Markdown/HTML/script/event handlers/control/bidi, excluded values i
-  money format oraz bezpieczne przypadki, których nie wolno overblockować; semantycznie zła
-  kwota, nowe obliczenie i wypełnienie `UNKNOWN` pozostają przypadkami `JUDGE` zgodnie z
-  frozen stage labels;
+- strict `JUDGE` input/output: pełny strukturalny rubric contract z exact version i
+  fingerprintem, dokładnie osiem wymiarów, definicje `PASS`/`FAIL`, pełne mapowanie reason
+  → dimensions/severity, istniejące block/fact references, spójność findings z wymiarami i
+  odrzucenie niepełnej/zmienionej rubryki, unknown fields lub mismatched fingerprints;
+- safety precheck dla URL/Markdown/HTML/script/event handlers/control/bidi, inline,
+  full/collapsed/image reference-style links, definitions z title/whitespace, autolinks,
+  excluded values i money format oraz bezpieczne przypadki, których nie wolno overblockować;
+  semantycznie zła kwota, nowe obliczenie i wypełnienie `UNKNOWN` pozostają przypadkami
+  `JUDGE` zgodnie z frozen stage labels;
 - wszystkie gałęzie code-owned publication policy: osiem `PASS` i zero findings jako jedyny
   `PUBLISH`;
 - strict loader i canonical fingerprint frozen datasetu, exact 32/12/20/18 distribution,
   fact-key resolution, critical/sentinel membership i malformed goldens;
 - confusion matrix, precision/recall/F1, macro-F1, dimension macro-F1, stability, threshold
   edges, percent deltas oraz call/attempt/cost caps na hand-calculated fixtures;
-- offline end-to-end harness, privacy-safe report i baseline binding bez raw content;
+- deterministic contract replay, privacy-safe report i baseline binding bez raw content,
+  z jawnym `evidenceKind=CONTRACT_REPLAY` i `modelQualityMeasured=false`;
+- executable E2E `requiredProperties`: niezależne deterministic oracle PASS/FAIL dla każdego
+  ID z E01–E04, bez używania decyzji/dimensions/findings/reasons `JUDGE`, oraz regresję, w
+  której naruszenie właściwości przegrywa mimo ośmiu `PASS` i zera findings;
+- executable parity runtime Zod z frozen JSON Schema, obejmujące drift required/property,
+  enum, min/max, strictness, counts, literal version i nested `requiredProperties`;
 - integer-only price arithmetic oraz live guard blokujący brak opt-in, credentiali, znanej
   ceny, poprawnych caps lub budżetu jeszcze przed pierwszym provider call;
 - safe review/rejection/publication bundles, exact generate/judge links, legacy nullability i
@@ -74,6 +83,8 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
 - structured outputs, ponowną lokalną walidację, refusal i brak poprawnej treści;
 - timeout, retry, zamknięty katalog błędów oraz redakcję kluczy i nagłówków;
+- dokładnie jeden allowlistowany `AI_PRE_START_FAILURE` dla każdej próby `GENERATE`/`JUDGE`
+  bez durable `STARTED`, bez `aiRunId`/raw danych i zawsze z `providerCallAttempted=false`;
 - blokadę live smoke, brak credentiali i dokładnie jedno wywołanie po jawnym opt-in.
 
 Scenariusz referencyjny 2B wymaga dokładnie 28 zbudowanych, 6 poprawnych i 22
@@ -115,6 +126,9 @@ sprawdza między innymi:
   otwartej transakcji produktu podczas obu provider calls;
 - publish po exact terminalnych `SUCCEEDED` obu audytów oraz atomowy zapis review, findings i
   narracji ocenionej byte-for-byte;
+- zapis exact synthetic E2E fixture przez produkcyjne `CapAiRunStore`, recorder i
+  `CapNarrativeReviewWriter`, następnie odczyt wszystkich exact IDs/fingerprintów, bloków i
+  referencji z realnego SQLite oraz zachowanie review/produktu po cleanup obu `AiRuns`;
 - precheck reject z zerem `JUDGE` calls, semantic reject, invalid judge output, audit/linkage
   failure i product-write rollback: safe durable review metadata, zero candidate text i zero
   częściowych rekordów produktu narracji;
@@ -133,7 +147,8 @@ sprawdza między innymi:
   `INSUFFICIENT_OPTIONS` oraz 500 `INVALID_GROUNDED_OPTION_CONTEXT` przed gatewayem/AiRun dla
   narracji z legacy runu;
 - brak narracji i brak zmiany deterministycznej opcji po `AI_DISABLED`, błędzie providera,
-  niepoprawnej referencji albo awarii durable `STARTED`;
+  niepoprawnej referencji albo awarii durable `STARTED`; pre-`STARTED` nie tworzy review ani
+  fikcyjnego UUID, nie wywołuje adaptera i emituje jeden bezpieczny operational signal;
 - przetrwanie `SUCCEEDED` po wymuszonym rollbacku późniejszego zapisu narracji bez
   odtworzenia circular wait.
 
@@ -152,24 +167,32 @@ Test nie kontaktuje się z internetem, nie korzysta z zegara systemowego i używ
 
 ## Weryfikacja
 
-`npm run verify` uruchamia lint, typecheck, unit, integration i build. `npm run verify:full`
-uruchamia ten sam zestaw oraz E2E. Przed zakończeniem pracy wymagany jest `verify`, a przed
-PR — `verify:full`. Testów nie wyłącza się, nie pomija i nie rozwadnia w celu uzyskania
-zielonego wyniku.
+`npm run verify` uruchamia kolejno lint, typecheck, `eval:schema:check`, deterministic
+contract replay, unit, integration i build. `npm run verify:full` uruchamia ten sam zestaw
+oraz E2E. Przed zakończeniem pracy wymagany jest `verify`, a przed PR — `verify:full`.
+Testów nie wyłącza się, nie pomija i nie rozwadnia w celu uzyskania zielonego wyniku.
 
 Testy adapterów nie patchują globalnego `fetch`: fabryka klienta otrzymuje lokalny,
 kontrolowany transport, który pozwala sprawdzić rzeczywisty payload SDK bez sieci. Żaden
 test w `test`, `verify` ani `verify:full` nie wymaga credentiali i nie wykonuje płatnego
 requestu.
 
-## Offline narrative-quality eval
+## Offline narrative-quality contract replay
 
 Frozen `narrative-quality-v1` zawiera dokładnie 32 synthetic semantic cases — 12
 `PUBLISH`, 20 `REJECT`, w tym 18 critical — oraz cztery synthetic end-to-end contexts.
 Loader waliduje schema, stable IDs/fact keys, labels, reason codes, dimensions, membership i
-literalny canonical fingerprint. Offline harness używa wyłącznie adapterów in-memory,
-tworzy privacy-safe raport bez promptów, kontekstów, narracji i raw payloads oraz jest częścią
-standardowej weryfikacji.
+literalny canonical fingerprint. `npm run eval:schema:check` najpierw porównuje canonical
+runtime Zod z frozen checked-in JSON Schema. Następnie offline harness kopiuje frozen
+expected labels do actual i przechodzi przez resolvery, metryki, gates oraz privacy-safe
+report path bez promptów, kontekstów, narracji i raw payloads. To jest
+`CONTRACT_REPLAY` z `modelQualityMeasured=false`, a nie baseline ani dowód jakości modelu.
+
+In-memory E2E sprawdza też wersjonowany katalog `requiredProperties` na exact
+candidate/context/model view/constraints. Wyniki tych niezależnych oracle są allowlistowane
+w raporcie; all-`PASS` `JUDGE` nie może zamaskować property failure. Nazwa
+`publicationBundleLinkageValidInMemory` celowo nie sugeruje zapisu do bazy. Realną
+persistence, atomowość i linkage dowodzi osobny test produkcyjnych writerów na CAP/SQLite.
 
 Golden stage jest także kontraktem granicy: tylko format/safety cases R09 i R20 są
 `PRECHECK`; wrong/new money, calculation i `UNKNOWN` fill (R07/R08/R10) dochodzą do

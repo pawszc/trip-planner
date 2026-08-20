@@ -30,7 +30,10 @@ Kod buduje `narrative-model-view-v1` deterministycznie z dokładnego
 `GroundedOptionContext`. Projection zachowuje `factId`, klucz, status, potrzebną wartość i
 code-generated display, source freshness/timestamp, fixture version, `demonstrationData`
 oraz deterministyczne lineage. Nie wysyła raw `sourceUrl`, `externalItemId`, control/bidi,
-HTML ani innych provider-shaped wartości zbędnych do napisania tekstu.
+HTML ani innych provider-shaped wartości zbędnych do napisania tekstu. Dla provenance
+model-facing `fact.key` jest wersjonowanym, nieodwracalnym opaque key wyprowadzonym wyłącznie
+z bezpiecznego `factId`, nigdy z `provider`, `sourceKey`, `externalItemId`, `sourceUrl` lub
+`contexts`. Pełny grounded key pozostaje lokalny dla lineage i frozen datasetu.
 
 Model view zawiera fingerprint pełnego grounded context i własny canonical SHA-256.
 `GENERATE` i `JUDGE` używają projection, natomiast pełny kontekst pozostaje lokalny dla
@@ -63,11 +66,15 @@ potwierdzić tę granicę i zachować regression tests dla sentinel R07/R10; do 
 to jawne ryzyko, a nie ukryta zmiana kontraktu.
 
 Po prechecku gateway wykonuje dokładnie jeden primary `JUDGE` przez profil zadania.
+Wejście zawiera pełny, typowany kontrakt rubryki zgodny z checked-in golden JSON: exact
+version i canonical fingerprint, wszystkie osiem definicji, semantykę `PASS`/`FAIL`, pełny
+katalog reason codes oraz mapy reason → dimensions/severity. Zawiera też exact
+`qualityContextFingerprint` i `narrativeFingerprint`; sama nazwa wersji nie wystarcza.
 Wersjonowany strict output musi echo exact quality/narrative fingerprints i zwrócić każdy z
 ośmiu wymiarów dokładnie raz jako `PASS` lub `FAIL`. Findings używają wyłącznie zamkniętych
 reason codes, `MAJOR`/`CRITICAL`, istniejących block sequences i exact in-context fact IDs.
-Unknown fields, dimensions, codes, severity, blocks, facts, fingerprint mismatch albo
-niespójność finding/dimension odrzucają cały output.
+Niepełna/zmieniona rubryka, unknown fields, dimensions, codes, severity, blocks, facts,
+fingerprint mismatch albo niespójność finding/dimension odrzucają cały output.
 
 Model nie zwraca wiążącego overall verdict, tekstowej naprawy ani persistowalnego rationale.
 Kod jest jedynym właścicielem decyzji: osiem `PASS` i zero findings daje `PUBLISH`; dowolny
@@ -86,12 +93,24 @@ audit/provider/audit → short product/review write`.
 otrzymuje addytywne, nullable/no-default metadata configured effort oraz configured/effective
 output-token limit. Legacy rows pozostają `null`; nowe runy populują pola przed call.
 
+Próba, która nie osiąga durable `STARTED`, nie ma prawdziwego `AiRunId`, nie tworzy
+`NarrativeReviewRun` i nie może otrzymać fikcyjnego UUID. Provider nie jest wywoływany,
+candidate/produkt nie są zapisywane, a osobny wstrzykiwalny operational sink otrzymuje
+dokładnie jedną próbę allowlistowanego `AI_PRE_START_FAILURE` z
+`providerCallAttempted=false`. Sygnał nie zawiera promptu, inputu, candidate, outputu, raw
+błędu/cause/stack, PII, sekretu ani `aiRunId`. Dla pre-`STARTED` `JUDGE` istniejący prawdziwy
+audit `GENERATE` pozostaje, ale review ani produkt nie powstają.
+
 Wewnętrzne `NarrativeReviewRuns` i znormalizowane `NarrativeReviewFindings` zapisują wyłącznie
 planning/option linkage, scalar IDs audytów, fingerprints, wersje, stage, code-owned
 decision, osiem wyników wymiarów, kontrolowane codes/severity, counts i timestamps. Nie
 zapisują promptu, kontekstu, candidate text, raw judge output, rationale, raw error,
 source URL/external ID, PII, sekretu ani credentiala. Review i `AiRuns` nie są publikowane
 przez OData.
+
+`rubricFingerprint` jest addytywnym nullable polem bezpiecznych review/product metadata.
+Nowe rekordy 3B3 zapisują exact canonical fingerprint; legacy rows pozostają `null` i nie są
+backfillowane.
 
 Precheck lub semantic reject zapisuje safe review metadata w osobnej krótkiej transakcji, a
 następnie zwraca kontrolowany `NARRATIVE_QUALITY_REJECTED`. Powstaje zero `NarrativeRuns`,
@@ -107,14 +126,30 @@ backfillowany ani traktowany jako zaakceptowany przez 3B3.
 Cleanup efemerycznego `AiRun` nie ma foreign key do produktu. Usunięcie generate lub judge
 audytu nie usuwa durable review ani zaakceptowanej narracji.
 
-### Offline eval, live guard i baseline
+### Offline contract replay, live guard i baseline
 
 `narrative-quality-v1` jest frozen synthetic golden setem: 32 semantic cases — 12
 `PUBLISH`, 20 `REJECT`, w tym 18 critical — oraz cztery synthetic end-to-end contexts.
 Loader waliduje machine-readable schema, exact counts, stable fact keys, labels,
-critical/sentinel membership, reason codes, dimensions i canonical fingerprint. Offline
-harness używa produkcyjnych builderów oraz adapterów in-memory i należy do standardowej
-weryfikacji.
+critical/sentinel membership, reason codes, dimensions i canonical fingerprint. Przed
+replayem standardowy `verify` wykonuje `eval:schema:check`: generuje schema z runtime Zod,
+normalizuje wyłącznie kontrolowane elementy techniczne i porównuje canonical form/fingerprint
+z frozen checked-in JSON Schema. Golden nie jest automatycznie aktualizowany.
+
+Offline harness wykonuje deterministic contract replay przez produkcyjne buildery i
+adaptery in-memory. Kopiuje frozen expected labels do actual, dlatego wynik ma
+`evidenceKind=CONTRACT_REPLAY` oraz `modelQualityMeasured=false`: jest dowodem integralności
+loadera, resolverów, kontraktów, metryk, gates i report path, nie pomiarem jakości modelu.
+
+Live E2E wykonuje ponadto zamknięty, wersjonowany katalog deterministic
+`requiredProperties` na exact candidate/context/model view/constraints. Evaluatory nie
+korzystają z overall decision, dimensions, findings ani reason codes `JUDGE`; naruszenie
+przegrywa gate nawet przy ośmiu `PASS` i zero findings. Privacy-safe raport zawiera tylko
+property ID, wynik i kontrolowany failure code. In-memory
+`publicationBundleLinkageValidInMemory` dowodzi konstrukcji bundle, nie DB persistence.
+Osobny test integracyjny zapisuje exact synthetic E2E bundle produkcyjnym writerem CAP/SQLite
+i odczytuje exact lineage/fingerprint/bloki/references, atomowość oraz stan po cleanup obu
+`AiRuns`.
 
 Raport zawiera wyłącznie safe IDs, expected/actual labels/codes, wersje, configured/response
 models, usage, latency, attempts, refusal i integer-only estimated cost. Nie zawiera raw

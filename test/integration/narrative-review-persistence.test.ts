@@ -1,13 +1,29 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { AiProvider, AiTaskType } from '../../srv/ai/contracts.js';
+import { AiProvider, AiTaskType, createInputFingerprint } from '../../srv/ai/contracts.js';
 import { CapAiRunStore } from '../../srv/ai/persistence/cap-ai-run-store.js';
 import { PersistentAiRunRecorder } from '../../srv/ai/persistence/persistent-ai-run-recorder.js';
 import type { AiRunTelemetryEvent } from '../../srv/ai/telemetry.js';
+import {
+  loadNarrativeQualityDataset,
+  resolveNarrativeQualityDataset,
+} from '../../srv/evals/dataset.js';
+import { NARRATIVE_EVAL_CONTRACT_VERSIONS } from '../../srv/evals/report.js';
+import {
+  buildSyntheticNarrativeConstraintSnapshot,
+  resolveSyntheticNarrativeQualityFixture,
+} from '../../srv/evals/synthetic-fixtures.js';
 import { CapNarrativeReviewStore } from '../../srv/narratives/cap-narrative-review-store.js';
 import { CapNarrativeReviewWriter } from '../../srv/narratives/cap-narrative-review-writer.js';
-import { NARRATIVE_MODEL_VIEW_VERSION } from '../../srv/narratives/narrative-model-view.js';
-import type { NarrativePersistenceBundle } from '../../srv/narratives/narrative-persistence.js';
+import type { GroundedOptionContext } from '../../srv/narratives/grounded-option-context.js';
+import {
+  buildNarrativeModelView,
+  NARRATIVE_MODEL_VIEW_VERSION,
+} from '../../srv/narratives/narrative-model-view.js';
+import { createNarrativeJudgeRequest } from '../../srv/narratives/narrative-judge.js';
+import { buildNarrativePersistenceBundle } from '../../srv/narratives/narrative-persistence.js';
+import { buildNarrativeQualityContext } from '../../srv/narratives/narrative-quality-context.js';
+import { NARRATIVE_QUALITY_RUBRIC_FINGERPRINT } from '../../srv/narratives/narrative-quality-rubric.js';
 import {
   NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
   NARRATIVE_JUDGE_PROMPT_VERSION,
@@ -31,6 +47,7 @@ import {
 import {
   OPTION_NARRATIVE_PROMPT_VERSION,
   OPTION_NARRATIVE_SCHEMA_VERSION,
+  createOptionNarrativeRequest,
 } from '../../srv/narratives/option-narrative.js';
 import { referenceTripRequestODataPayload } from '../fixtures/trip-request.js';
 
@@ -173,49 +190,46 @@ function common(
   } as const;
 }
 
-function narrativeBundle(
-  option: PlannedOption,
-  generateAudit: NarrativeReviewAiRunExpectation,
-): NarrativePersistenceBundle {
-  const narrativeRunId = randomUUID();
-  const blockId = randomUUID();
+async function seedExactSyntheticOptionLineage(
+  context: GroundedOptionContext,
+): Promise<PlannedOption> {
+  const source = await createPlannedOption();
+  const sourcePlanningRun = (await cds.db.run(
+    cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: source.planningRunId }),
+  )) as Record<string, unknown> | undefined;
+  const sourceRankedOption = (await cds.db.run(
+    cds.ql.SELECT.one.from('trip.planner.RankedOptions').where({ ID: source.rankedOptionId }),
+  )) as Record<string, unknown> | undefined;
+  if (sourcePlanningRun === undefined || sourceRankedOption === undefined) {
+    throw new Error('Production planning seed has no complete persisted lineage.');
+  }
+
+  await cds.db.run(
+    cds.ql.INSERT.into('trip.planner.PlanningRuns').entries({
+      ...sourcePlanningRun,
+      ID: context.planningRun.id,
+      requestFingerprint: context.planningRun.requestFingerprint,
+      currencyContractVersion: context.planningRun.currencyContractVersion,
+      providerFixtureVersion: context.planningRun.providerFixtureVersion,
+      engineVersion: context.planningRun.engineVersion,
+      scoringVersion: context.planningRun.scoringVersion,
+    }),
+  );
+  await cds.db.run(
+    cds.ql.INSERT.into('trip.planner.RankedOptions').entries({
+      ...sourceRankedOption,
+      ID: context.rankedOption.id,
+      planningRun_ID: context.planningRun.id,
+      providerFixtureVersion: context.planningRun.providerFixtureVersion,
+      scoringVersion: context.planningRun.scoringVersion,
+      rank: context.rankedOption.rank,
+      role: context.rankedOption.role,
+    }),
+  );
+
   return {
-    expectedAiRun: generateAudit,
-    narrativeRun: {
-      ID: narrativeRunId,
-      planningRun_ID: option.planningRunId,
-      rankedOption_ID: option.rankedOptionId,
-      aiRunId: generateAudit.ID,
-      status: 'SUCCEEDED',
-      contextVersion: versions.groundedContextVersion,
-      contextFingerprint,
-      promptVersion: versions.generatePromptVersion,
-      schemaVersion: versions.generateSchemaVersion,
-      blockCount: 1,
-      completedAt: '2026-08-15T10:00:02.000Z',
-    },
-    optionNarratives: [
-      {
-        ID: blockId,
-        narrativeRun_ID: narrativeRunId,
-        planningRun_ID: option.planningRunId,
-        rankedOption_ID: option.rankedOptionId,
-        sequence: 1,
-        kind: 'SUMMARY',
-        text: 'Validated and judged publication text.',
-      },
-    ],
-    factReferences: [
-      {
-        ID: randomUUID(),
-        narrativeRun_ID: narrativeRunId,
-        optionNarrative_ID: blockId,
-        planningRun_ID: option.planningRunId,
-        rankedOption_ID: option.rankedOptionId,
-        sequence: 1,
-        factId,
-      },
-    ],
+    planningRunId: context.planningRun.id,
+    rankedOptionId: context.rankedOption.id,
   };
 }
 
@@ -241,6 +255,7 @@ describe('CAP/SQLite narrative review persistence', () => {
     const rejection = buildNarrativeReviewRejectionBundle({
       ...common(option, generateAudit),
       qualityContextFingerprint: null,
+      rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
       stage: 'PRECHECK',
       failureCode: 'PRECHECK_REJECTED',
       findings: [
@@ -298,17 +313,118 @@ describe('CAP/SQLite narrative review persistence', () => {
     );
   });
 
-  it('atomically publishes review plus narrative and survives cleanup of both scalar audit links', async () => {
-    const option = await createPlannedOption();
-    const generateAudit = expectation('GENERATE', option.planningRunId);
-    const judgeAudit = expectation('JUDGE', option.planningRunId);
+  it('persists the exact frozen E2E lineage through production builders and survives audit cleanup', async () => {
+    const dataset = loadNarrativeQualityDataset();
+    const resolved = resolveNarrativeQualityDataset(
+      dataset,
+      resolveSyntheticNarrativeQualityFixture,
+    );
+    const authoredE2e = dataset.endToEndCases.find(({ id }) => id === 'E01');
+    const authoredContext = dataset.contexts.find(({ id }) => id === authoredE2e?.contextId);
+    const e2eCase = resolved.endToEndCases.find(({ authored }) => authored.id === 'E01');
+    const frozenCandidateCase = resolved.cases.find(({ authored }) => authored.id === 'P01');
+    if (
+      authoredE2e === undefined ||
+      authoredContext === undefined ||
+      e2eCase === undefined ||
+      frozenCandidateCase === undefined
+    ) {
+      throw new Error('Frozen E01/P01 publication fixture is incomplete.');
+    }
+
+    // The E2E contract authors no provider output. P01 is its exact frozen, schema-valid PUBLISH
+    // candidate over the same production-built PRAGUE_PLN_COMPLETE grounded context.
+    const context = e2eCase.groundedContext;
+    expect(frozenCandidateCase.authored.contextId).toBe(authoredE2e.contextId);
+    expect(frozenCandidateCase.groundedContext.fingerprint).toBe(context.fingerprint);
+    expect(frozenCandidateCase.candidate.contextFingerprint).toBe(context.fingerprint);
+
+    const option = await seedExactSyntheticOptionLineage(context);
+    const seededPlanningRun = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: option.planningRunId }),
+    )) as Record<string, unknown> | undefined;
+    const seededRankedOption = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.RankedOptions').where({ ID: option.rankedOptionId }),
+    )) as Record<string, unknown> | undefined;
+    expect(seededPlanningRun).toMatchObject({
+      ID: context.planningRun.id,
+      requestFingerprint: context.planningRun.requestFingerprint,
+      currencyContractVersion: context.planningRun.currencyContractVersion,
+      providerFixtureVersion: context.planningRun.providerFixtureVersion,
+      engineVersion: context.planningRun.engineVersion,
+      scoringVersion: context.planningRun.scoringVersion,
+    });
+    expect(seededRankedOption).toMatchObject({
+      ID: context.rankedOption.id,
+      planningRun_ID: context.planningRun.id,
+      providerFixtureVersion: context.planningRun.providerFixtureVersion,
+      scoringVersion: context.planningRun.scoringVersion,
+      rank: context.rankedOption.rank,
+      role: context.rankedOption.role,
+    });
+
+    const modelView = buildNarrativeModelView(context);
+    const generateRequest = createOptionNarrativeRequest(context, modelView);
+    expect(generateRequest).toMatchObject({
+      planningRunId: context.planningRun.id,
+      rankedOptionId: context.rankedOption.id,
+      input: modelView,
+    });
+    const qualityContext = buildNarrativeQualityContext({
+      context,
+      modelView,
+      narrativeOutput: frozenCandidateCase.candidate,
+      constraints: buildSyntheticNarrativeConstraintSnapshot(authoredContext),
+      versions: NARRATIVE_EVAL_CONTRACT_VERSIONS,
+    });
+    const judgeRequest = createNarrativeJudgeRequest(qualityContext);
+    expect(judgeRequest).toMatchObject({
+      planningRunId: context.planningRun.id,
+      rankedOptionId: context.rankedOption.id,
+      input: {
+        qualityContextFingerprint: qualityContext.fingerprint,
+        rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+        rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
+      },
+    });
+
+    const generateAudit = {
+      ...expectation('GENERATE', option.planningRunId),
+      inputFingerprint: createInputFingerprint(generateRequest.input),
+    };
+    const judgeAudit = {
+      ...expectation('JUDGE', option.planningRunId),
+      inputFingerprint: createInputFingerprint(judgeRequest.input),
+    };
     await persistSucceededAudit(generateAudit, AiProvider.ANTHROPIC);
     await persistSucceededAudit(judgeAudit, AiProvider.OPENAI);
+    const narrativeBundle = buildNarrativePersistenceBundle({
+      context,
+      modelView,
+      output: frozenCandidateCase.candidate,
+      aiRunId: generateAudit.ID,
+      completedAt: '2026-08-15T10:00:02.000Z',
+    });
+    expect(narrativeBundle.expectedAiRun).toEqual(generateAudit);
+    expect(narrativeBundle.narrativeRun).toMatchObject({
+      planningRun_ID: context.planningRun.id,
+      rankedOption_ID: context.rankedOption.id,
+      aiRunId: generateAudit.ID,
+      contextFingerprint: context.fingerprint,
+    });
     const publication = buildNarrativeReviewPublicationBundle({
-      ...common(option, generateAudit),
+      planningRunId: option.planningRunId,
+      rankedOptionId: option.rankedOptionId,
+      generateAudit,
       judgeAudit,
+      contextFingerprint: context.fingerprint,
+      modelViewFingerprint: modelView.fingerprint,
+      narrativeFingerprint: qualityContext.narrativeFingerprint,
+      qualityContextFingerprint: qualityContext.fingerprint,
+      versions: NARRATIVE_EVAL_CONTRACT_VERSIONS,
       dimensions: allPassDimensions(),
-      narrativeBundle: narrativeBundle(option, generateAudit),
+      narrativeBundle,
+      completedAt: '2026-08-15T10:00:02.000Z',
     });
 
     await cds.db.tx((transaction) =>
@@ -317,28 +433,93 @@ describe('CAP/SQLite narrative review persistence', () => {
 
     const reviews = await readAll('NarrativeReviewRuns');
     const narratives = await readAll('NarrativeRuns');
+    const blocks = await readAll('OptionNarratives');
+    const references = await readAll('NarrativeFactReferences');
+    const audits = await readAll('AiRuns');
     expect(reviews).toHaveLength(1);
     expect(reviews[0]).toMatchObject({
+      planningRun_ID: context.planningRun.id,
+      rankedOption_ID: context.rankedOption.id,
       generateAiRunId: generateAudit.ID,
       judgeAiRunId: judgeAudit.ID,
+      contextFingerprint: context.fingerprint,
+      modelViewFingerprint: modelView.fingerprint,
+      narrativeFingerprint: qualityContext.narrativeFingerprint,
+      qualityContextFingerprint: qualityContext.fingerprint,
+      rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
       decision: 'PUBLISH',
       passedDimensionCount: 8,
       failedDimensionCount: 0,
       findingCount: 0,
     });
+    expect(await readAll('NarrativeReviewFindings')).toHaveLength(0);
     expect(narratives).toHaveLength(1);
     expect(narratives[0]).toMatchObject({
+      planningRun_ID: context.planningRun.id,
+      rankedOption_ID: context.rankedOption.id,
       aiRunId: generateAudit.ID,
       judgeAiRunId: judgeAudit.ID,
       reviewRunId: publication.reviewRun.ID,
-      narrativeFingerprint,
+      contextFingerprint: context.fingerprint,
+      modelViewFingerprint: modelView.fingerprint,
+      narrativeFingerprint: qualityContext.narrativeFingerprint,
+      qualityContextFingerprint: qualityContext.fingerprint,
       modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
       qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
       rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+      rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
       publicationPolicyVersion: NARRATIVE_PUBLICATION_POLICY_VERSION,
     });
-    expect(await readAll('OptionNarratives')).toHaveLength(1);
-    expect(await readAll('NarrativeFactReferences')).toHaveLength(1);
+    expect(audits).toHaveLength(2);
+    expect(audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ID: generateAudit.ID,
+          planningRun_ID: context.planningRun.id,
+          taskType: 'GENERATE',
+          inputFingerprint: createInputFingerprint(generateRequest.input),
+        }),
+        expect.objectContaining({
+          ID: judgeAudit.ID,
+          planningRun_ID: context.planningRun.id,
+          taskType: 'JUDGE',
+          inputFingerprint: createInputFingerprint(judgeRequest.input),
+        }),
+      ]),
+    );
+    expect(blocks).toHaveLength(frozenCandidateCase.candidate.blocks.length);
+    for (const [blockIndex, expectedBlock] of frozenCandidateCase.candidate.blocks.entries()) {
+      const sequence = blockIndex + 1;
+      const persistedBlock = blocks.find((block) => block.sequence === sequence);
+      expect(persistedBlock).toMatchObject({
+        narrativeRun_ID: publication.narrativeRun.ID,
+        planningRun_ID: context.planningRun.id,
+        rankedOption_ID: context.rankedOption.id,
+        sequence,
+        kind: expectedBlock.kind,
+        text: expectedBlock.text,
+      });
+      const persistedReferences = references
+        .filter((reference) => reference.optionNarrative_ID === persistedBlock?.ID)
+        .sort((left, right) => Number(left.sequence) - Number(right.sequence));
+      expect(persistedReferences).toHaveLength(expectedBlock.factReferences.length);
+      expect(persistedReferences.map(({ factId: persistedFactId }) => persistedFactId)).toEqual(
+        expectedBlock.factReferences,
+      );
+      for (const reference of persistedReferences) {
+        expect(reference).toMatchObject({
+          narrativeRun_ID: publication.narrativeRun.ID,
+          planningRun_ID: context.planningRun.id,
+          rankedOption_ID: context.rankedOption.id,
+        });
+      }
+    }
+    expect(references).toHaveLength(
+      frozenCandidateCase.candidate.blocks.reduce(
+        (count, block) => count + block.factReferences.length,
+        0,
+      ),
+    );
     expect(reviews[0]).not.toHaveProperty('generateAiRun_ID');
     expect(reviews[0]).not.toHaveProperty('judgeAiRun_ID');
     expect(narratives[0]).not.toHaveProperty('judgeAiRun_ID');
@@ -351,13 +532,33 @@ describe('CAP/SQLite narrative review persistence', () => {
     );
     await expect(aiRunStore.deleteExpired('2026-01-02T00:00:00.000Z')).resolves.toBe(2);
     expect(await readAll('AiRuns')).toHaveLength(0);
-    expect(await readAll('NarrativeReviewRuns')).toHaveLength(1);
-    expect(await readAll('NarrativeRuns')).toHaveLength(1);
-    expect(await readAll('OptionNarratives')).toHaveLength(1);
-    expect(await readAll('NarrativeFactReferences')).toHaveLength(1);
+    expect(await readAll('NarrativeReviewRuns')).toEqual([
+      expect.objectContaining({
+        ID: publication.reviewRun.ID,
+        planningRun_ID: context.planningRun.id,
+        rankedOption_ID: context.rankedOption.id,
+        generateAiRunId: generateAudit.ID,
+        judgeAiRunId: judgeAudit.ID,
+        contextFingerprint: context.fingerprint,
+        modelViewFingerprint: modelView.fingerprint,
+        narrativeFingerprint: qualityContext.narrativeFingerprint,
+        qualityContextFingerprint: qualityContext.fingerprint,
+        rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
+      }),
+    ]);
+    expect(await readAll('NarrativeRuns')).toEqual([
+      expect.objectContaining({
+        ID: publication.narrativeRun.ID,
+        reviewRunId: publication.reviewRun.ID,
+        aiRunId: generateAudit.ID,
+        judgeAiRunId: judgeAudit.ID,
+      }),
+    ]);
+    expect(await readAll('OptionNarratives')).toHaveLength(blocks.length);
+    expect(await readAll('NarrativeFactReferences')).toHaveLength(references.length);
   });
 
-  it('keeps legacy AiRuns and NarrativeRuns explicitly null instead of backfilling quality evidence', async () => {
+  it('keeps legacy AiRuns, NarrativeRuns and reviews null instead of backfilling quality evidence', async () => {
     const option = await createPlannedOption();
     const legacyAiRunId = randomUUID();
     await cds.db.run(
@@ -391,6 +592,39 @@ describe('CAP/SQLite narrative review persistence', () => {
         completedAt: '2026-08-14T10:00:01.000Z',
       }),
     );
+    await cds.db.run(
+      cds.ql.INSERT.into('trip.planner.NarrativeReviewRuns').entries({
+        ID: randomUUID(),
+        planningRun_ID: option.planningRunId,
+        rankedOption_ID: option.rankedOptionId,
+        generateAiRunId: legacyAiRunId,
+        contextVersion: versions.groundedContextVersion,
+        contextFingerprint,
+        modelViewVersion: versions.modelViewVersion,
+        modelViewFingerprint,
+        qualityContextVersion: versions.qualityContextVersion,
+        constraintSnapshotVersion: versions.constraintSnapshotVersion,
+        safetyPrecheckVersion: versions.safetyPrecheckVersion,
+        generatePromptVersion: versions.generatePromptVersion,
+        generateSchemaVersion: versions.generateSchemaVersion,
+        judgePromptVersion: versions.judgePromptVersion,
+        judgeSchemaVersion: versions.judgeSchemaVersion,
+        rubricVersion: versions.rubricVersion,
+        publicationPolicyVersion: versions.publicationPolicyVersion,
+        datasetVersion: versions.datasetVersion,
+        modelProfileVersion: versions.modelProfileVersion,
+        priceCatalogVersion: versions.priceCatalogVersion,
+        stage: 'GENERATE',
+        decision: 'REJECT',
+        failureCode: 'AI_TIMEOUT',
+        passedDimensionCount: 0,
+        failedDimensionCount: 0,
+        findingCount: 0,
+        majorFindingCount: 0,
+        criticalFindingCount: 0,
+        completedAt: '2026-08-14T10:00:01.000Z',
+      }),
+    );
 
     expect((await readAll('AiRuns'))[0]).toMatchObject({
       configuredEffort: null,
@@ -408,9 +642,14 @@ describe('CAP/SQLite narrative review persistence', () => {
       judgePromptVersion: null,
       judgeSchemaVersion: null,
       rubricVersion: null,
+      rubricFingerprint: null,
       publicationPolicyVersion: null,
       modelProfileVersion: null,
       priceCatalogVersion: null,
+    });
+    expect((await readAll('NarrativeReviewRuns'))[0]).toMatchObject({
+      rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+      rubricFingerprint: null,
     });
   });
 

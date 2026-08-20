@@ -14,7 +14,13 @@ import { parseOptionNarrativeOutput, type OptionNarrativeOutput } from './option
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const BIDI_OVERRIDE_PATTERN = /[\u202a-\u202e\u2066-\u2069]/u;
-const MARKDOWN_LINK_PATTERN = /!?\[[^\]\r\n]{0,512}\]\([^\r\n)]{1,2048}\)/u;
+const MARKDOWN_INLINE_LINK_PATTERN = /!?\[[^\]\r\n]{0,512}\]\([^\r\n)]{1,2048}\)/u;
+const MARKDOWN_REFERENCE_LINK_PATTERN =
+  /!?\[[^\]\r\n]{1,512}\][ \t]*(?:\r?\n[ \t]*)?\[[^\]\r\n]{0,512}\]/u;
+const MARKDOWN_REFERENCE_DEFINITION_PATTERN =
+  /^[ \t]{0,3}\[[^\]\r\n]{1,512}\]:[ \t]*(?=\S|\r?\n[ \t]{1,4}\S)/mu;
+const MARKDOWN_AUTOLINK_PATTERN =
+  /<(?:[a-z][a-z0-9+.-]{1,31}:[^<>\s]*|[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,62}\.)+[a-z]{2,63})>/iu;
 const URL_PATTERN =
   /(?:\b[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\bmailto:|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[a-z0-9](?:[a-z0-9-]{0,62}\.)+[a-z]{2,63}(?![a-z0-9-]))/iu;
 const HTML_PATTERN = /<\/?[a-z][^>]*>/iu;
@@ -174,7 +180,13 @@ export function runNarrativeSafetyPrecheck(
   for (const [index, block] of narrative.blocks.entries()) {
     const blockSequence = index + 1;
     const text = block.text;
-    if (MARKDOWN_LINK_PATTERN.test(text) || URL_PATTERN.test(text)) {
+    if (
+      MARKDOWN_INLINE_LINK_PATTERN.test(text) ||
+      MARKDOWN_REFERENCE_LINK_PATTERN.test(text) ||
+      MARKDOWN_REFERENCE_DEFINITION_PATTERN.test(text) ||
+      MARKDOWN_AUTOLINK_PATTERN.test(text) ||
+      URL_PATTERN.test(text)
+    ) {
       addUniqueFinding(findings, finding('UNTRUSTED_CONTENT_EXPOSED', blockSequence));
     }
     if (SECRET_SHAPE_PATTERN.test(text)) {

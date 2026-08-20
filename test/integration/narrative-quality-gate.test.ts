@@ -15,8 +15,16 @@ import {
 } from '../../srv/ai/contracts.ts';
 import { AiError, type AiErrorCode } from '../../srv/ai/errors.ts';
 import { CapAiRunStore } from '../../srv/ai/persistence/cap-ai-run-store.ts';
+import type {
+  AiRunFailedUpdate,
+  AiRunStartedRecord,
+  AiRunStore,
+  AiRunSucceededUpdate,
+} from '../../srv/ai/persistence/ai-run-store.ts';
+import type { AiOperationalSignalSink, AiPreStartFailureSignal } from '../../srv/ai/telemetry.ts';
 import { NARRATIVE_JUDGE_DIMENSIONS } from '../../srv/narratives/narrative-judge.ts';
 import { NARRATIVE_MODEL_VIEW_VERSION } from '../../srv/narratives/narrative-model-view.ts';
+import { NARRATIVE_QUALITY_RUBRIC_FINGERPRINT } from '../../srv/narratives/narrative-quality-rubric.ts';
 import {
   NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
   NARRATIVE_JUDGE_PROMPT_VERSION,
@@ -50,6 +58,7 @@ const { GET, POST } = test;
 const PUBLISHED_SUMMARY = 'The option is described from the exact deterministic planning facts.';
 const PUBLISHED_RISK = 'The source snapshots are demonstration data, not current availability.';
 const forceRollbackHeader = 'x-test-force-quality-gate-rollback';
+const RAW_STARTED_ERROR_SENTINEL = 'RAW_STARTED_ERROR_SENTINEL must never be emitted';
 
 type Scenario =
   | 'PUBLISH'
@@ -171,7 +180,7 @@ class OfflineQualityGateAdapter implements StructuredAiAdapter {
             ? [
                 {
                   kind: 'SUMMARY',
-                  text: 'Untrusted source: https://example.com/offer',
+                  text: 'Untrusted source: [offer][provider-reference]',
                   factReferences: [firstFactId],
                 },
               ]
@@ -241,6 +250,42 @@ class OfflineQualityGateAdapter implements StructuredAiAdapter {
   }
 }
 
+class MemoryOperationalSignalSink implements AiOperationalSignalSink {
+  readonly signals: AiPreStartFailureSignal[] = [];
+
+  emit(signal: AiPreStartFailureSignal): Promise<void> {
+    this.signals.push(signal);
+    return Promise.resolve();
+  }
+}
+
+class FailNthStartedAiRunStore implements AiRunStore {
+  private readonly delegate = new CapAiRunStore();
+  insertAttempts = 0;
+
+  constructor(private readonly failureAttempt: number) {}
+
+  async insertStarted(record: AiRunStartedRecord): Promise<void> {
+    this.insertAttempts += 1;
+    if (this.insertAttempts === this.failureAttempt) {
+      throw new Error(RAW_STARTED_ERROR_SENTINEL);
+    }
+    await this.delegate.insertStarted(record);
+  }
+
+  completeSucceeded(ID: string, update: AiRunSucceededUpdate): Promise<void> {
+    return this.delegate.completeSucceeded(ID, update);
+  }
+
+  completeFailed(ID: string, update: AiRunFailedUpdate): Promise<void> {
+    return this.delegate.completeFailed(ID, update);
+  }
+
+  deleteExpired(now: string): Promise<number> {
+    return this.delegate.deleteExpired(now);
+  }
+}
+
 function createOfflineGateway(scenario: Scenario, calls: AdapterCallObservation[]): AiGateway {
   return createPersistentAiGateway(loadAiConfig({ AI_ENABLED: 'true' }), {
     adapters: [
@@ -248,6 +293,23 @@ function createOfflineGateway(scenario: Scenario, calls: AdapterCallObservation[
       new OfflineQualityGateAdapter(AiProvider.OPENAI, scenario, calls),
     ],
     generateAiRunId: randomUUID,
+  });
+}
+
+function createStartedFailureGateway(
+  calls: AdapterCallObservation[],
+  store: AiRunStore,
+  operationalSignalSink: AiOperationalSignalSink,
+  enabled = true,
+): AiGateway {
+  return createPersistentAiGateway(loadAiConfig({ AI_ENABLED: enabled ? 'true' : 'false' }), {
+    adapters: [
+      new OfflineQualityGateAdapter(AiProvider.ANTHROPIC, 'PUBLISH', calls),
+      new OfflineQualityGateAdapter(AiProvider.OPENAI, 'PUBLISH', calls),
+    ],
+    store,
+    generateAiRunId: randomUUID,
+    operationalSignalSink,
   });
 }
 
@@ -303,6 +365,7 @@ function expectFullVersionEvidence(row: Readonly<Record<string, unknown>>): void
     judgePromptVersion: NARRATIVE_JUDGE_PROMPT_VERSION,
     judgeSchemaVersion: NARRATIVE_JUDGE_SCHEMA_VERSION,
     rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
+    rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
     publicationPolicyVersion: NARRATIVE_PUBLICATION_POLICY_VERSION,
     datasetVersion: NARRATIVE_QUALITY_DATASET_VERSION,
     modelProfileVersion: NARRATIVE_MODEL_PROFILE_VERSION,
@@ -320,6 +383,27 @@ function expectNoNarrativeProduct(): Promise<void> {
     expect(blocks).toHaveLength(0);
     expect(references).toHaveLength(0);
   });
+}
+
+function expectSafePreStartSignal(
+  signal: AiPreStartFailureSignal,
+  taskType: 'GENERATE' | 'JUDGE',
+  option: PlannedOption,
+  failureCode: AiPreStartFailureSignal['failureCode'],
+): void {
+  expect(signal).toMatchObject({
+    eventType: 'AI_PRE_START_FAILURE',
+    stage: 'BEFORE_DURABLE_STARTED',
+    taskType,
+    failureCode,
+    planningRunId: option.planningRunId,
+    rankedOptionId: option.rankedOptionId,
+    providerCallAttempted: false,
+  });
+  expect(signal).not.toHaveProperty('aiRunId');
+  expect(JSON.stringify(signal)).not.toMatch(
+    /RAW_STARTED_ERROR_SENTINEL|The option is described|demonstration data|candidate|instructions|rawJudge|rationale|cause|stack/iu,
+  );
 }
 
 beforeAll(async () => {
@@ -628,6 +712,148 @@ describe('Phase 3B3 narrative quality gate runtime', () => {
       await expectNoNarrativeProduct();
     },
   );
+
+  it('emits one safe GENERATE signal and no audit, review, or product row when STARTED fails', async () => {
+    const option = await createPlannedOption();
+    const calls: AdapterCallObservation[] = [];
+    const sink = new MemoryOperationalSignalSink();
+    const store = new FailNthStartedAiRunStore(1);
+    narrativeService.createNarrativeGateway = () => createStartedFailureGateway(calls, store, sink);
+
+    await expect(POST(narrativeActionUrl(option.rankedOptionId), {})).rejects.toMatchObject({
+      status: 500,
+      response: { data: { error: { code: 'AI_AUDIT_FAILED' } } },
+    });
+
+    expect(store.insertAttempts).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(await readAll('AiRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewFindings')).toHaveLength(0);
+    await expectNoNarrativeProduct();
+    expect(sink.signals).toHaveLength(1);
+    expectSafePreStartSignal(sink.signals[0]!, 'GENERATE', option, 'AI_AUDIT_FAILED');
+  });
+
+  it('keeps only the real GENERATE audit when STARTED fails before the JUDGE provider call', async () => {
+    const option = await createPlannedOption();
+    const calls: AdapterCallObservation[] = [];
+    const sink = new MemoryOperationalSignalSink();
+    const store = new FailNthStartedAiRunStore(2);
+    narrativeService.createNarrativeGateway = () => createStartedFailureGateway(calls, store, sink);
+
+    await expect(POST(narrativeActionUrl(option.rankedOptionId), {})).rejects.toMatchObject({
+      status: 500,
+      response: { data: { error: { code: 'AI_AUDIT_FAILED' } } },
+    });
+
+    expect(store.insertAttempts).toBe(2);
+    expect(calls.map(({ taskType }) => taskType)).toEqual(['GENERATE']);
+    expect(await readAll('AiRuns')).toMatchObject([
+      {
+        ID: calls[0]!.aiRunId,
+        planningRun_ID: option.planningRunId,
+        taskType: 'GENERATE',
+        status: 'SUCCEEDED',
+      },
+    ]);
+    expect(await readAll('NarrativeReviewRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewFindings')).toHaveLength(0);
+    await expectNoNarrativeProduct();
+    expect(sink.signals).toHaveLength(1);
+    expectSafePreStartSignal(sink.signals[0]!, 'JUDGE', option, 'AI_AUDIT_FAILED');
+  });
+
+  it('emits one safe GENERATE signal for AI_DISABLED without fake audit or review evidence', async () => {
+    const option = await createPlannedOption();
+    const calls: AdapterCallObservation[] = [];
+    const sink = new MemoryOperationalSignalSink();
+    const store = new FailNthStartedAiRunStore(99);
+    narrativeService.createNarrativeGateway = () =>
+      createStartedFailureGateway(calls, store, sink, false);
+
+    await expect(POST(narrativeActionUrl(option.rankedOptionId), {})).rejects.toMatchObject({
+      status: 503,
+      response: { data: { error: { code: 'AI_DISABLED' } } },
+    });
+
+    expect(store.insertAttempts).toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(await readAll('AiRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewFindings')).toHaveLength(0);
+    await expectNoNarrativeProduct();
+    expect(sink.signals).toHaveLength(1);
+    expectSafePreStartSignal(sink.signals[0]!, 'GENERATE', option, 'AI_DISABLED');
+    expect(sink.signals[0]).not.toHaveProperty('inputFingerprint');
+  });
+
+  it('emits one controlled signal for invalid GENERATE configuration before STARTED', async () => {
+    const option = await createPlannedOption();
+    const calls: AdapterCallObservation[] = [];
+    const sink = new MemoryOperationalSignalSink();
+    const config = loadAiConfig({ AI_ENABLED: 'true' });
+    const invalidConfig = {
+      ...config,
+      taskProfiles: {
+        ...config.taskProfiles,
+        GENERATE: { ...config.taskProfiles.GENERATE, maxOutputTokens: 0 },
+      },
+    };
+    narrativeService.createNarrativeGateway = () =>
+      createPersistentAiGateway(invalidConfig, {
+        adapters: [
+          new OfflineQualityGateAdapter(AiProvider.ANTHROPIC, 'PUBLISH', calls),
+          new OfflineQualityGateAdapter(AiProvider.OPENAI, 'PUBLISH', calls),
+        ],
+        store: new CapAiRunStore(),
+        generateAiRunId: randomUUID,
+        operationalSignalSink: sink,
+      });
+
+    await expect(POST(narrativeActionUrl(option.rankedOptionId), {})).rejects.toMatchObject({
+      status: 503,
+      response: { data: { error: { code: 'INVALID_AI_CONFIGURATION' } } },
+    });
+
+    expect(calls).toHaveLength(0);
+    expect(await readAll('AiRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewFindings')).toHaveLength(0);
+    await expectNoNarrativeProduct();
+    expect(sink.signals).toHaveLength(1);
+    expectSafePreStartSignal(sink.signals[0]!, 'GENERATE', option, 'INVALID_AI_CONFIGURATION');
+  });
+
+  it('does not fabricate or persist an AiRun when the generated ID is invalid', async () => {
+    const option = await createPlannedOption();
+    const calls: AdapterCallObservation[] = [];
+    const sink = new MemoryOperationalSignalSink();
+    narrativeService.createNarrativeGateway = () =>
+      createPersistentAiGateway(loadAiConfig({ AI_ENABLED: 'true' }), {
+        adapters: [
+          new OfflineQualityGateAdapter(AiProvider.ANTHROPIC, 'PUBLISH', calls),
+          new OfflineQualityGateAdapter(AiProvider.OPENAI, 'PUBLISH', calls),
+        ],
+        store: new CapAiRunStore(),
+        generateAiRunId: () => 'RAW_FAKE_AI_RUN_ID_SENTINEL',
+        operationalSignalSink: sink,
+      });
+
+    await expect(POST(narrativeActionUrl(option.rankedOptionId), {})).rejects.toMatchObject({
+      status: 503,
+      response: { data: { error: { code: 'INVALID_AI_CONFIGURATION' } } },
+    });
+
+    expect(calls).toHaveLength(0);
+    expect(await readAll('AiRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewRuns')).toHaveLength(0);
+    expect(await readAll('NarrativeReviewFindings')).toHaveLength(0);
+    await expectNoNarrativeProduct();
+    expect(sink.signals).toHaveLength(1);
+    expectSafePreStartSignal(sink.signals[0]!, 'GENERATE', option, 'INVALID_AI_CONFIGURATION');
+    expect(JSON.stringify(sink.signals)).not.toContain('RAW_FAKE_AI_RUN_ID_SENTINEL');
+  });
 
   it('keeps published review and narrative after both ephemeral AI audits are cleaned up', async () => {
     const { option, calls } = await runScenario('PUBLISH');
