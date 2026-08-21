@@ -26,8 +26,11 @@ w pamięci; realny zapis i odczyt jest osobno testowany na produkcyjnych writera
 Finalny live baseline używa wyłącznie danych syntetycznych, jest poza CI i wymaga osobnej
 zgody, `AI_LIVE_EVAL_ENABLED=true`, przejścia preflightu oraz limitów 48 logical calls, 56
 provider attempts i USD 3.00. Plan v1 ma dokładnie 46 calls i wymaga
-`AI_MAX_RETRIES=0`; wersjonowany katalog cen celowo nie zgaduje stawek dla skonfigurowanych
-modeli, dlatego obecnie blokuje preflight. Dopiero po pełnym preflight runner wdraża
-odizolowany, ignorowany przez Git store `.tools/narrative-live-eval/` zawierający wyłącznie
-bezpieczne metadata `AiRuns`. Baseline nie został uruchomiony podczas
-implementacji; rzeczywisty koszt wynosi USD 0, dlatego Faza 3B3 pozostaje `REVIEW`.
+`AI_MAX_RETRIES=0`. `npm run eval:live:preflight` jest osobną, credential-free i
+network-free kalkulacją tego samego planu oraz kosztu: aktualny profil Terra ma ceiling
+6,950,969 USD micros i przekracza cap, natomiast porównawczy profil Luna ma ceiling 1,056,177
+USD micros i mieści się w cap. Porównanie nie zmienia runtime defaultu Terra ani nie
+autoryzuje zmiany modelu. Produkcyjny `npm run eval:live` nadal wymaga obu opt-inów,
+credentiali i przejścia wszystkich limitów; dopiero wtedy wdraża odizolowany, ignorowany
+przez Git store `.tools/narrative-live-eval/` z bezpiecznymi metadata `AiRuns`. Baseline nie
+został uruchomiony; rzeczywisty koszt wynosi USD 0, dlatego Faza 3B3 pozostaje `REVIEW`.

@@ -42,7 +42,8 @@ contract change, not a test fix.
       implemented and covered by offline tests.
 - [x] The live runner freezes a 46-call synthetic-only plan, requires zero retries for complete
       failure accounting, deploys an isolated safe-metadata `AiRuns` store only after preflight,
-      and cannot run while exact configured-model prices remain unapproved.
+      and shares its plan/cost estimator with a credential-free comparison of exact Terra and
+      Luna prices. Terra exceeds the unchanged USD 3 cap; Luna remains comparison-only.
 - [x] No live or paid call was made during implementation or documentation work; actual cost
       is USD 0.
 - [x] A failure before durable `STARTED` creates no review and no fabricated UUID, blocks the

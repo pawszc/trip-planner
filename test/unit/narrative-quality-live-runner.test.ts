@@ -27,6 +27,7 @@ import {
   NARRATIVE_PRICE_CATALOG_VERSION,
   loadAiPriceSnapshot,
   parseAiPriceSnapshot,
+  requireVerifiedAiPriceSnapshot,
   type AiPriceSnapshot,
 } from '../../srv/evals/price-snapshot.ts';
 import { verifyEvalReportFingerprint } from '../../srv/evals/report.ts';
@@ -50,6 +51,7 @@ function configuredPriceSnapshot(config: AiConfig): AiPriceSnapshot {
   return parseAiPriceSnapshot({
     schemaVersion: 'ai-price-snapshot-schema-v1',
     priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
+    pricingVerifiedAt: '2026-08-21',
     currency: 'USD',
     tokenUnit: 1_000_000,
     models: uniqueProfiles.map(({ provider, model }) => ({
@@ -211,35 +213,66 @@ describe('narrative live-eval plan and preflight', () => {
     {
       name: 'missing live opt-in',
       environment: { ...enabledEnvironment, AI_LIVE_EVAL_ENABLED: 'false' },
-      emptyPrices: false,
+      priceMode: 'configured',
     },
     {
       name: 'missing gateway opt-in',
       environment: { ...enabledEnvironment, AI_ENABLED: 'false' },
-      emptyPrices: false,
+      priceMode: 'configured',
+    },
+    {
+      name: 'missing OpenAI credential',
+      environment: { ...enabledEnvironment, OPENAI_API_KEY: undefined },
+      priceMode: 'configured',
+    },
+    {
+      name: 'missing Anthropic credential',
+      environment: { ...enabledEnvironment, ANTHROPIC_API_KEY: undefined },
+      priceMode: 'configured',
     },
     {
       name: 'unknown model pricing',
       environment: enabledEnvironment,
-      emptyPrices: true,
+      priceMode: 'empty',
     },
     {
       name: 'logical-call cap below the frozen plan',
       environment: { ...enabledEnvironment, AI_LIVE_EVAL_MAX_LOGICAL_CALLS: '45' },
-      emptyPrices: false,
+      priceMode: 'configured',
     },
-  ])('blocks $name before constructing the executor', async ({ environment, emptyPrices }) => {
+    {
+      name: 'missing pricing verification date',
+      environment: enabledEnvironment,
+      priceMode: 'legacy',
+    },
+    {
+      name: 'invalid pricing verification date',
+      environment: enabledEnvironment,
+      priceMode: 'invalid-date',
+    },
+  ])('blocks $name before constructing the executor', async ({ environment, priceMode }) => {
     const config = loadAiConfig(environment);
     let factoryCalls = 0;
-    const priceSnapshot = emptyPrices
-      ? parseAiPriceSnapshot({
-          schemaVersion: 'ai-price-snapshot-schema-v1',
-          priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
-          currency: 'USD',
-          tokenUnit: 1_000_000,
-          models: [],
-        })
-      : configuredPriceSnapshot(config);
+    const configuredSnapshot = configuredPriceSnapshot(config);
+    let priceSnapshot: AiPriceSnapshot;
+    if (priceMode === 'empty') {
+      priceSnapshot = parseAiPriceSnapshot({
+        schemaVersion: 'ai-price-snapshot-schema-v1',
+        priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
+        pricingVerifiedAt: '2026-08-21',
+        currency: 'USD',
+        tokenUnit: 1_000_000,
+        models: [],
+      });
+    } else if (priceMode === 'legacy') {
+      const legacyInput: Record<string, unknown> = { ...configuredSnapshot };
+      delete legacyInput.pricingVerifiedAt;
+      priceSnapshot = parseAiPriceSnapshot(legacyInput);
+    } else if (priceMode === 'invalid-date') {
+      priceSnapshot = { ...configuredSnapshot, pricingVerifiedAt: '2026-02-30' };
+    } else {
+      priceSnapshot = configuredSnapshot;
+    }
 
     await expect(
       runNarrativeQualityLiveEvaluation({
@@ -259,6 +292,10 @@ describe('narrative live-eval plan and preflight', () => {
     const environment = { ...enabledEnvironment, AI_MAX_RETRIES: '1' };
     const config = loadAiConfig(environment);
     let factoryCalls = 0;
+    const plan = createNarrativeQualityLiveEvalPlan({ config });
+
+    expect(plan.plannedMaximumAttempts).toBe(92);
+    expect(plan.calls.every(({ maximumAttempts }) => maximumAttempts === 2)).toBe(true);
 
     await expect(
       runNarrativeQualityLiveEvaluation({
@@ -474,8 +511,21 @@ describe('narrative live-eval CLI boundary', () => {
     );
   });
 
-  it('emits one safe failure and never creates an executor when opt-in is missing', async () => {
-    const environment = { ...enabledEnvironment, AI_LIVE_EVAL_ENABLED: 'false' };
+  it.each([
+    {
+      name: 'live-eval opt-in',
+      environment: { ...enabledEnvironment, AI_LIVE_EVAL_ENABLED: 'false' },
+    },
+    { name: 'gateway opt-in', environment: { ...enabledEnvironment, AI_ENABLED: 'false' } },
+    {
+      name: 'OpenAI credential',
+      environment: { ...enabledEnvironment, OPENAI_API_KEY: undefined },
+    },
+    {
+      name: 'Anthropic credential',
+      environment: { ...enabledEnvironment, ANTHROPIC_API_KEY: undefined },
+    },
+  ])('requires $name before the live CLI creates an executor', async ({ environment }) => {
     const config = loadAiConfig(environment);
     const lines: string[] = [];
     let executorFactories = 0;
@@ -507,13 +557,44 @@ describe('narrative live-eval CLI boundary', () => {
 });
 
 describe('versioned price catalog loader', () => {
-  it('loads the checked-in strict catalog without inventing model prices', () => {
+  it('loads the exact checked-in verified API prices', () => {
     const snapshot = loadAiPriceSnapshot();
-    expect(snapshot).toMatchObject({
+    expect(requireVerifiedAiPriceSnapshot(snapshot)).toEqual(snapshot);
+    expect(snapshot).toEqual({
+      schemaVersion: 'ai-price-snapshot-schema-v1',
       priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
+      pricingVerifiedAt: '2026-08-21',
       currency: 'USD',
       tokenUnit: 1_000_000,
-      models: [],
+      models: [
+        {
+          provider: 'ANTHROPIC',
+          model: 'claude-sonnet-5',
+          inputUsdMicrosPerMillionTokens: 2_000_000,
+          outputUsdMicrosPerMillionTokens: 10_000_000,
+          cacheReadUsdMicrosPerMillionTokens: 200_000,
+          cacheWriteUsdMicrosPerMillionTokens: 2_500_000,
+          reasoningUsdMicrosPerMillionTokens: 10_000_000,
+        },
+        {
+          provider: 'OPENAI',
+          model: 'gpt-5.6-terra',
+          inputUsdMicrosPerMillionTokens: 2_000_000,
+          outputUsdMicrosPerMillionTokens: 12_000_000,
+          cacheReadUsdMicrosPerMillionTokens: 200_000,
+          cacheWriteUsdMicrosPerMillionTokens: 2_500_000,
+          reasoningUsdMicrosPerMillionTokens: 12_000_000,
+        },
+        {
+          provider: 'OPENAI',
+          model: 'gpt-5.6-luna',
+          inputUsdMicrosPerMillionTokens: 200_000,
+          outputUsdMicrosPerMillionTokens: 1_200_000,
+          cacheReadUsdMicrosPerMillionTokens: 20_000,
+          cacheWriteUsdMicrosPerMillionTokens: 250_000,
+          reasoningUsdMicrosPerMillionTokens: 1_200_000,
+        },
+      ],
     });
   });
 

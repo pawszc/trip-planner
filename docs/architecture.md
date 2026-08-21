@@ -329,8 +329,11 @@ actual i jawnie nie mierzy jakości modelu. Live E2E wykonuje niezależne determ
 osobny test produkcyjnych writerów dowodzi zapisu CAP/SQLite. Live baseline jest osobną
 ścieżką: default `AI_LIVE_EVAL_ENABLED=false`, preflight wymaga znanych cen, credentiali i
 jawnych opt-inów, a guard rezerwuje koszt przed każdym wywołaniem i egzekwuje maksymalnie 48
-logicznych calls, 56 attempts i USD 3.00. Baseline nie został uruchomiony; koszt implementacji
-wynosi USD 0 i Faza 3B3 pozostaje w `REVIEW` do osobnej zgody oraz przejścia wszystkich bramek.
+logicznych calls, 56 attempts i USD 3.00. Czysty `npm run eval:live:preflight` współdzieli
+plan i cost estimator, ale nie importuje ścieżki wykonawczej i działa bez opt-inów,
+credentiali, bazy lub sieci. Porównuje exact Terra i Luna bez zmiany profilu runtime. Baseline
+nie został uruchomiony; koszt implementacji wynosi USD 0 i Faza 3B3 pozostaje w `REVIEW` do
+osobnej zgody oraz przejścia wszystkich bramek.
 
 ## Stos technologiczny
 

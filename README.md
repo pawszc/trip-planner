@@ -144,11 +144,12 @@ zapisu, odczytu, atomowości oraz przetrwania cleanupu obu `AiRuns`.
 Finalny live baseline używa wyłącznie danych syntetycznych, wymaga osobnej
 zgody, preflightu oraz limitów 48 logicznych wywołań, 56 prób i USD 3.00. Runner v1 planuje
 dokładnie 46 wywołań i wymaga `AI_MAX_RETRIES=0`, ponieważ błąd providera nie udostępnia
-jeszcze bezpiecznego rozliczenia prób. Wersjonowany katalog cen nie zawiera niezatwierdzonych
-stawek, więc preflight pozostaje zablokowany. Baseline nie został uruchomiony podczas
-implementacji; rzeczywisty koszt wynosi USD 0, a faza pozostaje w `REVIEW`. Nigdy nie
-commituj `.env` ani kluczy. Pełny kontrakt, konfiguracja, bezpieczeństwo i ograniczenia są
-opisane w `docs/ai-gateway.md`.
+jeszcze bezpiecznego rozliczenia prób. Credential-free `npm run eval:live:preflight` oblicza
+ten sam plan i pokazuje, że aktualny Terra przekracza cap, a porównawczy Luna mieści się w
+cap; nie zmienia to runtime defaultu ani nie autoryzuje zmiany modelu. Baseline nie został
+uruchomiony; rzeczywisty koszt wynosi USD 0, a faza pozostaje w `REVIEW`. Nigdy nie commituj
+`.env` ani kluczy. Pełny kontrakt, konfiguracja, bezpieczeństwo i ograniczenia są opisane w
+`docs/ai-gateway.md`.
 
 ## API
 
