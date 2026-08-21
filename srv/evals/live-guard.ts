@@ -4,10 +4,11 @@ import {
   USD_MICROS_PER_CENT,
   estimateCallCostUsdMicros,
   findModelPrice,
-  parseAiPriceSnapshot,
+  requireVerifiedAiPriceSnapshot,
   sumUsdMicros,
   type AiPriceSnapshot,
   type BillableTokenUsage,
+  type VerifiedAiPriceSnapshot,
 } from './price-snapshot.ts';
 
 export const LIVE_EVAL_HARD_CAPS = Object.freeze({
@@ -52,7 +53,7 @@ export interface LiveEvalCallEstimate {
 
 export interface LiveEvalBudgetEstimate {
   readonly limits: LiveEvalLimits;
-  readonly priceSnapshot: AiPriceSnapshot;
+  readonly priceSnapshot: VerifiedAiPriceSnapshot;
   readonly plannedLogicalCalls: number;
   readonly plannedMaximumAttempts: number;
   readonly plannedMaximumCostUsdMicros: number;
@@ -170,7 +171,7 @@ function sumSafeIntegers(values: readonly number[], label: string): number {
 export function estimateLiveEvaluationBudget(
   input: EstimateLiveEvaluationBudgetInput,
 ): LiveEvalBudgetEstimate {
-  const priceSnapshot = parseAiPriceSnapshot(input.priceSnapshot);
+  const priceSnapshot = requireVerifiedAiPriceSnapshot(input.priceSnapshot);
   const calls = input.plannedCalls.map((call, index): LiveEvalCallEstimate => {
     const estimate = estimateMaximumCallCost(priceSnapshot, call);
     return {

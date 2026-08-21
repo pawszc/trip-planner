@@ -36,33 +36,52 @@ const modelPriceSchema = z
   })
   .strict();
 
-export const aiPriceSnapshotSchema = z
-  .object({
-    schemaVersion: z.literal(AI_PRICE_SNAPSHOT_SCHEMA_VERSION),
-    priceCatalogVersion: z.literal(NARRATIVE_PRICE_CATALOG_VERSION),
-    pricingVerifiedAt: strictIsoDate,
-    currency: z.literal('USD'),
-    tokenUnit: z.literal(TOKENS_PER_PRICE_UNIT),
-    models: z.array(modelPriceSchema),
-  })
-  .strict()
-  .superRefine((snapshot, refinement) => {
-    const seen = new Set<string>();
-    for (const [index, price] of snapshot.models.entries()) {
-      const key = `${price.provider}:${price.model}`;
-      if (seen.has(key)) {
-        refinement.addIssue({
-          code: 'custom',
-          path: ['models', index],
-          message: 'A price snapshot cannot duplicate a provider/model pair.',
-        });
-      }
-      seen.add(key);
+const priceSnapshotShape = {
+  schemaVersion: z.literal(AI_PRICE_SNAPSHOT_SCHEMA_VERSION),
+  priceCatalogVersion: z.literal(NARRATIVE_PRICE_CATALOG_VERSION),
+  currency: z.literal('USD'),
+  tokenUnit: z.literal(TOKENS_PER_PRICE_UNIT),
+  models: z.array(modelPriceSchema),
+} as const;
+
+function rejectDuplicateProviderModels(
+  snapshot: {
+    readonly models: readonly {
+      readonly provider: AiProviderType;
+      readonly model: string;
+    }[];
+  },
+  refinement: z.RefinementCtx,
+): void {
+  const seen = new Set<string>();
+  for (const [index, price] of snapshot.models.entries()) {
+    const key = `${price.provider}:${price.model}`;
+    if (seen.has(key)) {
+      refinement.addIssue({
+        code: 'custom',
+        path: ['models', index],
+        message: 'A price snapshot cannot duplicate a provider/model pair.',
+      });
     }
-  });
+    seen.add(key);
+  }
+}
+
+/** Schema v1 remains compatible with snapshots created before verification metadata was added. */
+export const aiPriceSnapshotSchema = z
+  .object({ ...priceSnapshotShape, pricingVerifiedAt: strictIsoDate.optional() })
+  .strict()
+  .superRefine(rejectDuplicateProviderModels);
+
+/** Strict preflight-only contract: live cost authorization always requires verified pricing. */
+export const verifiedAiPriceSnapshotSchema = z
+  .object({ ...priceSnapshotShape, pricingVerifiedAt: strictIsoDate })
+  .strict()
+  .superRefine(rejectDuplicateProviderModels);
 
 export type AiModelPrice = z.infer<typeof modelPriceSchema>;
 export type AiPriceSnapshot = z.infer<typeof aiPriceSnapshotSchema>;
+export type VerifiedAiPriceSnapshot = z.infer<typeof verifiedAiPriceSnapshotSchema>;
 
 export interface BillableTokenUsage {
   readonly inputTokens: number;
@@ -84,6 +103,17 @@ export function parseAiPriceSnapshot(input: unknown): AiPriceSnapshot {
     throw new EvalContractError(
       'INVALID_EVAL_INPUT',
       'The AI price snapshot failed its strict local schema.',
+    );
+  }
+  return deepFreeze(parsed.data);
+}
+
+export function requireVerifiedAiPriceSnapshot(input: unknown): VerifiedAiPriceSnapshot {
+  const parsed = verifiedAiPriceSnapshotSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new EvalContractError(
+      'LIVE_EVAL_BLOCKED',
+      'Live evaluation requires a strict price snapshot with a valid pricing verification date.',
     );
   }
   return deepFreeze(parsed.data);

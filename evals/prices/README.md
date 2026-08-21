@@ -42,6 +42,8 @@ Anthropic początkowo ogłosił 2 USD/MTok input i 10 USD/MTok output jako cenę
 promocyjną do 2026-08-31. W aktualizacji z 2026-08-10 firma uczyniła tę cenę
 permanentną i anulowała planowaną podwyżkę do 3 USD/MTok input oraz 15 USD/MTok
 output od 2026-09-01.
+Przy rozbieżności z nadal niezsynchronizowanymi stronami pricing docs rozstrzygającym
+źródłem jest późniejszy changelog Anthropic z 2026-08-10.
 
 Z tego powodu snapshot nie zawiera pricingValidThrough i nie ma guardu
 wygasającego 2026-08-31. Każda przyszła zmiana oficjalnej ceny nadal wymaga

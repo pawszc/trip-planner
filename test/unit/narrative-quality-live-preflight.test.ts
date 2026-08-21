@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadAiConfig } from '../../srv/ai/config.ts';
 import { canonicalizeJson } from '../../srv/ai/contracts.ts';
 import { buildNarrativeLiveEvalCostPreflight } from '../../srv/evals/live-preflight.ts';
-import { loadAiPriceSnapshot, type AiPriceSnapshot } from '../../srv/evals/price-snapshot.ts';
+import {
+  loadAiPriceSnapshot,
+  parseAiPriceSnapshot,
+  type AiPriceSnapshot,
+} from '../../srv/evals/price-snapshot.ts';
 import {
   createNarrativeLiveCostScenarioConfig,
   narrativeLiveCostPreflightOutputSchema,
@@ -274,6 +278,27 @@ describe('credential-free narrative live cost preflight', () => {
     expect(lines.map((line) => JSON.parse(line))).toEqual([
       { code: 'LIVE_EVAL_BLOCKED', status: 'COST_PREFLIGHT_FAILED' },
     ]);
+  });
+
+  it('rejects a legacy v1 snapshot without a verification date before fetch or partial output', () => {
+    const legacyInput: Record<string, unknown> = { ...loadAiPriceSnapshot() };
+    delete legacyInput.pricingVerifiedAt;
+    const legacySnapshot = parseAiPriceSnapshot(legacyInput);
+    const fetchSpy = vi.fn(() => {
+      throw new Error('Missing price verification must block before fetch.');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const lines: string[] = [];
+
+    expect(
+      runNarrativeQualityLiveCostPreflightScript((line) => lines.push(line), {
+        loadPriceSnapshot: () => legacySnapshot,
+      }),
+    ).toBe(1);
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      { code: 'LIVE_EVAL_BLOCKED', status: 'COST_PREFLIGHT_FAILED' },
+    ]);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('redacts raw thrown errors from the failure output', () => {

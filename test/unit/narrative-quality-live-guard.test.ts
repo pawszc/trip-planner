@@ -13,6 +13,7 @@ import {
   estimateCallCostUsdMicros,
   formatUsdMicros,
   parseAiPriceSnapshot,
+  requireVerifiedAiPriceSnapshot,
   type AiModelPrice,
 } from '../../srv/evals/price-snapshot.ts';
 
@@ -112,15 +113,21 @@ describe('integer price snapshot arithmetic', () => {
     ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
   });
 
-  it('requires a strict verification date and rejects unversioned expiry metadata', () => {
+  it('keeps legacy v1 compatible while the verified preflight contract requires a valid date', () => {
     const withoutVerificationDate: Record<string, unknown> = { ...priceSnapshot() };
     delete withoutVerificationDate.pricingVerifiedAt;
-    expect(() => parseAiPriceSnapshot(withoutVerificationDate)).toThrowError(
-      expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }),
+    const legacySnapshot = parseAiPriceSnapshot(withoutVerificationDate);
+    expect(legacySnapshot.pricingVerifiedAt).toBeUndefined();
+    expect(() => requireVerifiedAiPriceSnapshot(legacySnapshot)).toThrowError(
+      expect.objectContaining({ code: 'LIVE_EVAL_BLOCKED' }),
     );
     expect(() =>
       parseAiPriceSnapshot({ ...priceSnapshot(), pricingVerifiedAt: '2026-02-30' }),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+    expect(() =>
+      requireVerifiedAiPriceSnapshot({ ...priceSnapshot(), pricingVerifiedAt: '2026-02-30' }),
+    ).toThrowError(expect.objectContaining({ code: 'LIVE_EVAL_BLOCKED' }));
+    expect(requireVerifiedAiPriceSnapshot(priceSnapshot()).pricingVerifiedAt).toBe('2026-08-21');
     expect(() =>
       parseAiPriceSnapshot({ ...priceSnapshot(), pricingValidThrough: '2026-08-31' }),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
@@ -237,6 +244,22 @@ describe('live eval preflight and stop-before-next-call guard', () => {
     );
     expect(() =>
       readLiveEvalLimits({ AI_LIVE_EVAL_MAX_ESTIMATED_COST_USD_CENTS: '301' }),
+    ).toThrowError(expect.objectContaining({ code: 'LIVE_EVAL_BLOCKED' }));
+  });
+
+  it('blocks a legacy v1 snapshot without verification metadata at the production preflight', () => {
+    const legacyInput: Record<string, unknown> = { ...priceSnapshot() };
+    delete legacyInput.pricingVerifiedAt;
+    const legacySnapshot = parseAiPriceSnapshot(legacyInput);
+
+    expect(() =>
+      preflightLiveEvaluation({
+        env: enabledEnv,
+        aiEnabled: true,
+        credentialsConfigured: true,
+        priceSnapshot: legacySnapshot,
+        plannedCalls: [callBudget()],
+      }),
     ).toThrowError(expect.objectContaining({ code: 'LIVE_EVAL_BLOCKED' }));
   });
 
