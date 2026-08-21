@@ -50,6 +50,7 @@ function configuredPriceSnapshot(config: AiConfig): AiPriceSnapshot {
   return parseAiPriceSnapshot({
     schemaVersion: 'ai-price-snapshot-schema-v1',
     priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
+    pricingVerifiedAt: '2026-08-21',
     currency: 'USD',
     tokenUnit: 1_000_000,
     models: uniqueProfiles.map(({ provider, model }) => ({
@@ -219,6 +220,16 @@ describe('narrative live-eval plan and preflight', () => {
       emptyPrices: false,
     },
     {
+      name: 'missing OpenAI credential',
+      environment: { ...enabledEnvironment, OPENAI_API_KEY: undefined },
+      emptyPrices: false,
+    },
+    {
+      name: 'missing Anthropic credential',
+      environment: { ...enabledEnvironment, ANTHROPIC_API_KEY: undefined },
+      emptyPrices: false,
+    },
+    {
       name: 'unknown model pricing',
       environment: enabledEnvironment,
       emptyPrices: true,
@@ -235,6 +246,7 @@ describe('narrative live-eval plan and preflight', () => {
       ? parseAiPriceSnapshot({
           schemaVersion: 'ai-price-snapshot-schema-v1',
           priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
+          pricingVerifiedAt: '2026-08-21',
           currency: 'USD',
           tokenUnit: 1_000_000,
           models: [],
@@ -259,6 +271,10 @@ describe('narrative live-eval plan and preflight', () => {
     const environment = { ...enabledEnvironment, AI_MAX_RETRIES: '1' };
     const config = loadAiConfig(environment);
     let factoryCalls = 0;
+    const plan = createNarrativeQualityLiveEvalPlan({ config });
+
+    expect(plan.plannedMaximumAttempts).toBe(92);
+    expect(plan.calls.every(({ maximumAttempts }) => maximumAttempts === 2)).toBe(true);
 
     await expect(
       runNarrativeQualityLiveEvaluation({
@@ -474,8 +490,21 @@ describe('narrative live-eval CLI boundary', () => {
     );
   });
 
-  it('emits one safe failure and never creates an executor when opt-in is missing', async () => {
-    const environment = { ...enabledEnvironment, AI_LIVE_EVAL_ENABLED: 'false' };
+  it.each([
+    {
+      name: 'live-eval opt-in',
+      environment: { ...enabledEnvironment, AI_LIVE_EVAL_ENABLED: 'false' },
+    },
+    { name: 'gateway opt-in', environment: { ...enabledEnvironment, AI_ENABLED: 'false' } },
+    {
+      name: 'OpenAI credential',
+      environment: { ...enabledEnvironment, OPENAI_API_KEY: undefined },
+    },
+    {
+      name: 'Anthropic credential',
+      environment: { ...enabledEnvironment, ANTHROPIC_API_KEY: undefined },
+    },
+  ])('requires $name before the live CLI creates an executor', async ({ environment }) => {
     const config = loadAiConfig(environment);
     const lines: string[] = [];
     let executorFactories = 0;
@@ -507,13 +536,43 @@ describe('narrative live-eval CLI boundary', () => {
 });
 
 describe('versioned price catalog loader', () => {
-  it('loads the checked-in strict catalog without inventing model prices', () => {
+  it('loads the exact checked-in verified API prices', () => {
     const snapshot = loadAiPriceSnapshot();
-    expect(snapshot).toMatchObject({
+    expect(snapshot).toEqual({
+      schemaVersion: 'ai-price-snapshot-schema-v1',
       priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
+      pricingVerifiedAt: '2026-08-21',
       currency: 'USD',
       tokenUnit: 1_000_000,
-      models: [],
+      models: [
+        {
+          provider: 'ANTHROPIC',
+          model: 'claude-sonnet-5',
+          inputUsdMicrosPerMillionTokens: 2_000_000,
+          outputUsdMicrosPerMillionTokens: 10_000_000,
+          cacheReadUsdMicrosPerMillionTokens: 200_000,
+          cacheWriteUsdMicrosPerMillionTokens: 2_500_000,
+          reasoningUsdMicrosPerMillionTokens: 10_000_000,
+        },
+        {
+          provider: 'OPENAI',
+          model: 'gpt-5.6-terra',
+          inputUsdMicrosPerMillionTokens: 2_000_000,
+          outputUsdMicrosPerMillionTokens: 12_000_000,
+          cacheReadUsdMicrosPerMillionTokens: 200_000,
+          cacheWriteUsdMicrosPerMillionTokens: 2_500_000,
+          reasoningUsdMicrosPerMillionTokens: 12_000_000,
+        },
+        {
+          provider: 'OPENAI',
+          model: 'gpt-5.6-luna',
+          inputUsdMicrosPerMillionTokens: 200_000,
+          outputUsdMicrosPerMillionTokens: 1_200_000,
+          cacheReadUsdMicrosPerMillionTokens: 20_000,
+          cacheWriteUsdMicrosPerMillionTokens: 250_000,
+          reasoningUsdMicrosPerMillionTokens: 1_200_000,
+        },
+      ],
     });
   });
 

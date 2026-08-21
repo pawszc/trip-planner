@@ -30,6 +30,7 @@ function priceSnapshot(price: AiModelPrice = modelPrice) {
   return {
     schemaVersion: 'ai-price-snapshot-schema-v1' as const,
     priceCatalogVersion: NARRATIVE_PRICE_CATALOG_VERSION,
+    pricingVerifiedAt: '2026-08-21',
     currency: 'USD' as const,
     tokenUnit: 1_000_000 as const,
     models: [price],
@@ -108,6 +109,20 @@ describe('integer price snapshot arithmetic', () => {
         ...priceSnapshot(),
         models: [{ ...modelPrice, inputUsdMicrosPerMillionTokens: 0.5 }],
       }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+  });
+
+  it('requires a strict verification date and rejects unversioned expiry metadata', () => {
+    const withoutVerificationDate: Record<string, unknown> = { ...priceSnapshot() };
+    delete withoutVerificationDate.pricingVerifiedAt;
+    expect(() => parseAiPriceSnapshot(withoutVerificationDate)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }),
+    );
+    expect(() =>
+      parseAiPriceSnapshot({ ...priceSnapshot(), pricingVerifiedAt: '2026-02-30' }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+    expect(() =>
+      parseAiPriceSnapshot({ ...priceSnapshot(), pricingValidThrough: '2026-08-31' }),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
   });
 });

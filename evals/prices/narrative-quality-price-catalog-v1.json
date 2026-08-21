@@ -1,7 +1,36 @@
 {
   "schemaVersion": "ai-price-snapshot-schema-v1",
   "priceCatalogVersion": "narrative-quality-price-catalog-v1",
+  "pricingVerifiedAt": "2026-08-21",
   "currency": "USD",
   "tokenUnit": 1000000,
-  "models": []
+  "models": [
+    {
+      "provider": "ANTHROPIC",
+      "model": "claude-sonnet-5",
+      "inputUsdMicrosPerMillionTokens": 2000000,
+      "outputUsdMicrosPerMillionTokens": 10000000,
+      "cacheReadUsdMicrosPerMillionTokens": 200000,
+      "cacheWriteUsdMicrosPerMillionTokens": 2500000,
+      "reasoningUsdMicrosPerMillionTokens": 10000000
+    },
+    {
+      "provider": "OPENAI",
+      "model": "gpt-5.6-terra",
+      "inputUsdMicrosPerMillionTokens": 2000000,
+      "outputUsdMicrosPerMillionTokens": 12000000,
+      "cacheReadUsdMicrosPerMillionTokens": 200000,
+      "cacheWriteUsdMicrosPerMillionTokens": 2500000,
+      "reasoningUsdMicrosPerMillionTokens": 12000000
+    },
+    {
+      "provider": "OPENAI",
+      "model": "gpt-5.6-luna",
+      "inputUsdMicrosPerMillionTokens": 200000,
+      "outputUsdMicrosPerMillionTokens": 1200000,
+      "cacheReadUsdMicrosPerMillionTokens": 20000,
+      "cacheWriteUsdMicrosPerMillionTokens": 250000,
+      "reasoningUsdMicrosPerMillionTokens": 1200000
+    }
+  ]
 }

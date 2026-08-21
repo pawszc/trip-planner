@@ -217,8 +217,12 @@ Finalny live baseline jest osobną ścieżką od smoke. Wymaga
 `AI_LIVE_EVAL_ENABLED=true`, istniejącego gateway opt-in, credentiali, znanych
 wersjonowanych cen i osobnej zgody na dokładny plan. Preflight oraz sequential reservation
 guard egzekwują maksymalnie 48 logical calls, 56 attempts i USD 3.00 przed każdym call.
-Plan v1 ma dokładnie 46 calls i wymaga `AI_MAX_RETRIES=0`; checked-in katalog cen nie zawiera
-niezatwierdzonych stawek, więc obecnie blokuje się przed pierwszym call.
+Plan v1 ma dokładnie 46 calls i wymaga `AI_MAX_RETRIES=0`. Osobny
+`npm run eval:live:preflight` działa bez opt-inów i credentiali, nie konstruuje executora,
+adaptera, gatewaya ani bazy oraz używa tej samej czystej logiki planu i kosztu. Oficjalny
+snapshot cen z 2026-08-21 daje ceiling 6,950,969 USD micros dla aktualnego Terra i 1,056,177
+USD micros dla porównawczego Luna; tylko Luna mieści się w cap. To porównanie nie zmienia
+runtime defaultu Terra ani nie stanowi rekomendacji zmiany modelu.
 Nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI. W trakcie
 implementacji nie wykonano żadnego live call; rzeczywisty koszt wynosi USD 0.
 

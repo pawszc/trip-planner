@@ -41,13 +41,36 @@ export interface LiveEvalPreflightInput {
   readonly plannedCalls: readonly LogicalCallBudget[];
 }
 
-export interface LiveEvalPreflight {
-  readonly enabled: true;
+export interface LiveEvalCallEstimate {
+  readonly plannedSequence: number;
+  readonly provider: AiProvider;
+  readonly configuredModel: string;
+  readonly maximumAttempts: number;
+  readonly oneAttemptMaximumCostUsdMicros: number;
+  readonly allAttemptsMaximumCostUsdMicros: number;
+}
+
+export interface LiveEvalBudgetEstimate {
   readonly limits: LiveEvalLimits;
   readonly priceSnapshot: AiPriceSnapshot;
   readonly plannedLogicalCalls: number;
   readonly plannedMaximumAttempts: number;
   readonly plannedMaximumCostUsdMicros: number;
+  readonly withinLogicalCallCap: boolean;
+  readonly withinProviderAttemptCap: boolean;
+  readonly withinCostCap: boolean;
+  readonly withinAllCaps: boolean;
+  readonly calls: readonly LiveEvalCallEstimate[];
+}
+
+export interface LiveEvalPreflight extends LiveEvalBudgetEstimate {
+  readonly enabled: true;
+}
+
+export interface EstimateLiveEvaluationBudgetInput {
+  readonly limits: LiveEvalLimits;
+  readonly priceSnapshot: unknown;
+  readonly plannedCalls: readonly LogicalCallBudget[];
 }
 
 function parseExactBoolean(value: string | undefined, field: string): boolean {
@@ -126,6 +149,74 @@ function estimateMaximumCallCost(
   };
 }
 
+function sumSafeIntegers(values: readonly number[], label: string): number {
+  const total = values.reduce((sum, value) => {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new EvalContractError('LIVE_EVAL_BLOCKED', `${label} contains an invalid integer.`);
+    }
+    return sum + BigInt(value);
+  }, 0n);
+  if (total > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new EvalContractError('LIVE_EVAL_BLOCKED', `${label} is too large.`);
+  }
+  return Number(total);
+}
+
+/**
+ * Pure, credential-free budget estimation shared by the operator-only cost preflight and the
+ * production live preflight. It calculates an over-cap plan completely so callers can report the
+ * exact comparison; only the production authorization wrapper turns cap flags into a rejection.
+ */
+export function estimateLiveEvaluationBudget(
+  input: EstimateLiveEvaluationBudgetInput,
+): LiveEvalBudgetEstimate {
+  const priceSnapshot = parseAiPriceSnapshot(input.priceSnapshot);
+  const calls = input.plannedCalls.map((call, index): LiveEvalCallEstimate => {
+    const estimate = estimateMaximumCallCost(priceSnapshot, call);
+    return {
+      plannedSequence: index + 1,
+      provider: call.provider,
+      configuredModel: call.configuredModel,
+      maximumAttempts: call.maxAttempts,
+      oneAttemptMaximumCostUsdMicros: estimate.oneAttemptUsdMicros,
+      allAttemptsMaximumCostUsdMicros: estimate.allAttemptsUsdMicros,
+    };
+  });
+  const plannedLogicalCalls = calls.length;
+  const plannedMaximumAttempts = sumSafeIntegers(
+    calls.map(({ maximumAttempts }) => maximumAttempts),
+    'Live-eval planned attempts',
+  );
+  const plannedMaximumCostUsdMicros = sumUsdMicros(
+    calls.map(({ allAttemptsMaximumCostUsdMicros }) => allAttemptsMaximumCostUsdMicros),
+  );
+  const withinLogicalCallCap =
+    plannedLogicalCalls > 0 && plannedLogicalCalls <= input.limits.maxLogicalCalls;
+  const withinProviderAttemptCap = plannedMaximumAttempts <= input.limits.maxProviderAttempts;
+  const withinCostCap = plannedMaximumCostUsdMicros <= input.limits.maxEstimatedCostUsdMicros;
+  return {
+    limits: input.limits,
+    priceSnapshot,
+    plannedLogicalCalls,
+    plannedMaximumAttempts,
+    plannedMaximumCostUsdMicros,
+    withinLogicalCallCap,
+    withinProviderAttemptCap,
+    withinCostCap,
+    withinAllCaps: withinLogicalCallCap && withinProviderAttemptCap && withinCostCap,
+    calls,
+  };
+}
+
+export function assertLiveEvaluationBudgetWithinLimits(estimate: LiveEvalBudgetEstimate): void {
+  if (!estimate.withinAllCaps) {
+    throw new EvalContractError(
+      'LIVE_EVAL_BLOCKED',
+      'The conservative live-eval plan exceeds a configured phase cap.',
+    );
+  }
+}
+
 export function preflightLiveEvaluation(input: LiveEvalPreflightInput): LiveEvalPreflight {
   if (!parseExactBoolean(input.env.AI_LIVE_EVAL_ENABLED, 'AI_LIVE_EVAL_ENABLED')) {
     throw new EvalContractError(
@@ -146,36 +237,13 @@ export function preflightLiveEvaluation(input: LiveEvalPreflightInput): LiveEval
     );
   }
   const limits = readLiveEvalLimits(input.env);
-  const priceSnapshot = parseAiPriceSnapshot(input.priceSnapshot);
-  const plannedLogicalCalls = input.plannedCalls.length;
-  const plannedMaximumAttempts = input.plannedCalls.reduce(
-    (sum, call) => sum + call.maxAttempts,
-    0,
-  );
-  const plannedMaximumCostUsdMicros = sumUsdMicros(
-    input.plannedCalls.map(
-      (call) => estimateMaximumCallCost(priceSnapshot, call).allAttemptsUsdMicros,
-    ),
-  );
-  if (
-    plannedLogicalCalls === 0 ||
-    plannedLogicalCalls > limits.maxLogicalCalls ||
-    plannedMaximumAttempts > limits.maxProviderAttempts ||
-    plannedMaximumCostUsdMicros > limits.maxEstimatedCostUsdMicros
-  ) {
-    throw new EvalContractError(
-      'LIVE_EVAL_BLOCKED',
-      'The conservative live-eval plan exceeds a configured phase cap.',
-    );
-  }
-  return {
-    enabled: true,
+  const estimate = estimateLiveEvaluationBudget({
     limits,
-    priceSnapshot,
-    plannedLogicalCalls,
-    plannedMaximumAttempts,
-    plannedMaximumCostUsdMicros,
-  };
+    priceSnapshot: input.priceSnapshot,
+    plannedCalls: input.plannedCalls,
+  });
+  assertLiveEvaluationBudgetWithinLimits(estimate);
+  return { enabled: true, ...estimate };
 }
 
 export interface LiveCallReservation {

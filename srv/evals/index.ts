@@ -1,6 +1,7 @@
 export * from './baseline.ts';
 export * from './dataset.ts';
 export * from './live-guard.ts';
+export * from './live-preflight.ts';
 export * from './live-runner.ts';
 export * from './metrics.ts';
 export * from './offline-harness.ts';

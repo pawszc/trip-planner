@@ -13,6 +13,16 @@ export const USD_MICROS_PER_CENT = 10_000;
 export const TOKENS_PER_PRICE_UNIT = 1_000_000;
 
 const nonNegativeSafeInteger = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+const strictIsoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/u)
+  .refine(
+    (value) => {
+      const parsed = new Date(`${value}T00:00:00.000Z`);
+      return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+    },
+    { message: 'Expected a real calendar date in YYYY-MM-DD format.' },
+  );
 
 const modelPriceSchema = z
   .object({
@@ -30,6 +40,7 @@ export const aiPriceSnapshotSchema = z
   .object({
     schemaVersion: z.literal(AI_PRICE_SNAPSHOT_SCHEMA_VERSION),
     priceCatalogVersion: z.literal(NARRATIVE_PRICE_CATALOG_VERSION),
+    pricingVerifiedAt: strictIsoDate,
     currency: z.literal('USD'),
     tokenUnit: z.literal(TOKENS_PER_PRICE_UNIT),
     models: z.array(modelPriceSchema),
@@ -180,7 +191,7 @@ export function sumUsdMicros(values: readonly number[]): number {
   return Number(total);
 }
 
-export function formatUsdMicros(usdMicros: number): string {
+export function formatUsdMicrosDecimal(usdMicros: number): string {
   if (!Number.isSafeInteger(usdMicros) || usdMicros < 0) {
     throw new EvalContractError(
       'INVALID_EVAL_INPUT',
@@ -190,5 +201,9 @@ export function formatUsdMicros(usdMicros: number): string {
   const micros = BigInt(usdMicros);
   const whole = micros / BigInt(USD_MICROS_PER_USD);
   const fraction = String(micros % BigInt(USD_MICROS_PER_USD)).padStart(6, '0');
-  return `${whole}.${fraction} USD`;
+  return `${whole}.${fraction}`;
+}
+
+export function formatUsdMicros(usdMicros: number): string {
+  return `${formatUsdMicrosDecimal(usdMicros)} USD`;
 }

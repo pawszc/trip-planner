@@ -104,9 +104,13 @@ credentiali, wersjonowanej ceny każdego dokładnego configured modelu i planu m
 się we wszystkich limitach. Unknown price lub przekroczenie rezerwacji blokuje call przed
 providerem. Runner v1 ma dokładnie 46 logical calls i wymaga `AI_MAX_RETRIES=0`: po thrown
 provider failure gateway nie udostępnia jeszcze bezpiecznego attempts/usage settlement, więc
-runner zatrzymuje się bez częściowego raportu. Checked-in katalog cen ma pustą listę modeli,
-aby nie wymyślać stawek; zatwierdzone exact rates są warunkiem osobnego live baseline.
-Po przejściu wszystkich guardów każdy baseline dostaje odizolowany SQLite store pod
+runner zatrzymuje się bez częściowego raportu. Checked-in katalog cen zawiera oficjalne
+stawki API zweryfikowane 2026-08-21. Credential-free `npm run eval:live:preflight` używa
+dokładnie tego samego frozen planu i integer-only cost estimatora, ale nie czyta opt-inów ani
+credentiali i nie ma ścieżki do executora, adaptera, gatewaya lub audit store. Pokazuje, że
+aktualny profil Terra przekracza cap USD 3, a porównawczy profil Luna mieści się w cap; nie
+zmienia to runtime defaultu ani nie autoryzuje zmiany modelu. Po przejściu wszystkich guardów
+produkcyjnych każdy baseline dostaje odizolowany SQLite store pod
 `.tools/narrative-live-eval/`; zawiera on wyłącznie allow-listed `AiRuns`, bez promptu,
 kontekstu, narracji, raw payloadu lub sekretu.
 

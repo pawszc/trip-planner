@@ -33,6 +33,7 @@
     "ai:smoke": "npm run ai:smoke:openai && npm run ai:smoke:anthropic",
     "eval:schema:check": "node --import tsx scripts/narrative-quality-schema-check.ts",
     "eval:offline": "node --import tsx scripts/narrative-quality-eval-offline.ts",
+    "eval:live:preflight": "node --import tsx scripts/narrative-quality-eval-live-preflight.ts",
     "eval:live": "node --env-file=.env --import tsx scripts/narrative-quality-eval-live.ts",
     "verify": "npm run lint && npm run typecheck && npm run eval:schema:check && npm run eval:offline && npm run test:unit && npm run test:integration && npm run build",
     "verify:full": "npm run verify && npm run test:e2e"

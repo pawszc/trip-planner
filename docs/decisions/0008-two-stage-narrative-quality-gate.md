@@ -167,9 +167,12 @@ Finalny live baseline jest osobną, domyślnie wyłączoną ścieżką. Wymaga j
 
 Preflight blokuje unknown pricing lub przekroczenie cap przed pierwszym call. Sequential
 guard rezerwuje worst-case attempts i koszt przed każdym kolejnym call i fail-closed blokuje
-operację, która mogłaby przekroczyć limit. Runner v1 planuje dokładnie 46 calls, a checked-in
-katalog ma pustą listę modeli, ponieważ faza nie zatwierdziła stawek dla exact configured
-models. CI, test, build, startup i postinstall nie mogą włączyć live eval.
+operację, która mogłaby przekroczyć limit. Runner v1 planuje dokładnie 46 calls. Checked-in
+katalog zawiera oficjalne stawki API zweryfikowane 2026-08-21, a osobna czysta komenda
+cost-preflight używa tego samego planera bez opt-inów, credentiali, executora lub sieci.
+Aktualny profil Terra przekracza cap USD 3; porównawczy Luna mieści się w cap, ale nie zmienia
+to profilu runtime i wymaga osobnej decyzji człowieka. CI, test, build, startup i postinstall
+nie mogą włączyć live eval.
 
 Podczas implementacji nie wykonano żadnego live ani paid call; rzeczywisty koszt wynosi USD 0. Finalny baseline wymaga osobnej zgody i nie został uruchomiony. Z tego powodu Faza 3B3
 pozostaje w statusie `REVIEW`, nawet po zielonej weryfikacji offline, i nie może zostać
