@@ -53,8 +53,21 @@ export type {
   SafeAiError,
 } from './errors.ts';
 export { redactSensitiveData } from './redaction.ts';
-export { NoopAiRunRecorder } from './telemetry.ts';
-export type { AiRunRecorder, AiRunStatus, AiRunTelemetryEvent } from './telemetry.ts';
+export {
+  AI_PRE_START_FAILURE_CODE_VALUES,
+  ConsoleAiOperationalSignalSink,
+  NoopAiOperationalSignalSink,
+  NoopAiRunRecorder,
+} from './telemetry.ts';
+export type {
+  AiOperationalSignalSink,
+  AiPreStartFailureCode,
+  AiPreStartFailureSignal,
+  AiRunRecorder,
+  AiRunStatus,
+  AiRunTelemetryEvent,
+  NarrativeAiTaskType,
+} from './telemetry.ts';
 export { AnthropicMessagesAdapter } from './adapters/anthropic-messages-adapter.ts';
 export { OpenAiResponsesAdapter } from './adapters/openai-responses-adapter.ts';
 export { CapAiRunStore } from './persistence/cap-ai-run-store.ts';

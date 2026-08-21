@@ -54,6 +54,9 @@ interface PersistedAiRun {
   taskType: 'DECIDE' | 'GENERATE' | 'JUDGE' | 'SMOKE';
   provider: 'OPENAI' | 'ANTHROPIC';
   configuredModel: string;
+  configuredEffort: string | null;
+  configuredMaxOutputTokens: number | null;
+  effectiveMaxOutputTokens: number | null;
   responseModel: string | null;
   promptVersion: string;
   schemaVersion: string;
@@ -85,6 +88,9 @@ function startedEvent(
     status: 'STARTED',
     provider: AiProvider.OPENAI,
     configuredModel: 'gpt-5.6-luna',
+    configuredEffort: 'none',
+    configuredMaxOutputTokens: 512,
+    effectiveMaxOutputTokens: 256,
     taskType: AiTaskType.DECIDE,
     promptVersion: 'prompt-v1',
     schemaVersion: 'schema-v1',
@@ -293,6 +299,9 @@ describe('internal CAP AiRuns persistence', () => {
       taskType: 'DECIDE',
       provider: 'OPENAI',
       configuredModel: 'gpt-5.6-luna',
+      configuredEffort: 'none',
+      configuredMaxOutputTokens: 512,
+      effectiveMaxOutputTokens: 256,
       responseModel: null,
       promptVersion: 'prompt-v1',
       schemaVersion: 'schema-v1',
@@ -336,6 +345,9 @@ describe('internal CAP AiRuns persistence', () => {
       provider: 'OPENAI',
       taskType: 'DECIDE',
       configuredModel: 'gpt-5.6-luna',
+      configuredEffort: 'none',
+      configuredMaxOutputTokens: 512,
+      effectiveMaxOutputTokens: 256,
       responseModel: 'gpt-5.6-luna-2026-08-01',
       inputFingerprint: fingerprint,
       promptVersion: 'prompt-v1',
@@ -368,6 +380,9 @@ describe('internal CAP AiRuns persistence', () => {
     const event = startedEvent('00000000-0000-4000-8000-000000000103', {
       provider: AiProvider.ANTHROPIC,
       configuredModel: 'claude-sonnet-5',
+      configuredEffort: 'low',
+      configuredMaxOutputTokens: 1_600,
+      effectiveMaxOutputTokens: 1_600,
       taskType: AiTaskType.GENERATE,
     });
     await recorder.record(event);
@@ -515,6 +530,9 @@ describe('full offline gateway persistence composition', () => {
       ID: aiRunId,
       status: 'STARTED',
       configuredModel: 'gpt-5.6-luna',
+      configuredEffort: 'none',
+      configuredMaxOutputTokens: 512,
+      effectiveMaxOutputTokens: 512,
       responseModel: null,
     });
     expect(result).toMatchObject({
@@ -538,6 +556,9 @@ describe('full offline gateway persistence composition', () => {
       taskType: 'DECIDE',
       provider: 'OPENAI',
       configuredModel: 'gpt-5.6-luna',
+      configuredEffort: 'none',
+      configuredMaxOutputTokens: 512,
+      effectiveMaxOutputTokens: 512,
       responseModel: 'gpt-5.6-luna-sqlite-snapshot',
       promptVersion: 'sqlite-composition-prompt-v1',
       schemaVersion: 'sqlite-composition-schema-v1',

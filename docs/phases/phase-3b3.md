@@ -10,15 +10,71 @@ uncertainty, provenance, and safety.
 
 ## Status
 
-`READY`
+`REVIEW`
 
-`READY` becomes effective only after this contract and its versioned synthetic golden
-dataset, schema, and rubric are merged to `main`. An open contract PR does not authorize
-implementation. Until merge, GitHub `main` and Notion remain `PLANNED`.
+The contract and its versioned synthetic golden dataset, schema, and rubric were merged to
+`main` before implementation started. The implementation now runs on its dedicated branch
+and is ready for the Draft PR review loop. `REVIEW` does not mean that the release gate has
+passed: the separately approved final live baseline has not been executed, so this phase
+cannot become `DONE`.
 
 The golden labels and initial thresholds are architect-curated for this phase. Changing a
 label, critical-case membership, formula, threshold, or cost cap during implementation is a
 contract change, not a test fix.
+
+### Implementation evidence
+
+- [x] `narrative-model-view-v1`, `narrative-quality-context-v1`, canonical fingerprints,
+      version bindings, size limits, excluded-value handling, and opaque provenance keys at
+      both model boundaries are implemented locally.
+- [x] The deterministic safety precheck, strict eight-dimension `JUDGE` contract, closed
+      reason catalog, full fingerprinted runtime rubric, and code-owned all-pass publication
+      policy are implemented.
+- [x] `RankedOptions.generateNarrative()` follows the short read → audited `GENERATE` →
+      local precheck → audited `JUDGE` → short write boundary and remains manual, opt-in,
+      and absent from `startPlanning` and the UI.
+- [x] Safe review/finding persistence, exact generate/judge audit linkage, additive legacy
+      nullability, and atomic reviewed narrative publication are implemented without
+      publishing internal review or audit entities through OData.
+- [x] Dataset loading, immutable fingerprint validation, metrics, privacy-safe reports,
+      baseline binding, integer-only cost estimation, schema parity, deterministic contract
+      replay, executable E2E properties, and fail-closed live preflight/budget guards are
+      implemented and covered by offline tests.
+- [x] The live runner freezes a 46-call synthetic-only plan, requires zero retries for complete
+      failure accounting, deploys an isolated safe-metadata `AiRuns` store only after preflight,
+      and cannot run while exact configured-model prices remain unapproved.
+- [x] No live or paid call was made during implementation or documentation work; actual cost
+      is USD 0.
+- [x] A failure before durable `STARTED` creates no review and no fabricated UUID, blocks the
+      provider and product write, and emits exactly one independent privacy-safe operational
+      signal with `providerCallAttempted=false`; post-`STARTED` paths retain their real audit.
+- [ ] The final synthetic live baseline still requires separate approval of its exact call
+      plan and conservative cost estimate. It was deliberately not run in this phase review.
+- [ ] `DONE` still requires a passing approved baseline, completed review, merge, and
+      verification on `main`.
+
+### Review item: precheck/JUDGE money boundary
+
+The frozen dataset assigns only deterministic format/safety cases such as R09 and R20 to
+`PRECHECK`; semantic wrong/new amounts, a new calculation, and filling an `UNKNOWN` value
+(R07, R08, and R10) are `JUDGE` cases, with R07 and R10 also in the stability subset.
+Implementation therefore keeps precheck format/safety-only: it may reject a mechanically
+recognizable forbidden money reformat, but semantic amount mismatch, calculation, or
+unknown filling must reach `JUDGE`. A broader literal reading of the exact-money bullet in
+Scope 3 would conflict with the frozen `expected.stage` labels. Review must confirm this
+boundary; the golden labels are not changed and the ambiguity is another reason not to mark
+the phase `DONE`.
+
+### Resolved review item: failures before durable audit
+
+Review persistence deliberately validates a non-null `generateAiRunId` against an actual
+persisted `AiRuns` row. The gateway deliberately performs no recorder write for a disabled or
+invalid pre-audit call, and a failed `STARTED` write is not durable by definition. Those paths
+make zero provider calls, persist zero candidate/product/review rows, and never fabricate an
+audit UUID. Instead, an independent injectable sink receives exactly one allowlisted
+`AI_PRE_START_FAILURE` without `aiRunId`, prompt/input/candidate/output, raw error/cause/stack,
+PII, or secrets. A pre-`STARTED` `JUDGE` keeps the truthful earlier `GENERATE` audit but still
+creates no review or product. This resolves the linkage gap without weakening the schema.
 
 ## Preconditions
 
@@ -41,6 +97,10 @@ contract change, not a test fix.
   freshness, timestamps, fixture version, and `demonstrationData`, but does not send raw
   `sourceUrl`, `externalItemId`, control characters, HTML, or other provider-shaped values
   that are not needed to write the narrative.
+- At the model-safe boundary, provenance keys become deterministic
+  `narrative-provenance-fact-key-v1` opaque keys derived only from safe `factId`, never from
+  provider identity, `sourceKey`, external ID, URL, or contexts. Internal keys and frozen
+  dataset authoring remain unchanged.
 - The model view carries the original context fingerprint and its own canonical fingerprint.
   It is used by both `GENERATE` and `JUDGE`; the full internal context remains available to
   local validators and persistence checks.
@@ -59,6 +119,10 @@ contract change, not a test fix.
 ### 2. Strict `JUDGE` output and reason catalog
 
 - Add versioned `JUDGE` prompt, schema, rubric, and publication policy.
+- Send the full structured rubric with exact version, canonical fingerprint, eight dimension
+  definitions, `PASS`/`FAIL` semantics, the complete reason catalog and reason →
+  dimension/severity mappings. A checked-in golden JSON and parity tests bind the single
+  typed runtime source; version-only judging is invalid.
 - The strict output echoes the exact quality-context and narrative fingerprints and returns
   every required dimension exactly once as `PASS` or `FAIL`:
   - `FACTUAL_ENTAILMENT`
@@ -99,7 +163,8 @@ contract change, not a test fix.
 ### 3. Deterministic post-`GENERATE` safety precheck
 
 - After existing schema/reference validation and before paid `JUDGE`, reject:
-  - URLs or Markdown links;
+  - URLs or Markdown links, including full/collapsed/image reference forms, definitions with
+    optional titles/whitespace, and autolinks;
   - HTML, scripts, event handlers, control characters, or Unicode bidi overrides;
   - reproduction of excluded source identifiers or values marked non-displayable;
   - money-like strings that are not an exact code-generated display value from a cited
@@ -135,7 +200,8 @@ audit/provider/audit → short product write`.
 - No DB transaction remains active during either provider call.
 - Add internal `NarrativeReviewRuns` and normalized `NarrativeReviewFindings`. They store
   planning/option linkage; scalar generate and optional judge `AiRun` IDs; context/model-view
-  and narrative fingerprints; prompt/schema/rubric/policy/profile versions; stage;
+  and narrative fingerprints; prompt/schema/rubric/policy/profile versions; nullable exact
+  `rubricFingerprint`; stage;
   `PUBLISH`/`REJECT`; dimension results; controlled codes/severity; counts; and timestamps.
   They never store prompt, context, candidate text, raw judge output, rationale, raw error,
   source URL/external ID, PII, secret, or credential.
@@ -153,6 +219,10 @@ audit/provider/audit → short product write`.
 - Add nullable/no-default configured effort and configured/effective output-token limits to
   `AiRuns`; new runs populate them, legacy rows remain null. This makes eval evidence
   reproducible without storing content.
+- A task that fails before durable `STARTED` has no truthful `AiRunId` and therefore creates
+  no review. It makes zero provider calls, persists zero candidate/product rows, and emits
+  exactly one allowlisted `AI_PRE_START_FAILURE` through an independent operational sink,
+  with no `aiRunId` or raw data. No fake audit UUID is allowed.
 
 ### 6. Synthetic golden data, metrics, and baseline
 
@@ -171,13 +241,24 @@ audit/provider/audit → short product write`.
 - Add four synthetic end-to-end cases: complete PLN, complete EUR, unknown/missing budget,
   and adversarial provider-shaped data. They exercise real `GENERATE → precheck → JUDGE`
   under the separately guarded live runner.
-- Add a machine-readable dataset schema and versioned rubric. Offline validation checks
-  exact counts, unique IDs, valid fact keys, labels, critical membership, reason codes,
-  dimensions, and immutable dataset fingerprint.
-- Add deterministic offline evaluation to normal verification and a separately guarded live
-  runner. Reports contain only case IDs, expected/actual labels and codes, versions,
+- Add a machine-readable dataset schema and versioned rubric. Standard verification first
+  generates JSON Schema from runtime Zod and compares canonical form/fingerprint with the
+  frozen checked-in schema, then checks exact counts, unique IDs, valid fact keys, labels,
+  critical membership, reason codes, dimensions, and immutable dataset fingerprint.
+- Add deterministic contract replay to normal verification and a separately guarded live
+  runner. Replay copies frozen expected labels to actual and therefore reports
+  `evidenceKind=CONTRACT_REPLAY` and `modelQualityMeasured=false`; it verifies contract and
+  harness integrity, not model quality. Reports contain only case IDs, expected/actual
+  labels and codes, versions,
   configured/response models, safe usage, latency, attempts, refusal state, and estimated
   cost—never raw prompts, contexts, narratives, or provider payloads.
+- Execute each E01–E04 `requiredProperties` ID through a closed, versioned deterministic
+  evaluator over exact candidate/context/model view/constraints. It may not use the same
+  `JUDGE` decision, dimensions, findings, or reason codes as proof. The privacy-safe report
+  exposes only property ID, pass/fail, and controlled failure code.
+- Name in-memory publication evidence explicitly
+  `publicationBundleLinkageValidInMemory`; real persistence/linkage is proved separately by
+  production `CapAiRunStore`/recorder/writer integration against CAP/SQLite.
 - A baseline manifest binds generator and judge provider/model/effort/token limits; every
   context/prompt/schema/rubric/policy/dataset/price version; and the report fingerprint.
   Changing any bound value requires a new passing baseline before re-enabling AI.
@@ -221,8 +302,8 @@ audit/provider/audit → short product write`.
   or judge count. Current default model names do not bypass the release gates.
 - `STARTED` must be durable before each provider call, terminal `SUCCEEDED` must be durable
   before a result is used, and required audit failures remain fail-closed.
-- Standard CI and offline eval are deterministic, credential-free, network-free, and cost
-  exactly USD 0.
+- Standard CI, schema parity, and offline contract replay are deterministic, credential-free,
+  network-free, and cost exactly USD 0. Contract replay is not a model-quality measurement.
 - Live evaluation uses synthetic data only. Real product enablement is a later privacy and
   operational decision.
 
@@ -253,8 +334,10 @@ average never masks one critical false accept.
 - Four `GENERATE` and four `JUDGE` logical calls.
 - 4/4 generated candidates pass existing local schema and exact-reference validation.
 - At least 3/4 receive final `PUBLISH`.
-- Zero critical narrative is published and zero adversarial payload is propagated.
-- Every accepted result has exact terminal generate/judge audits and review linkage.
+- Every authored `requiredProperties` evaluator passes independently of `JUDGE` output;
+  any property failure fails the gate even if `JUDGE` returns all eight `PASS` and no finding.
+- Every accepted result has exact terminal generate/judge audits and in-memory publication
+  bundle linkage; the report does not claim a DB write.
 - Every failure leaves deterministic options, constraints, budget, ranking, and sources
   unchanged.
 
@@ -284,23 +367,29 @@ average never masks one critical false accept.
 ## Acceptance criteria
 
 - The model-safe view removes unneeded untrusted fields while retaining sufficient facts,
-  provenance status, exact fact IDs, and deterministic lineage.
+  provenance status, exact fact IDs, deterministic lineage, and only opaque provenance keys
+  in fully serialized `GENERATE` and `JUDGE` inputs.
 - The quality context contains the exact validated candidate, confirmed constraints,
   fingerprints, and required versions without mutating the 3B2 grounded contract.
-- Strict judge schemas reject every invalid dimension, finding, reference, fingerprint,
-  version, or unknown field.
+- Strict judge schemas and rubric binding reject every incomplete/changed rubric, invalid
+  dimension, finding, reference, fingerprint, version, or unknown field.
 - Local precheck and code-owned all-pass policy are deterministic and cannot be overridden by
   model prose, averages, or a model-provided verdict.
 - No path persists a narrative without a successful precheck, exact terminal generate and
   judge audits, locally valid judge output, and code-owned `PUBLISH`.
-- Every reject/failure produces safe review evidence, zero candidate-text persistence, zero
-  partial narrative product records, and no deterministic-option mutation.
+- Every reject/failure after a truthful durable audit produces safe review evidence, zero
+  candidate-text persistence, zero partial narrative product records, and no
+  deterministic-option mutation. A pre-`STARTED` failure produces no review or fake UUID and
+  emits one independent privacy-safe operational signal instead.
 - Cleanup of either AI audit preserves durable review metadata and approved narratives.
 - Legacy 3B2 narratives remain explicitly unreviewed and are not backfilled as approved.
 - Dataset v1 is synthetic, schema-valid, fingerprinted, deterministic, and has the exact
   declared distribution and critical coverage.
 - Metric formulas and threshold edges are tested against hand-calculated fixtures.
-- Offline eval is in standard verification and performs no live/paid calls.
+- Runtime/frozen schema parity and deterministic contract replay are in standard verification,
+  perform no live/paid calls, and do not claim to measure model quality.
+- Live E2E required properties are deterministic and independent from the same `JUDGE`; real
+  CAP/SQLite integration separately proves publication/rejection persistence and cleanup.
 - Live eval requires explicit opt-in, passes preflight, enforces all caps, and produces a
   privacy-safe reproducible report.
 - The final baseline passes every quality gate before the phase can become `DONE`.
@@ -309,15 +398,18 @@ average never masks one critical false accept.
 
 ## Required tests
 
-- Unit tests for model-view projection, excluded-field removal, size limits, canonical
-  fingerprints, constraint snapshot, and immutability.
-- Unit tests for strict judge input/output, exact dimension set, reason-code catalog,
-  severity, block/fact references, consistency rules, and unknown-field rejection.
+- Unit tests for model-view projection, opaque provenance keys, full-input sentinel removal,
+  excluded-field removal, size limits, canonical fingerprints, constraint snapshot, and
+  immutability.
+- Unit tests for strict judge input/output, full golden-compatible rubric and drift
+  fingerprint/parity, exact dimension set, reason-code catalog, severity, block/fact
+  references, consistency rules, and unknown-field rejection.
 - Unit tests for precheck URL/Markdown/HTML/script/control/bidi/excluded-value and exact-money
   rules, including safe text that must not be overblocked.
 - Unit tests for every publication-policy branch and critical precedence.
-- Unit tests for dataset schema/loading, unique IDs, fact-key resolution, exact distribution,
-  critical/sentinel membership, fingerprint, and malformed goldens.
+- Unit tests for dataset schema/loading, runtime Zod versus frozen JSON Schema parity, unique
+  IDs, fact-key resolution, exact distribution, critical/sentinel membership, fingerprint,
+  and malformed goldens.
 - Unit tests for confusion matrix, precision/recall/F1, macro-F1, dimension F1, stability,
   percent deltas, call/attempt/cost caps, and threshold boundaries.
 - Unit tests for review/narrative persistence bundles, both exact AI-run links, safe metadata,
@@ -330,10 +422,17 @@ average never masks one critical false accept.
 - Integration tests proving rejected candidates leave durable safe review metadata but zero
   narrative product rows; successful cleanup of both `AiRuns` preserves review/narrative
   records; and internal entities are not public through OData.
+- Integration test using exact synthetic E2E data and production CAP/SQLite recorder/store/
+  writer, reading back every planning/option/audit link, context/model/narrative/quality/
+  rubric fingerprint, block and fact reference, plus atomic rejection and post-cleanup state.
 - Adversarial tests for semantic misuse of valid references, money/date/score/role changes,
   implicit unknown filling, unsupported guarantees/advice, PII/secret-shaped data, prompt
   injection, and cross-block contradiction.
-- Offline end-to-end eval tests with in-memory adapters and deterministic reports.
+- Offline contract-replay tests with in-memory adapters, deterministic reports, explicit
+  non-model-quality evidence semantics, and PASS/FAIL coverage for every E01–E04 required
+  property including an all-`PASS` judge masking regression.
+- Pre-`STARTED` tests for disabled/config/ID/fingerprint/time/insert failures in both tasks,
+  zero provider/product/review writes, no fake UUID, and exactly one raw-data-free signal.
 - Guard tests proving every standard command performs zero live/paid calls and the live runner
   refuses missing opt-in, unknown prices, invalid caps, or over-budget preflight.
 - Regression tests for every defect found during implementation.
@@ -378,7 +477,8 @@ Stop and escalate before:
 - All scope and acceptance criteria are implemented without out-of-scope work.
 - The 32 semantic goldens, four end-to-end contexts, dataset schema, rubric, policy, metric
   definitions, and baseline manifest are versioned and reviewed.
-- All required offline tests, `npm run verify:full`, and `git diff --check` pass.
+- All required schema-parity, contract-replay and offline tests, `npm run verify:full`, and
+  `git diff --check` pass.
 - No standard command performs a live or paid call.
 - One separately approved final live baseline is completed within 48 logical calls, 56
   attempts, and USD 3.00 and passes every release gate. Without that explicit approval, the

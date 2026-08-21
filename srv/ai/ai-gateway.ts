@@ -1,22 +1,83 @@
 import { randomUUID } from 'node:crypto';
 import type { AiConfig } from './config.ts';
-import { isProfiledAiTaskType, validateAiExecutionProfile } from './config.ts';
+import {
+  isProfiledAiTaskType,
+  resolveMaxOutputTokens,
+  validateAiExecutionProfile,
+} from './config.ts';
 import { createInputFingerprint, isValidAiRunId } from './contracts.ts';
 import type {
   AiCallResult,
   AiExecutionProfile,
   AiProvider,
+  AiTaskType,
   StructuredAiAdapter,
   StructuredAiRequest,
 } from './contracts.ts';
 import { AiError } from './errors.ts';
-import type { AiRunRecorder, AiRunTelemetryEvent } from './telemetry.ts';
+import {
+  AI_PRE_START_FAILURE_CODE_VALUES,
+  NoopAiOperationalSignalSink,
+  type AiOperationalSignalSink,
+  type AiPreStartFailureCode,
+  type AiPreStartFailureSignal,
+  type AiRunRecorder,
+  type AiRunTelemetryEvent,
+  type NarrativeAiTaskType,
+} from './telemetry.ts';
+
+const SAFE_OPERATIONAL_VERSION_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/iu;
+const SHA_256_PATTERN = /^[0-9a-f]{64}$/u;
+const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const FALLBACK_OPERATIONAL_INSTANT = '1970-01-01T00:00:00.000Z';
+const AI_PRE_START_FAILURE_CODES = new Set<string>(AI_PRE_START_FAILURE_CODE_VALUES);
+
+function isNarrativeAiTaskType(taskType: AiTaskType): taskType is NarrativeAiTaskType {
+  return taskType === 'GENERATE' || taskType === 'JUDGE';
+}
+
+function safeOperationalVersion(value: unknown): string {
+  return typeof value === 'string' && SAFE_OPERATIONAL_VERSION_PATTERN.test(value)
+    ? value
+    : 'unavailable';
+}
+
+function safeOperationalId(value: unknown): string | undefined {
+  return typeof value === 'string' && isValidAiRunId(value) ? value : undefined;
+}
+
+function safeOperationalInstant(value: string | undefined, now: () => Date): string {
+  if (value !== undefined && ISO_INSTANT_PATTERN.test(value)) return value;
+  try {
+    const instant = now().toISOString();
+    return ISO_INSTANT_PATTERN.test(instant) ? instant : FALLBACK_OPERATIONAL_INSTANT;
+  } catch {
+    return FALLBACK_OPERATIONAL_INSTANT;
+  }
+}
+
+function preStartFailureCode(cause: unknown): AiPreStartFailureCode {
+  return cause instanceof AiError && AI_PRE_START_FAILURE_CODES.has(cause.code)
+    ? (cause.code as AiPreStartFailureCode)
+    : 'INVALID_AI_CONFIGURATION';
+}
+
+function normalizePreStartFailure(cause: unknown): AiError {
+  return cause instanceof AiError
+    ? cause
+    : new AiError(
+        'INVALID_AI_CONFIGURATION',
+        'The AI request could not be initialized safely before durable audit.',
+        { cause },
+      );
+}
 
 function auditFailure(
   stage: 'STARTED' | 'SUCCEEDED' | 'FAILED',
   profile: AiExecutionProfile,
   cause: unknown,
   originalErrorCode?: string,
+  aiRunId?: string,
 ): AiError {
   const transactionBoundary =
     cause instanceof AiError && typeof cause.details.transactionBoundary === 'string'
@@ -27,12 +88,27 @@ function auditFailure(
     model: profile.model,
     details:
       originalErrorCode === undefined
-        ? { stage, ...(transactionBoundary === undefined ? {} : { transactionBoundary }) }
+        ? {
+            stage,
+            ...(aiRunId === undefined ? {} : { aiRunId }),
+            ...(transactionBoundary === undefined ? {} : { transactionBoundary }),
+          }
         : {
             originalErrorCode,
+            ...(aiRunId === undefined ? {} : { aiRunId }),
             ...(transactionBoundary === undefined ? {} : { transactionBoundary }),
           },
     cause,
+  });
+}
+
+function withDurableAiRunId(error: AiError, aiRunId: string): AiError {
+  return new AiError(error.code, error.message, {
+    ...(error.provider === undefined ? {} : { provider: error.provider }),
+    ...(error.model === undefined ? {} : { model: error.model }),
+    retryable: error.retryable,
+    details: { ...error.details, aiRunId },
+    cause: error,
   });
 }
 
@@ -108,6 +184,7 @@ export class AiGateway {
   private readonly recorder: AiRunRecorder;
   private readonly generateAiRunId: () => string;
   private readonly now: () => Date;
+  private readonly operationalSignalSink: AiOperationalSignalSink;
 
   constructor(
     config: AiConfig,
@@ -115,11 +192,13 @@ export class AiGateway {
     recorder: AiRunRecorder,
     generateAiRunId: () => string = randomUUID,
     now: () => Date = () => new Date(),
+    operationalSignalSink: AiOperationalSignalSink = new NoopAiOperationalSignalSink(),
   ) {
     this.config = config;
     this.recorder = recorder;
     this.generateAiRunId = generateAiRunId;
     this.now = now;
+    this.operationalSignalSink = operationalSignalSink;
     for (const adapter of adapters) {
       if (this.adapters.has(adapter.provider)) {
         throw new AiError('INVALID_AI_CONFIGURATION', 'AI adapter providers must be unique.', {
@@ -131,68 +210,161 @@ export class AiGateway {
     }
   }
 
-  async call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>> {
-    if (!isProfiledAiTaskType(request.taskType)) {
-      throw new AiError(
-        'INVALID_AI_CONFIGURATION',
-        'Operator smoke calls must use the dedicated live-smoke path.',
-        { details: { taskType: request.taskType } },
-      );
-    }
+  private async emitPreStartFailure<TOutput>(
+    request: StructuredAiRequest<TOutput>,
+    cause: unknown,
+    inputFingerprint: string | undefined,
+    startedAt: string | undefined,
+  ): Promise<void> {
+    if (!isNarrativeAiTaskType(request.taskType)) return;
 
-    const profile = this.config.taskProfiles[request.taskType];
-    validateAiExecutionProfile(profile);
-    const adapter = this.adapters.get(profile.provider);
-
-    // Keep AI_DISABLED ahead of fingerprinting, ID creation, recorder writes and adapter calls.
-    if (!this.config.enabled) {
-      throw new AiError('AI_DISABLED', 'AI calls are disabled by configuration.', {
-        provider: profile.provider,
-        model: profile.model,
-        details: { field: 'AI_ENABLED' },
-      });
-    }
-    if (adapter === undefined) {
-      throw new AiError(
-        'UNSUPPORTED_AI_PROVIDER',
-        'No adapter is configured for the selected task profile.',
-        { provider: profile.provider, model: profile.model },
-      );
-    }
-
-    const aiRunId = this.generateAiRunId().trim();
-    if (!isValidAiRunId(aiRunId)) {
-      throw new AiError('INVALID_AI_CONFIGURATION', 'The AI run ID generator returned no UUID.', {
-        provider: profile.provider,
-        model: profile.model,
-        details: { field: 'aiRunId' },
-      });
-    }
-    const inputFingerprint = createInputFingerprint(request.input);
-    const startedAt = this.now().toISOString();
-    const commonEvent = {
-      aiRunId,
-      ...(request.planningRunId === undefined ? {} : { planningRunId: request.planningRunId }),
-      provider: profile.provider,
-      configuredModel: profile.model,
+    const planningRunId = safeOperationalId(request.planningRunId);
+    const rankedOptionId = safeOperationalId(request.rankedOptionId);
+    const signal: AiPreStartFailureSignal = Object.freeze({
+      eventType: 'AI_PRE_START_FAILURE',
+      stage: 'BEFORE_DURABLE_STARTED',
       taskType: request.taskType,
-      promptVersion: request.promptVersion,
-      schemaVersion: request.schemaVersion,
-      inputFingerprint,
-      startedAt,
-    } as const;
+      failureCode: preStartFailureCode(cause),
+      ...(planningRunId === undefined ? {} : { planningRunId }),
+      ...(rankedOptionId === undefined ? {} : { rankedOptionId }),
+      promptVersion: safeOperationalVersion(request.promptVersion),
+      schemaVersion: safeOperationalVersion(request.schemaVersion),
+      ...(inputFingerprint !== undefined && SHA_256_PATTERN.test(inputFingerprint)
+        ? { inputFingerprint }
+        : {}),
+      providerCallAttempted: false,
+      occurredAt: safeOperationalInstant(startedAt, this.now),
+    });
 
     try {
-      await this.recorder.record({ ...commonEvent, status: 'STARTED' });
-    } catch (cause) {
-      throw auditFailure('STARTED', profile, cause);
+      await this.operationalSignalSink.emit(signal);
+    } catch {
+      // Operational reporting must never expose or replace the original fail-closed outcome.
     }
+  }
+
+  async call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>> {
+    let inputFingerprint: string | undefined;
+    let startedAt: string | undefined;
+    let prepared:
+      | {
+          readonly profile: AiExecutionProfile;
+          readonly adapter: StructuredAiAdapter;
+          readonly aiRunId: string;
+          readonly commonEvent: Readonly<
+            Pick<
+              AiRunTelemetryEvent,
+              | 'aiRunId'
+              | 'planningRunId'
+              | 'provider'
+              | 'configuredModel'
+              | 'configuredEffort'
+              | 'configuredMaxOutputTokens'
+              | 'effectiveMaxOutputTokens'
+              | 'taskType'
+              | 'promptVersion'
+              | 'schemaVersion'
+              | 'inputFingerprint'
+              | 'startedAt'
+            >
+          >;
+        }
+      | undefined;
+    try {
+      if (!isProfiledAiTaskType(request.taskType)) {
+        throw new AiError(
+          'INVALID_AI_CONFIGURATION',
+          'Operator smoke calls must use the dedicated live-smoke path.',
+          { details: { taskType: request.taskType } },
+        );
+      }
+
+      const profile = this.config.taskProfiles[request.taskType];
+      validateAiExecutionProfile(profile);
+      const adapter = this.adapters.get(profile.provider);
+
+      // Keep AI_DISABLED ahead of fingerprinting, ID creation, recorder writes and adapter calls.
+      if (!this.config.enabled) {
+        throw new AiError('AI_DISABLED', 'AI calls are disabled by configuration.', {
+          provider: profile.provider,
+          model: profile.model,
+          details: { field: 'AI_ENABLED' },
+        });
+      }
+      if (adapter === undefined) {
+        throw new AiError(
+          'UNSUPPORTED_AI_PROVIDER',
+          'No adapter is configured for the selected task profile.',
+          { provider: profile.provider, model: profile.model },
+        );
+      }
+
+      // The gateway owns the effective cap. A request may only reduce the configured profile,
+      // and the exact value is fixed before durable STARTED and before the adapter sees it.
+      const effectiveMaxOutputTokens = resolveMaxOutputTokens(
+        request.maxOutputTokens,
+        profile.maxOutputTokens,
+      );
+      inputFingerprint = createInputFingerprint(request.input);
+      const aiRunId = this.generateAiRunId().trim();
+      if (!isValidAiRunId(aiRunId)) {
+        throw new AiError('INVALID_AI_CONFIGURATION', 'The AI run ID generator returned no UUID.', {
+          provider: profile.provider,
+          model: profile.model,
+          details: { field: 'aiRunId' },
+        });
+      }
+      startedAt = this.now().toISOString();
+      const commonEvent = {
+        aiRunId,
+        ...(request.planningRunId === undefined ? {} : { planningRunId: request.planningRunId }),
+        provider: profile.provider,
+        configuredModel: profile.model,
+        configuredEffort: profile.effort,
+        configuredMaxOutputTokens: profile.maxOutputTokens,
+        effectiveMaxOutputTokens,
+        taskType: request.taskType,
+        promptVersion: request.promptVersion,
+        schemaVersion: request.schemaVersion,
+        inputFingerprint,
+        startedAt,
+      } as const;
+
+      try {
+        await this.recorder.record({ ...commonEvent, status: 'STARTED' });
+      } catch (cause) {
+        throw auditFailure('STARTED', profile, cause);
+      }
+      prepared = { profile, adapter, aiRunId, commonEvent };
+    } catch (cause) {
+      await this.emitPreStartFailure(request, cause, inputFingerprint, startedAt);
+      throw normalizePreStartFailure(cause);
+    }
+
+    if (prepared === undefined) {
+      throw new AiError(
+        'AI_AUDIT_FAILED',
+        'The AI request did not retain durable STARTED evidence.',
+      );
+    }
+
+    const { profile, adapter, aiRunId, commonEvent } = prepared;
 
     let result: AiCallResult<TOutput>;
     try {
-      const executionRequest: StructuredAiRequest<TOutput> = { ...request, aiRunId };
+      const executionRequest: StructuredAiRequest<TOutput> = {
+        ...request,
+        aiRunId,
+        maxOutputTokens: commonEvent.effectiveMaxOutputTokens,
+      };
       result = await adapter.call(executionRequest, profile);
-      validateResultMetadata(result, executionRequest, profile, aiRunId, inputFingerprint);
+      validateResultMetadata(
+        result,
+        executionRequest,
+        profile,
+        aiRunId,
+        commonEvent.inputFingerprint,
+      );
       result = {
         ...result,
         output: validateResultOutput(result, executionRequest, profile),
@@ -219,9 +391,9 @@ export class AiGateway {
       try {
         await this.recorder.record(failureEvent);
       } catch (recorderCause) {
-        throw auditFailure('FAILED', profile, recorderCause, error.code);
+        throw auditFailure('FAILED', profile, recorderCause, error.code, aiRunId);
       }
-      throw error;
+      throw withDurableAiRunId(error, aiRunId);
     }
 
     const successEvent: AiRunTelemetryEvent = {
@@ -241,7 +413,7 @@ export class AiGateway {
     try {
       await this.recorder.record(successEvent);
     } catch (cause) {
-      throw auditFailure('SUCCEEDED', profile, cause);
+      throw auditFailure('SUCCEEDED', profile, cause, undefined, aiRunId);
     }
 
     return result;

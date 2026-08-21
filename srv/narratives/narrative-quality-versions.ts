@@ -1,0 +1,11 @@
+export const NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION = 'narrative-constraint-snapshot-v1';
+export const NARRATIVE_QUALITY_CONTEXT_VERSION = 'narrative-quality-context-v1';
+export const NARRATIVE_JUDGE_PROMPT_VERSION = 'narrative-quality-judge-prompt-v1';
+export const NARRATIVE_JUDGE_SCHEMA_VERSION = 'narrative-quality-judge-schema-v1';
+export const NARRATIVE_JUDGE_SCHEMA_NAME = 'narrative_quality_judge';
+export const NARRATIVE_QUALITY_RUBRIC_VERSION = 'narrative-quality-rubric-v1';
+export const NARRATIVE_QUALITY_DATASET_VERSION = 'narrative-quality-v1';
+export const NARRATIVE_PUBLICATION_POLICY_VERSION = 'narrative-publication-policy-v1';
+export const NARRATIVE_SAFETY_PRECHECK_VERSION = 'narrative-safety-precheck-v1';
+export const NARRATIVE_MODEL_PROFILE_VERSION = 'narrative-quality-model-profile-v1';
+export const NARRATIVE_PRICE_CATALOG_VERSION = 'narrative-quality-price-catalog-v1';

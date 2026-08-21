@@ -4,11 +4,13 @@ Deterministic-first planner krótkich podróży. Kod waliduje twarde ograniczeni
 wersjonowane dane demonstracyjne, buduje i filtruje kandydatów, liczy budżet oraz scoring,
 a następnie pokazuje dokładnie trzy zróżnicowane warianty wraz ze źródłami i odrzuceniami.
 
-Faza 2 — Planning API and Options UI — jest ukończona. Faza 3B1 dodaje domyślnie
-wyłączone, task-aware profile wykonania oraz trwały audyt `AiRuns`. Faza 3B2 wykorzystuje
-ten fundament w pierwszej jawnej akcji grounded narrative dla jednej wybranej opcji.
-Standardowe uruchomienie i testy nie wywołują płatnych API. Projekt nadal nie obsługuje
-rezerwacji, płatności ani uwierzytelniania.
+Faza 2 — Planning API and Options UI — jest ukończona. Faza 3B1 dodała domyślnie
+wyłączone, task-aware profile wykonania oraz trwały audyt `AiRuns`, a Faza 3B2 pierwszy
+jawny use case grounded narrative dla wybranej opcji. Faza 3B3 jest w `REVIEW`: dodaje
+model-safe projection, deterministyczny precheck, ścisły `JUDGE`, bezpieczne review
+metadata i evale, zanim tekst stanie się danymi produktu. Standardowe uruchomienie i testy
+nie wywołują płatnych API. Projekt nadal nie obsługuje rezerwacji, płatności ani
+uwierzytelniania.
 
 ## Uruchomienie
 
@@ -43,7 +45,7 @@ odczytują ani nie wymagają sekretów.
 Każde źródło `INTERNAL_FIXTURE` jest w UI jawnie oznaczone jako dane demonstracyjne,
 nie jako aktualna oferta.
 
-## AI execution i grounded narratives Fazy 3B2
+## AI execution i quality-gated narratives Fazy 3B3
 
 Gateway udostępnia jeden kontrakt strukturalnych wywołań i osobny profil
 `provider + model + effort + max output tokens` dla `DECIDE`, `GENERATE` i `JUDGE`.
@@ -71,24 +73,47 @@ kwot z minor units. Zamknięty `currency-fraction-digits-v1` współdzielony prz
 major → minor i display dopuszcza obecnie PLN/EUR z dwiema cyframi; JPY, KWD i nieznane kody
 są odrzucane. Kategorie budżetu, klasyfikacje, sumy i status agregatu są walidowane
 fail-closed, podobnie jak lineage wersji fixture/scoringu na wszystkich rekordach opcji.
-Model nie dzieli ani nie formatuje pieniędzy.
-Strict output wymaga exact context fingerprint i niepustych `factReferences` każdego bloku;
-nieznany, pusty, nieaktualny albo obcy identyfikator odrzuca cały output przed persistence.
+Model nie dzieli ani nie formatuje pieniędzy. Do providera trafia deterministyczny
+`narrative-model-view-v1`, który zachowuje wymagane fakty, `factId`, lineage i jawne braki,
+ale usuwa między innymi raw `sourceUrl`, `externalItemId`, HTML, kontrolne znaki oraz zbędne
+provider-shaped wartości. Klucze faktów provenance są na tej granicy zastępowane
+wersjonowanymi, deterministycznymi opaque keys wyprowadzonymi wyłącznie z bezpiecznego
+`factId`, nigdy z `provider`, `sourceKey`, `externalItemId`, `sourceUrl` ani `contexts`.
+Pełny kontekst pozostaje lokalnym źródłem walidacji i lineage.
 
-Po trwałym `SUCCEEDED` writer sprawdza exact plan/task/prompt/schema/input fingerprint, a
-osobna transakcja zapisuje `NarrativeRuns`, `OptionNarratives` i
-`NarrativeFactReferences`. Produkt zachowuje historyczny scalar `aiRunId`, nie mandatory
-association do audytu. Błąd AI, audytu, walidacji lub tego zapisu nie zmienia
-deterministycznej opcji, rankingu, constraints ani budżetu.
-Akcja nie jest automatycznie wywoływana przez `startPlanning` ani obecne UI.
+Strict output `GENERATE` wymaga exact context fingerprint i niepustych `factReferences`
+każdego bloku; nieznany, pusty, nieaktualny albo obcy identyfikator odrzuca cały output.
+Po tej walidacji lokalny precheck blokuje URL-e, Markdown/HTML/script, kontrolne i bidi
+znaki, wykluczone identyfikatory oraz mechanicznie niedozwolony reformat kwoty. Semantyczna
+zmiana kwoty, nowe obliczenie lub wypełnienie `UNKNOWN` trafia do `JUDGE`, zgodnie z frozen
+stage labels datasetu. Sędzia otrzymuje wersjonowany `narrative-quality-context-v1`, zwraca
+dokładnie osiem wymiarów i kontrolowane findings; końcową decyzję wylicza kod: wyłącznie
+osiem `PASS` i zero findings daje `PUBLISH`. Wejście `JUDGE` zawiera pełny, strukturalny
+kontrakt `narrative-quality-rubric-v1` wraz z exact version, canonical fingerprintem,
+definicjami `PASS`/`FAIL` i zamkniętym mapowaniem reason → dimension/severity. Runtime jest
+sprawdzany względem checked-in golden JSON.
+
+Precheck lub semantyczny `REJECT` zapisuje w osobnej krótkiej transakcji wyłącznie bezpieczne
+review metadata i nie zapisuje tekstu kandydata. `PUBLISH` atomowo utrwala review,
+`NarrativeRuns`, `OptionNarratives` oraz `NarrativeFactReferences` dopiero po dokładnych
+terminalnych audytach `SUCCEEDED` dla `GENERATE` i `JUDGE`. Produkt zachowuje historyczne
+scalar IDs audytów bez mandatory associations blokujących cleanup. Błąd AI, audytu,
+walidacji lub zapisu nie zmienia deterministycznej opcji, rankingu, constraints ani
+budżetu. Akcja nie jest automatycznie wywoływana przez `startPlanning` ani obecne UI.
+
+Próba `GENERATE` lub `JUDGE`, która nie osiągnęła durable `AiRuns.STARTED`, nie tworzy
+`NarrativeReviewRun` i nie dostaje fikcyjnego UUID. Provider nie jest wywoływany, produkt
+pozostaje pusty, a niezależny sink otrzymuje dokładnie jeden allowlistowany
+`AI_PRE_START_FAILURE` bez promptu, inputu, candidate, raw błędu, stack trace ani `aiRunId`.
 
 Wewnętrzne `AiRuns` nie jest publikowane przez OData. Przechowuje wyłącznie bezpieczne
 metadane i domyślny `expiresAt` po 30 dniach — bez promptów, wejść, wyjść i surowych błędów.
 Jest efemerycznym audytem: cleanup nie narusza trwałych narracji produktu. Kontrakt cleanup
 jest zaimplementowany i przetestowany, ale nie ma jeszcze schedulera.
 
-`AI_ENABLED=false` wyłącza gateway dla produktu, a `AI_LIVE_SMOKE_ENABLED=false` blokuje
-ręczne testy live. Przed włączeniem produktu trzeba zatwierdzić retencję organizacji
+`AI_ENABLED=false` wyłącza gateway dla produktu, `AI_LIVE_SMOKE_ENABLED=false` blokuje
+ręczne testy smoke, a `AI_LIVE_EVAL_ENABLED=false` blokuje finalny baseline. Przed
+włączeniem produktu trzeba zatwierdzić retencję organizacji
 providera, ZDR, politykę prywatności i dozwolony zakres danych. Testy używają transportów i
 adapterów in-memory, więc nie kontaktują się z internetem. Po świadomym skonfigurowaniu
 sekretów poza repo dostępne są:
@@ -101,11 +126,29 @@ npm run ai:smoke
 ```
 
 Smoke test jest osobnym, płatnym wywołaniem opt-in i nie należy do `verify` ani
-`verify:full`. Nigdy nie commituj `.env` ani kluczy. Pełny kontrakt, konfiguracja,
-bezpieczeństwo i ograniczenia są opisane w `docs/ai-gateway.md`.
+`verify:full`. `npm run eval:offline` wykonuje deterministic contract replay: sprawdza
+loader, resolvery, kontrakty, metryki, gates i bezpieczny report path, ale kopiuje frozen
+expected labels do actual, więc jawnie raportuje `evidenceKind=CONTRACT_REPLAY` oraz
+`modelQualityMeasured=false`. Standardowy `verify` uruchamia wcześniej
+`npm run eval:schema:check`, który fail-closed porównuje runtime Zod z frozen JSON Schema.
+Żaden z tych dowodów nie jest live baseline ani pomiarem jakości modelu.
 
-Poprawna referencja zapewnia traceability, ale nie jest jeszcze semantycznym dowodem
-groundedness. Faza 3B3 doda wykonywanie judge, safety pipeline i evale.
+Live E2E ma ponadto zamknięty katalog niezależnych executable `requiredProperties`.
+Deterministyczne oracle sprawdzają dokładny candidate/context/model view/constraints bez
+użycia decyzji, dimensions, findings ani reason codes tego samego `JUDGE`; all-`PASS` judge
+nie może zamaskować naruszenia właściwości. Raportowany
+`publicationBundleLinkageValidInMemory` oznacza wyłącznie konstrukcję bundle i exact lineage
+w pamięci. Osobny test integracyjny na produkcyjnych writerach CAP i SQLite dowodzi realnego
+zapisu, odczytu, atomowości oraz przetrwania cleanupu obu `AiRuns`.
+
+Finalny live baseline używa wyłącznie danych syntetycznych, wymaga osobnej
+zgody, preflightu oraz limitów 48 logicznych wywołań, 56 prób i USD 3.00. Runner v1 planuje
+dokładnie 46 wywołań i wymaga `AI_MAX_RETRIES=0`, ponieważ błąd providera nie udostępnia
+jeszcze bezpiecznego rozliczenia prób. Wersjonowany katalog cen nie zawiera niezatwierdzonych
+stawek, więc preflight pozostaje zablokowany. Baseline nie został uruchomiony podczas
+implementacji; rzeczywisty koszt wynosi USD 0, a faza pozostaje w `REVIEW`. Nigdy nie
+commituj `.env` ani kluczy. Pełny kontrakt, konfiguracja, bezpieczeństwo i ograniczenia są
+opisane w `docs/ai-gateway.md`.
 
 ## API
 
@@ -127,6 +170,8 @@ Kontrolowany niedobór trzech opcji zwraca trwały `PlanningRun` ze statusem
 ```sh
 npm run lint
 npm run typecheck
+npm run eval:schema:check
+npm run eval:offline
 npm run test:unit
 npm run test:integration
 npm run build

@@ -40,9 +40,31 @@ Akcja pozostaje domyślnie wyłączona przez `AI_ENABLED=false` i nie jest jeszc
 do UI. Same poprawne referencje dają traceability, ale bez przyszłego `JUDGE` nie stanowią
 semantycznego dowodu groundedness tekstu.
 
+## Stan Fazy 3B3 (`REVIEW`)
+
+Narracja nie może już zostać opublikowana wyłącznie dlatego, że ma poprawny schemat i
+referencje. Provider `GENERATE` otrzymuje minimalny model-safe view bez raw source URLs,
+external IDs, raw provenance keys i zbędnych nieufnych wartości. Zwalidowany kandydat
+przechodzi deterministyczny format/safety precheck, a następnie jeden ścisły `JUDGE`, który
+otrzymuje pełny fingerprintowany rubric contract i ocenia osiem wersjonowanych wymiarów
+groundedness, constraints, money/time, provenance i safety. Ostateczne `PUBLISH`/`REJECT`
+wylicza kod, nie model.
+
+Odrzucenie zapisuje wyłącznie bezpieczne metadata review i nie utrwala tekstu kandydata.
+Akceptacja wymaga dwóch dokładnych terminalnych audytów i atomowo zapisuje review oraz tekst
+oceniony byte-for-byte. Żadna awaria nie zmienia wariantu, rankingu, constraints ani
+budżetu. Akcja nadal jest ręczna, domyślnie wyłączona i nieobecna w UI.
+
+Synthetic frozen dataset, schema parity, metryki i deterministic contract replay zapewniają
+odtwarzalną weryfikację kontraktów bez credentiali, sieci i kosztu; replay nie mierzy jakości
+modelu. Live E2E ma niezależne executable properties, a realną persistence dowodzi CAP/SQLite.
+Finalny live baseline wymaga osobnej zgody i limitów 48 calls, 56 attempts oraz USD 3.00. Nie
+został wykonany; koszt implementacji wynosi USD 0 i faza nie jest `DONE`.
+
 ## Różnica wobec chatbota
 
-Model językowy nie poluzuje ograniczeń, nie wymyśli brakującej ceny i nie wykona
-arytmetyki finansowej. W Fazie 2 LLM nie jest używany w ogóle. Przyszła warstwa AI może
-pracować dopiero na wynikach kodu i źródłach, a szczegółowy plan dzień po dniu powstanie
-dopiero po świadomym wyborze wariantu przez użytkownika.
+Model językowy nie może poluzować ograniczeń, wymyślić brakującej ceny ani wykonać
+arytmetyki finansowej. W Fazie 2 LLM nie jest używany w ogóle; w Fazie 3B3 pracuje dopiero
+na wyniku kodu i minimalnym model-safe view, a jego tekst jest fail-closed oceniany przed
+publikacją. Szczegółowy plan dzień po dniu powstanie dopiero po świadomym wyborze wariantu
+przez użytkownika.

@@ -26,6 +26,9 @@ function startedEvent(overrides: Partial<AiRunTelemetryEvent> = {}): AiRunTeleme
     status: 'STARTED',
     provider: AiProvider.OPENAI,
     configuredModel: 'gpt-5.6-luna',
+    configuredEffort: 'none',
+    configuredMaxOutputTokens: 512,
+    effectiveMaxOutputTokens: 256,
     taskType: AiTaskType.DECIDE,
     promptVersion: 'prompt-v1',
     schemaVersion: 'schema-v1',
@@ -92,6 +95,9 @@ describe('persistent AI run recorder', () => {
         taskType: AiTaskType.DECIDE,
         provider: AiProvider.OPENAI,
         configuredModel: 'gpt-5.6-luna',
+        configuredEffort: 'none',
+        configuredMaxOutputTokens: 512,
+        effectiveMaxOutputTokens: 256,
         promptVersion: 'prompt-v1',
         schemaVersion: 'schema-v1',
         inputFingerprint: fingerprint,
@@ -156,7 +162,13 @@ describe('persistent AI run recorder', () => {
     const recorder = new PersistentAiRunRecorder(store, 30);
 
     await recorder.record({
-      ...startedEvent({ provider: AiProvider.ANTHROPIC, configuredModel: 'claude-sonnet-5' }),
+      ...startedEvent({
+        provider: AiProvider.ANTHROPIC,
+        configuredModel: 'claude-sonnet-5',
+        configuredEffort: 'low',
+        configuredMaxOutputTokens: 1_600,
+        effectiveMaxOutputTokens: 1_600,
+      }),
       status: 'FAILED',
       completedAt: '2026-08-12T10:00:02.000Z',
       refusal: { refused: true, category: 'policy' },
@@ -203,6 +215,9 @@ describe('persistent AI run recorder', () => {
     [{ status: 'FAILED', completedAt: '2026-08-12T10:00:01.000Z' }, 'errorCode'],
     [{ inputFingerprint: 'bad' }, 'inputFingerprint'],
     [{ startedAt: 'not-a-date' }, 'startedAt'],
+    [{ configuredEffort: 'unsupported' }, 'configuredEffort'],
+    [{ configuredMaxOutputTokens: 0 }, 'configuredMaxOutputTokens'],
+    [{ effectiveMaxOutputTokens: 513 }, 'effectiveMaxOutputTokens'],
   ] as const)('fails safely for incomplete audit metadata %#', async (overrides, field) => {
     const recorder = new PersistentAiRunRecorder(new RecordingStore(), 30);
 
@@ -272,6 +287,9 @@ describe('CAP AI run store boundary', () => {
         taskType: AiTaskType.DECIDE,
         provider: AiProvider.OPENAI,
         configuredModel: 'gpt-5.6-luna',
+        configuredEffort: 'none',
+        configuredMaxOutputTokens: 512,
+        effectiveMaxOutputTokens: 256,
         promptVersion: 'prompt-v1',
         schemaVersion: 'schema-v1',
         inputFingerprint: fingerprint,
@@ -299,6 +317,9 @@ describe('CAP AI run store boundary', () => {
       taskType: AiTaskType.DECIDE,
       provider: AiProvider.OPENAI,
       configuredModel: 'gpt-5.6-luna',
+      configuredEffort: 'none',
+      configuredMaxOutputTokens: 512,
+      effectiveMaxOutputTokens: 256,
       promptVersion: 'prompt-v1',
       schemaVersion: 'schema-v1',
       inputFingerprint: fingerprint,
@@ -311,6 +332,9 @@ describe('CAP AI run store boundary', () => {
     expect(database.transactionCount).toBe(1);
     expect(cqn).toContain('trip.planner.AiRuns');
     expect(cqn).toContain('gpt-5.6-luna');
+    expect(cqn).toContain('configuredEffort');
+    expect(cqn).toContain('configuredMaxOutputTokens');
+    expect(cqn).toContain('effectiveMaxOutputTokens');
     expect(cqn).not.toMatch(/instructions|promptText|rawError|credential|output/);
   });
 
@@ -326,6 +350,9 @@ describe('CAP AI run store boundary', () => {
         taskType: AiTaskType.SMOKE,
         provider: AiProvider.OPENAI,
         configuredModel: 'gpt-5.6-luna',
+        configuredEffort: 'none',
+        configuredMaxOutputTokens: 512,
+        effectiveMaxOutputTokens: 256,
         promptVersion: 'prompt-v1',
         schemaVersion: 'schema-v1',
         inputFingerprint: fingerprint,

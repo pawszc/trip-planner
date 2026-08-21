@@ -44,6 +44,8 @@ export interface StructuredAiRequest<TOutput> {
   aiRunId?: string;
   /** Optional safe association for future product calls; never contains trip input or prompt data. */
   planningRunId?: string;
+  /** Optional safe narrative subject association for privacy-safe operational telemetry only. */
+  rankedOptionId?: string;
 }
 
 export interface AiUsage {

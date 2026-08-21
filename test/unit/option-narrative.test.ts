@@ -7,6 +7,7 @@ import {
   type GroundedOptionContextInput,
 } from '../../srv/narratives/grounded-option-context.ts';
 import { buildNarrativePersistenceBundle } from '../../srv/narratives/narrative-persistence.ts';
+import { buildNarrativeModelView } from '../../srv/narratives/narrative-model-view.ts';
 import {
   OPTION_NARRATIVE_PROMPT_VERSION,
   OPTION_NARRATIVE_SCHEMA_NAME,
@@ -56,6 +57,7 @@ function makeIncompleteBudget(input: GroundedOptionContextInput): void {
 describe('grounded option narrative contract', () => {
   it('creates a versioned GENERATE request without any routing override', () => {
     const context = groundedContext();
+    const modelView = buildNarrativeModelView(context);
     const request = createOptionNarrativeRequest(context);
 
     expect(request).toMatchObject({
@@ -63,9 +65,12 @@ describe('grounded option narrative contract', () => {
       promptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
       schemaVersion: OPTION_NARRATIVE_SCHEMA_VERSION,
       schemaName: OPTION_NARRATIVE_SCHEMA_NAME,
-      input: context,
+      input: modelView,
       planningRunId: context.planningRun.id,
     });
+    expect(request.input).not.toHaveProperty('sourceSnapshots.0.sourceUrl');
+    expect(request.input).not.toHaveProperty('sourceSnapshots.0.externalItemId');
+    expect(request.input).not.toHaveProperty('sourceSnapshots.0.provider');
     expect(request).not.toHaveProperty('provider');
     expect(request).not.toHaveProperty('model');
     expect(request).not.toHaveProperty('effort');
