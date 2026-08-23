@@ -50,7 +50,7 @@ export const NARRATIVE_LIVE_EVAL_TOKEN_CEILING_VERSION =
   'utf8-wire-bytes-plus-4096-protocol-tokens-v1';
 export const NARRATIVE_LIVE_EVAL_COST_CEILING_VERSION = 'full-ceiling-each-token-class-v1';
 export const NARRATIVE_LIVE_EVAL_RETRY_POLICY_VERSION =
-  'zero-retry-until-failure-attempt-metadata-v1';
+  'zero-retry-with-terminal-failure-accounting-v2';
 
 export const NARRATIVE_LIVE_EVAL_EXPECTED_LOGICAL_CALLS = 46;
 export const NARRATIVE_LIVE_EVAL_EXPECTED_JUDGE_CALLS = 42;

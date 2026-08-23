@@ -1,9 +1,17 @@
 import { AiError } from '../errors.ts';
+import {
+  AI_PROVIDER_INCOMPLETE_REASON_VALUES,
+  AI_PROVIDER_RESPONSE_STATUS_VALUES,
+} from '../failure-execution-evidence.ts';
 import type { AiRunRecorder, AiRunTelemetryEvent } from '../telemetry.ts';
 import type { AiRunStore } from './ai-run-store.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const CONFIGURED_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+const PROVIDER_RESPONSE_STATUSES = new Set<string>(AI_PROVIDER_RESPONSE_STATUS_VALUES);
+const PROVIDER_INCOMPLETE_REASONS = new Set<string>(AI_PROVIDER_INCOMPLETE_REASON_VALUES);
+const SAFE_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/u;
+const SAFE_PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,249}$/u;
 
 function auditMappingFailure(message: string, cause?: unknown): AiError {
   return new AiError('AI_AUDIT_FAILED', message, cause === undefined ? {} : { cause });
@@ -82,6 +90,75 @@ function validateCommonEvent(event: AiRunTelemetryEvent): void {
   }
 }
 
+function validateOptionalTerminalMetadata(event: AiRunTelemetryEvent): void {
+  if (event.responseModel !== undefined && !SAFE_MODEL_PATTERN.test(event.responseModel)) {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit response model is invalid.', {
+      details: { field: 'responseModel' },
+    });
+  }
+  for (const [field, value] of [
+    ['providerRequestId', event.providerRequestId],
+    ['providerResponseId', event.providerResponseId],
+  ] as const) {
+    if (value !== undefined && !SAFE_PROVIDER_ID_PATTERN.test(value)) {
+      throw new AiError('AI_AUDIT_FAILED', 'AI audit provider identifier is invalid.', {
+        details: { field },
+      });
+    }
+  }
+  if (
+    event.providerResponseStatus !== undefined &&
+    !PROVIDER_RESPONSE_STATUSES.has(event.providerResponseStatus)
+  ) {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit provider response status is invalid.', {
+      details: { field: 'providerResponseStatus' },
+    });
+  }
+  if (
+    event.providerIncompleteReason !== undefined &&
+    (!PROVIDER_INCOMPLETE_REASONS.has(event.providerIncompleteReason) ||
+      event.providerResponseStatus !== 'INCOMPLETE')
+  ) {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit provider incomplete reason is invalid.', {
+      details: { field: 'providerIncompleteReason' },
+    });
+  }
+  if (
+    event.latencyMs !== undefined &&
+    (!Number.isSafeInteger(event.latencyMs) || event.latencyMs < 0)
+  ) {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit latency is invalid.', {
+      details: { field: 'latencyMs' },
+    });
+  }
+  if (
+    event.attempts !== undefined &&
+    (!Number.isSafeInteger(event.attempts) || event.attempts < 1)
+  ) {
+    throw new AiError('AI_AUDIT_FAILED', 'AI audit attempts are invalid.', {
+      details: { field: 'attempts' },
+    });
+  }
+  if (event.usage !== undefined) {
+    const usageValues = [
+      event.usage.inputTokens,
+      event.usage.outputTokens,
+      event.usage.totalTokens,
+      event.usage.cacheReadTokens ?? 0,
+      event.usage.cacheWriteTokens ?? 0,
+      event.usage.reasoningTokens ?? 0,
+    ];
+    if (
+      usageValues.some((value) => !Number.isSafeInteger(value) || value < 0) ||
+      event.usage.totalTokens !== event.usage.inputTokens + event.usage.outputTokens
+    ) {
+      throw new AiError('AI_AUDIT_FAILED', 'AI audit usage is invalid.', {
+        details: { field: 'usage' },
+      });
+    }
+  }
+}
+
 export class PersistentAiRunRecorder implements AiRunRecorder {
   private readonly store: AiRunStore;
   private readonly runRetentionDays: number;
@@ -94,6 +171,7 @@ export class PersistentAiRunRecorder implements AiRunRecorder {
   async record(event: AiRunTelemetryEvent): Promise<void> {
     try {
       validateCommonEvent(event);
+      validateOptionalTerminalMetadata(event);
       if (event.status === 'STARTED') {
         await this.store.insertStarted({
           ID: event.aiRunId,
@@ -138,6 +216,15 @@ export class PersistentAiRunRecorder implements AiRunRecorder {
           ...(event.providerRequestId === undefined
             ? {}
             : { providerRequestId: event.providerRequestId }),
+          ...(event.providerResponseId === undefined
+            ? {}
+            : { providerResponseId: event.providerResponseId }),
+          ...(event.providerResponseStatus === undefined
+            ? {}
+            : { providerResponseStatus: event.providerResponseStatus }),
+          ...(event.providerIncompleteReason === undefined
+            ? {}
+            : { providerIncompleteReason: event.providerIncompleteReason }),
           refusal,
           retryable: false,
         });
@@ -159,6 +246,15 @@ export class PersistentAiRunRecorder implements AiRunRecorder {
         ...(event.providerRequestId === undefined
           ? {}
           : { providerRequestId: event.providerRequestId }),
+        ...(event.providerResponseId === undefined
+          ? {}
+          : { providerResponseId: event.providerResponseId }),
+        ...(event.providerResponseStatus === undefined
+          ? {}
+          : { providerResponseStatus: event.providerResponseStatus }),
+        ...(event.providerIncompleteReason === undefined
+          ? {}
+          : { providerIncompleteReason: event.providerIncompleteReason }),
         refusal,
         errorCode: event.errorCode,
         retryable: event.retryable,

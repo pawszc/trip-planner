@@ -73,6 +73,9 @@ interface PersistedAiRun {
   latencyMs: number | null;
   attempts: number | null;
   providerRequestId: string | null;
+  providerResponseId: string | null;
+  providerResponseStatus: string | null;
+  providerIncompleteReason: string | null;
   refusal: boolean;
   refusalCategory: string | null;
   errorCode: string | null;
@@ -155,6 +158,43 @@ class SqliteVisibilityAdapter implements StructuredAiAdapter {
       providerRequestId: 'offline-sqlite-adapter-request',
       refusal: { refused: false },
     };
+  }
+}
+
+class SqliteTerminalFailureAdapter implements StructuredAiAdapter {
+  readonly provider = AiProvider.OPENAI;
+
+  async call<TOutput>(
+    _request: StructuredAiRequest<TOutput>,
+    profile: AiExecutionProfile,
+  ): Promise<AiCallResult<TOutput>> {
+    throw new AiError('INCOMPLETE_MODEL_OUTPUT', 'Controlled terminal response failure.', {
+      provider: this.provider,
+      model: profile.model,
+      retryable: false,
+      executionEvidence: {
+        provider: this.provider,
+        configuredModel: profile.model,
+        responseModel: `${profile.model}-failed-snapshot`,
+        providerResponseStatus: 'INCOMPLETE',
+        providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+        providerRequestId: 'req_sqlite_failed',
+        providerResponseId: 'resp_sqlite_failed',
+        usage: {
+          inputTokens: 101,
+          outputTokens: 19,
+          totalTokens: 120,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 80,
+          reasoningTokens: 4,
+        },
+        attempts: 1,
+        latencyMs: 240,
+      },
+      cause: new Error(
+        'sk-proj-rawsentinel PROMPT_SENTINEL CANDIDATE_SENTINEL RAW_PROVIDER_MESSAGE',
+      ),
+    });
   }
 }
 
@@ -303,6 +343,9 @@ describe('internal CAP AiRuns persistence', () => {
       configuredMaxOutputTokens: 512,
       effectiveMaxOutputTokens: 256,
       responseModel: null,
+      providerResponseId: null,
+      providerResponseStatus: null,
+      providerIncompleteReason: null,
       promptVersion: 'prompt-v1',
       schemaVersion: 'schema-v1',
       inputFingerprint: fingerprint,
@@ -376,24 +419,31 @@ describe('internal CAP AiRuns persistence', () => {
     expect(records[0]).not.toHaveProperty('credential');
   });
 
-  it('FAILED updates the same record with only controlled failure metadata', async () => {
-    const event = startedEvent('00000000-0000-4000-8000-000000000103', {
-      provider: AiProvider.ANTHROPIC,
-      configuredModel: 'claude-sonnet-5',
-      configuredEffort: 'low',
-      configuredMaxOutputTokens: 1_600,
-      effectiveMaxOutputTokens: 1_600,
-      taskType: AiTaskType.GENERATE,
-    });
+  it('FAILED updates the same record with controlled terminal response evidence', async () => {
+    const event = startedEvent('00000000-0000-4000-8000-000000000103');
     await recorder.record(event);
 
     await recorder.record({
       ...event,
       status: 'FAILED',
       completedAt: '2026-08-12T10:00:02.000Z',
+      responseModel: 'gpt-5.6-luna-failed-snapshot',
+      usage: {
+        inputTokens: 101,
+        outputTokens: 19,
+        totalTokens: 120,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 80,
+        reasoningTokens: 4,
+      },
+      latencyMs: 240,
       attempts: 1,
-      refusal: { refused: true, category: 'policy' },
-      errorCode: 'MODEL_REFUSAL',
+      providerRequestId: 'req_failed',
+      providerResponseId: 'resp_failed',
+      providerResponseStatus: 'INCOMPLETE',
+      providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      refusal: { refused: false },
+      errorCode: 'INCOMPLETE_MODEL_OUTPUT',
       retryable: false,
     });
 
@@ -402,18 +452,30 @@ describe('internal CAP AiRuns persistence', () => {
     expect(records[0]).toMatchObject({
       ID: event.aiRunId,
       status: 'FAILED',
-      provider: 'ANTHROPIC',
-      taskType: 'GENERATE',
-      configuredModel: 'claude-sonnet-5',
-      responseModel: null,
+      provider: 'OPENAI',
+      taskType: 'DECIDE',
+      configuredModel: 'gpt-5.6-luna',
+      responseModel: 'gpt-5.6-luna-failed-snapshot',
       completedAt: '2026-08-12T10:00:02.000Z',
+      latencyMs: 240,
       attempts: 1,
-      refusal: true,
-      refusalCategory: 'policy',
-      errorCode: 'MODEL_REFUSAL',
+      providerRequestId: 'req_failed',
+      providerResponseId: 'resp_failed',
+      providerResponseStatus: 'INCOMPLETE',
+      providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      refusal: false,
+      refusalCategory: null,
+      errorCode: 'INCOMPLETE_MODEL_OUTPUT',
       retryable: false,
     });
-    expect(JSON.stringify(records[0])).not.toContain('provider stack');
+    expect(Number(records[0]?.inputTokens)).toBe(101);
+    expect(Number(records[0]?.outputTokens)).toBe(19);
+    expect(Number(records[0]?.totalTokens)).toBe(120);
+    expect(Number(records[0]?.cacheWriteTokens)).toBe(80);
+    expect(Number(records[0]?.reasoningTokens)).toBe(4);
+    expect(JSON.stringify(records[0])).not.toMatch(
+      /PROMPT_SENTINEL|CANDIDATE_SENTINEL|RAW_PROVIDER_MESSAGE|provider stack|sk-proj-rawsentinel/,
+    );
   });
 
   it('rejects duplicate STARTED without adding another record', async () => {
@@ -593,6 +655,50 @@ describe('full offline gateway persistence composition', () => {
     expect(observation.adapterCalls).toBe(0);
     await expect(readAllAiRuns()).resolves.toHaveLength(1);
     await expect(readAiRun(aiRunId)).resolves.toMatchObject({ status: 'STARTED' });
+  });
+
+  it('persists a terminal FAILED AiRun with a real UUID and no product or review rows', async () => {
+    const aiRunId = '00000000-0000-4000-8000-000000000122';
+    const gateway = createPersistentAiGateway(loadAiConfig({ AI_ENABLED: 'true' }), {
+      adapters: [new SqliteTerminalFailureAdapter()],
+      generateAiRunId: () => aiRunId,
+      now: (() => {
+        const times = [new Date('2026-08-12T12:00:00.000Z'), new Date('2026-08-12T12:00:01.000Z')];
+        return () => times.shift() ?? new Date('2026-08-12T12:00:02.000Z');
+      })(),
+    });
+
+    await expect(gateway.call(gatewayRequest())).rejects.toMatchObject({
+      code: 'INCOMPLETE_MODEL_OUTPUT',
+      details: { aiRunId },
+      executionEvidence: { providerResponseStatus: 'INCOMPLETE', attempts: 1 },
+    });
+    const record = await readAiRun(aiRunId);
+    expect(record).toMatchObject({
+      ID: aiRunId,
+      status: 'FAILED',
+      responseModel: 'gpt-5.6-luna-failed-snapshot',
+      providerRequestId: 'req_sqlite_failed',
+      providerResponseId: 'resp_sqlite_failed',
+      providerResponseStatus: 'INCOMPLETE',
+      providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      attempts: 1,
+      latencyMs: 240,
+      errorCode: 'INCOMPLETE_MODEL_OUTPUT',
+      retryable: false,
+    });
+    expect(String(record?.ID)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(JSON.stringify(record)).not.toMatch(
+      /PROMPT_SENTINEL|CANDIDATE_SENTINEL|RAW_PROVIDER_MESSAGE|sk-proj-rawsentinel/,
+    );
+    await expect(
+      cds.db.run(cds.ql.SELECT.from('trip.planner.NarrativeRuns')),
+    ).resolves.toHaveLength(0);
+    await expect(
+      cds.db.run(cds.ql.SELECT.from('trip.planner.NarrativeReviewRuns')),
+    ).resolves.toHaveLength(0);
   });
 });
 

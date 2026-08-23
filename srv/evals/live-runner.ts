@@ -8,6 +8,10 @@ import {
   type StructuredAiRequest,
 } from '../ai/contracts.ts';
 import { AI_ERROR_CODE_VALUES, AiError, type AiErrorCode } from '../ai/errors.ts';
+import type {
+  AiProviderIncompleteReason,
+  AiProviderResponseStatus,
+} from '../ai/failure-execution-evidence.ts';
 import type { GroundedOptionContext } from '../narratives/grounded-option-context.ts';
 import {
   createNarrativeJudgeRequest,
@@ -37,7 +41,11 @@ import {
   type NarrativeQualityDimension,
   type ResolvedNarrativeQualityDataset,
 } from './dataset.ts';
-import { LiveEvalBudgetGuard, preflightLiveEvaluation } from './live-guard.ts';
+import {
+  LiveEvalBudgetGuard,
+  preflightLiveEvaluation,
+  type LiveCallReservation,
+} from './live-guard.ts';
 import {
   buildNarrativeLiveEvalQualityContext,
   prepareNarrativeQualityLiveEvalPlan,
@@ -110,7 +118,14 @@ export interface SafeNarrativeLiveEvalFailure {
   readonly caseId?: string;
   readonly taskType?: 'GENERATE' | 'JUDGE';
   readonly logicalCallSequence?: number;
+  readonly completedLogicalCalls?: number;
   readonly underlyingCode?: string;
+  readonly providerResponseStatus?: AiProviderResponseStatus;
+  readonly providerIncompleteReason?: AiProviderIncompleteReason;
+  readonly attempts?: number;
+  readonly usage?: Readonly<Required<AiUsage>>;
+  readonly knownCumulativeProviderAttempts?: number;
+  readonly knownCumulativeEstimatedCostUsdMicros?: number;
 }
 
 interface ValidatedExecution<TOutput> {
@@ -209,12 +224,21 @@ export class NarrativeLiveEvalExecutionError extends Error {
   readonly logicalCallSequence: number;
   readonly providerCallMayHaveOccurred: boolean;
   readonly underlyingCode: string;
+  readonly completedLogicalCalls: number;
+  readonly attemptAccountingComplete: boolean;
+  readonly providerResponseStatus?: AiProviderResponseStatus;
+  readonly providerIncompleteReason?: AiProviderIncompleteReason;
+  readonly attempts?: number;
+  readonly usage?: Readonly<Required<AiUsage>>;
+  readonly knownCumulativeProviderAttempts: number;
+  readonly knownCumulativeEstimatedCostUsdMicros: number;
 
   constructor(
     descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
     logicalCallSequence: number,
     providerCallMayHaveOccurred: boolean,
     underlying: unknown,
+    accounting: FailureAccounting,
   ) {
     super('Live evaluation stopped safely without a partial report.');
     this.name = 'NarrativeLiveEvalExecutionError';
@@ -223,6 +247,90 @@ export class NarrativeLiveEvalExecutionError extends Error {
     this.logicalCallSequence = logicalCallSequence;
     this.providerCallMayHaveOccurred = providerCallMayHaveOccurred;
     this.underlyingCode = underlyingFailureCode(underlying);
+    this.completedLogicalCalls = accounting.completedLogicalCalls;
+    this.attemptAccountingComplete = accounting.attemptAccountingComplete;
+    this.knownCumulativeProviderAttempts = accounting.knownCumulativeProviderAttempts;
+    this.knownCumulativeEstimatedCostUsdMicros = accounting.knownCumulativeEstimatedCostUsdMicros;
+    if (accounting.providerResponseStatus !== undefined) {
+      this.providerResponseStatus = accounting.providerResponseStatus;
+    }
+    if (accounting.providerIncompleteReason !== undefined) {
+      this.providerIncompleteReason = accounting.providerIncompleteReason;
+    }
+    if (accounting.attempts !== undefined) this.attempts = accounting.attempts;
+    if (accounting.usage !== undefined) this.usage = accounting.usage;
+  }
+}
+
+interface FailureAccounting {
+  readonly completedLogicalCalls: number;
+  readonly attemptAccountingComplete: boolean;
+  readonly providerResponseStatus?: AiProviderResponseStatus;
+  readonly providerIncompleteReason?: AiProviderIncompleteReason;
+  readonly attempts?: number;
+  readonly usage?: Readonly<Required<AiUsage>>;
+  readonly knownCumulativeProviderAttempts: number;
+  readonly knownCumulativeEstimatedCostUsdMicros: number;
+}
+
+function settleFailureAccounting(
+  guard: LiveEvalBudgetGuard,
+  descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
+  reservation: LiveCallReservation | undefined,
+  error: unknown,
+  completedLogicalCalls: number,
+): FailureAccounting {
+  const before = guard.snapshot();
+  const evidence = error instanceof AiError ? error.executionEvidence : undefined;
+  const common = {
+    completedLogicalCalls,
+    ...(evidence?.providerResponseStatus === undefined
+      ? {}
+      : { providerResponseStatus: evidence.providerResponseStatus }),
+    ...(evidence?.providerIncompleteReason === undefined
+      ? {}
+      : { providerIncompleteReason: evidence.providerIncompleteReason }),
+    ...(evidence?.attempts === undefined ? {} : { attempts: evidence.attempts }),
+    ...(evidence?.usage === undefined ? {} : { usage: evidence.usage }),
+  };
+  if (reservation === undefined) {
+    return {
+      ...common,
+      attemptAccountingComplete: true,
+      knownCumulativeProviderAttempts: before.providerAttemptsCompleted,
+      knownCumulativeEstimatedCostUsdMicros: before.estimatedCostUsdMicros,
+    };
+  }
+  if (
+    evidence === undefined ||
+    evidence.provider !== descriptor.profile.provider ||
+    evidence.configuredModel !== descriptor.profile.model ||
+    evidence.attempts !== 1 ||
+    evidence.usage === undefined
+  ) {
+    return {
+      ...common,
+      attemptAccountingComplete: false,
+      knownCumulativeProviderAttempts: before.providerAttemptsCompleted,
+      knownCumulativeEstimatedCostUsdMicros: before.estimatedCostUsdMicros,
+    };
+  }
+  try {
+    const usage = normalizeUsage(evidence.usage);
+    const settled = guard.settleCall({ reservation, attempts: 1, attemptUsages: [usage] });
+    return {
+      ...common,
+      attemptAccountingComplete: true,
+      knownCumulativeProviderAttempts: settled.providerAttemptsCompleted,
+      knownCumulativeEstimatedCostUsdMicros: settled.estimatedCostUsdMicros,
+    };
+  } catch {
+    return {
+      ...common,
+      attemptAccountingComplete: false,
+      knownCumulativeProviderAttempts: before.providerAttemptsCompleted,
+      knownCumulativeEstimatedCostUsdMicros: before.estimatedCostUsdMicros,
+    };
   }
 }
 
@@ -233,12 +341,22 @@ export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiv
       code: error.code,
       reportProduced: false,
       providerCallMayHaveOccurred: error.providerCallMayHaveOccurred,
-      // The current gateway exposes neither attempt count nor usage after a thrown failure.
-      attemptAccountingComplete: !error.providerCallMayHaveOccurred,
+      attemptAccountingComplete: error.attemptAccountingComplete,
       caseId: error.caseId,
       taskType: error.taskType,
       logicalCallSequence: error.logicalCallSequence,
+      completedLogicalCalls: error.completedLogicalCalls,
       underlyingCode: error.underlyingCode,
+      ...(error.providerResponseStatus === undefined
+        ? {}
+        : { providerResponseStatus: error.providerResponseStatus }),
+      ...(error.providerIncompleteReason === undefined
+        ? {}
+        : { providerIncompleteReason: error.providerIncompleteReason }),
+      ...(error.attempts === undefined ? {} : { attempts: error.attempts }),
+      ...(error.usage === undefined ? {} : { usage: error.usage }),
+      knownCumulativeProviderAttempts: error.knownCumulativeProviderAttempts,
+      knownCumulativeEstimatedCostUsdMicros: error.knownCumulativeEstimatedCostUsdMicros,
     };
   }
   if (error instanceof EvalContractError) {
@@ -397,9 +515,9 @@ function findCall<TOutput>(
 
 /**
  * Executes only after the complete synthetic plan passes opt-in, credential, price and cap
- * preflight. With the current gateway failure contract, retry must be zero: a thrown failure does
- * not expose its attempt count or usage. The runner therefore stops at that call, never settles an
- * unverifiable reservation, never starts the next call, and never emits a partial report.
+ * preflight. Retry remains zero. A terminal failure settles its active reservation only when the
+ * thrown error carries a complete, validated one-attempt usage record for the exact profile. Every
+ * failure stops the run before the next call and never emits a partial report.
  */
 export async function runNarrativeQualityLiveEvaluation(
   input: RunNarrativeLiveEvaluationInput,
@@ -425,7 +543,7 @@ export async function runNarrativeQualityLiveEvaluation(
   if (input.config.maxRetries !== 0) {
     throw new EvalContractError(
       'LIVE_EVAL_BLOCKED',
-      'Live eval requires zero retries until failed calls expose safe attempt accounting.',
+      'Live eval requires the phase contract of zero provider retries.',
     );
   }
   const preflightSummary = summarizeNarrativeLiveEvalCostPreflight(
@@ -450,8 +568,9 @@ export async function runNarrativeQualityLiveEvaluation(
       actualRequest === descriptor.request ? descriptor : { ...descriptor, request: actualRequest };
     let logicalCallSequence = guard.snapshot().logicalCallsStarted + 1;
     let providerCallMayHaveOccurred = false;
+    let reservation: LiveCallReservation | undefined;
     try {
-      const reservation = guard.authorizeNextCall(actualDescriptor.budget);
+      reservation = guard.authorizeNextCall(actualDescriptor.budget);
       logicalCallSequence = reservation.sequence;
       providerCallMayHaveOccurred = true;
       const execution = await executor.call(actualDescriptor);
@@ -501,6 +620,13 @@ export async function runNarrativeQualityLiveEvaluation(
         logicalCallSequence,
         providerCallMayHaveOccurred,
         error,
+        settleFailureAccounting(
+          guard,
+          actualDescriptor as NarrativeLiveEvalCallDescriptor<unknown>,
+          reservation,
+          error,
+          operations.length,
+        ),
       );
     }
   };

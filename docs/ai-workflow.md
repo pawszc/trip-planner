@@ -1,6 +1,6 @@
 # Przepływ AI
 
-## Stan Fazy 3B3 (`REVIEW`)
+## Stan Fazy 3B3 (`REVIEW — LIVE BASELINE STOPPED SAFELY / FAILURE-EVIDENCE FIX IN REVIEW`)
 
 Faza 3B3 rozszerza pierwszy jawny use case produktu, bound action
 `RankedOptions.generateNarrative()`, o fail-closed bramkę jakości. Akcja opisuje pojedynczą
@@ -24,8 +24,9 @@ override w requestcie produktu.
 7. Gateway ponownie waliduje output oraz provider, configured model, task, wersje,
    fingerprint, UUID i response model.
 8. Recorder aktualizuje ten sam rekord do `SUCCEEDED`; dopiero wtedy output może wrócić.
-9. Po błędzie adaptera recorder aktualizuje ten sam rekord do `FAILED`; dopiero wtedy wraca
-   znormalizowany błąd.
+9. Po błędzie adaptera recorder aktualizuje ten sam rekord do `FAILED`; jeśli terminalna
+   odpowiedź dostarczyła bezpieczne metadata, zapisuje response model/status/reason/IDs,
+   usage, attempts i latency. Dopiero wtedy wraca znormalizowany błąd z zachowanym evidence.
 
 Na SQLite ten lifecycle nie może zaczynać się wewnątrz rozpoczętej transakcji DB requestu,
 bo niezależny audit czekałby na jedyne połączenie trzymane przez outer request. Store
@@ -50,6 +51,13 @@ output i surowe błędy nigdy nie są utrwalane. Encja jest wewnętrzna i nie ma
 OData. Jest efemeryczna: default retencji wynosi 30 dni, konfiguracja zachowuje zakres
 1–365 dni, a cleanup ma testowalny kontrakt `deleteExpired(now)`, ale nie ma jeszcze
 schedulera. Narracje są danymi produktu i nie mają mandatory association do `AiRuns`.
+
+Terminalny kontrakt OpenAI rozróżnia `INCOMPLETE / MAX_OUTPUT_TOKENS` jako non-retryable
+`INCOMPLETE_MODEL_OUTPUT`, `INCOMPLETE / CONTENT_FILTER` jako `MODEL_REFUSAL`, completed bez
+parsed outputu jako `EMPTY_MODEL_OUTPUT`, a failed/cancelled/queued/in-progress/unknown jako
+fail-closed `PROVIDER_ERROR`. `AiFailureExecutionEvidence` jest zamknięte i nie ma miejsca
+na prompt, input, output, provider body, raw message, cause lub stack. Nie ma continuation,
+auto-resume ani retry.
 
 ## Quality-gated narrative w Fazie 3B3
 
@@ -122,5 +130,9 @@ resolvery, kontrakty, metryki, gates i report path, ale ma
 JSON Schema. Live E2E ma osobne, deterministic `requiredProperties`, które nie korzystają z
 werdyktu ani findings `JUDGE`; sama walidacja publication bundle pozostaje dowodem in-memory,
 a realny zapis/linkage jest testowany na produkcyjnym CAP/SQLite. Faza nie wykonuje
-`DECIDE`. Finalny synthetic live baseline jest osobno guardowany i wymaga jawnej zgody; nie
-został uruchomiony, koszt wynosi USD 0, dlatego faza pozostaje w `REVIEW`.
+`DECIDE`. Jedyny autoryzowany finalny synthetic live baseline został wykonany dokładnie raz
+2026-08-23 i zatrzymał się fail-closed na 18/46 (`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`).
+Sekwencje 1–17 mają kompletny subtotal USD 0.032386; accounting próby 18 jest niepełny, więc
+pełny koszt nie jest deklarowany. Nie powstał report ani accepted manifest, nie było rerunu i
+AI pozostaje wyłączone. Ten failure-evidence hardening wykonuje zero provider calls i kosztuje
+USD 0, dlatego faza pozostaje w `REVIEW`.

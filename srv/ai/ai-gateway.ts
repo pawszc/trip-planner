@@ -108,8 +108,20 @@ function withDurableAiRunId(error: AiError, aiRunId: string): AiError {
     ...(error.model === undefined ? {} : { model: error.model }),
     retryable: error.retryable,
     details: { ...error.details, aiRunId },
+    ...(error.executionEvidence === undefined
+      ? {}
+      : { executionEvidence: error.executionEvidence }),
     cause: error,
   });
+}
+
+function failureEvidenceForProfile(error: AiError, profile: AiExecutionProfile) {
+  const evidence = error.executionEvidence;
+  return evidence !== undefined &&
+    evidence.provider === profile.provider &&
+    evidence.configuredModel === profile.model
+    ? evidence
+    : undefined;
 }
 
 function adapterFailure(cause: unknown, profile: AiExecutionProfile): AiError {
@@ -371,19 +383,44 @@ export class AiGateway {
       };
     } catch (cause) {
       const error = adapterFailure(cause, profile);
+      const executionEvidence = failureEvidenceForProfile(error, profile);
       const failureEvent: AiRunTelemetryEvent = {
         ...commonEvent,
         status: 'FAILED',
         completedAt: this.now().toISOString(),
         errorCode: error.code,
         retryable: error.retryable,
+        ...(executionEvidence?.responseModel === undefined
+          ? {}
+          : { responseModel: executionEvidence.responseModel }),
+        ...(executionEvidence?.usage === undefined ? {} : { usage: executionEvidence.usage }),
+        ...(executionEvidence?.latencyMs === undefined
+          ? {}
+          : { latencyMs: executionEvidence.latencyMs }),
+        ...(executionEvidence?.attempts === undefined
+          ? {}
+          : { attempts: executionEvidence.attempts }),
+        ...(executionEvidence?.providerRequestId === undefined
+          ? {}
+          : { providerRequestId: executionEvidence.providerRequestId }),
+        ...(executionEvidence?.providerResponseId === undefined
+          ? {}
+          : { providerResponseId: executionEvidence.providerResponseId }),
+        ...(executionEvidence?.providerResponseStatus === undefined
+          ? {}
+          : { providerResponseStatus: executionEvidence.providerResponseStatus }),
+        ...(executionEvidence?.providerIncompleteReason === undefined
+          ? {}
+          : { providerIncompleteReason: executionEvidence.providerIncompleteReason }),
         ...(error.code === 'MODEL_REFUSAL'
           ? {
               refusal: {
                 refused: true,
-                ...(typeof error.details.category === 'string'
-                  ? { category: error.details.category }
-                  : {}),
+                ...(executionEvidence?.refusalCategory === undefined
+                  ? typeof error.details.category === 'string'
+                    ? { category: error.details.category }
+                    : {}
+                  : { category: executionEvidence.refusalCategory }),
               },
             }
           : {}),

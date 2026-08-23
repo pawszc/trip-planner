@@ -19,6 +19,12 @@ import type {
 } from '../contracts.ts';
 import { AiError, createMissingCredentialsError, normalizeProviderFailure } from '../errors.ts';
 import type { ProviderFailureMetadata } from '../errors.ts';
+import {
+  parseAiFailureExecutionEvidence,
+  type AiFailureExecutionEvidence,
+  type AiProviderIncompleteReason,
+  type AiProviderResponseStatus,
+} from '../failure-execution-evidence.ts';
 
 const CREDENTIAL_ENVIRONMENT_VARIABLE = 'OPENAI_API_KEY';
 
@@ -44,12 +50,19 @@ export interface OpenAiStructuredRequest<TOutput> {
 
 export interface OpenAiStructuredResponse<TOutput> {
   outputParsed: TOutput | null;
-  model: string;
-  usage: AiUsage;
+  responseStatus: OpenAiResponseStatus;
+  incompleteReason?: OpenAiIncompleteReason;
+  providerResponseId?: string;
   providerRequestId?: string;
+  responseModel?: string;
+  usage?: Readonly<Required<AiUsage>>;
   attempts: number;
   refused: boolean;
+  responseErrorCode?: string;
 }
+
+export type OpenAiResponseStatus = AiProviderResponseStatus;
+export type OpenAiIncompleteReason = AiProviderIncompleteReason;
 
 export interface OpenAiResponsesClient {
   execute<TOutput>(
@@ -74,7 +87,7 @@ interface OpenAiUsagePayload {
   output_tokens_details: { reasoning_tokens: number };
 }
 
-function mapOpenAiUsage(usage: OpenAiUsagePayload): AiUsage {
+function mapOpenAiUsage(usage: OpenAiUsagePayload): Readonly<Required<AiUsage>> {
   return {
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
@@ -117,23 +130,28 @@ export const createOpenAiSdkClient: OpenAiClientFactory = (options) => {
           tool_choice: request.toolChoice,
         });
         const { data, request_id: requestId } = await pending.withResponse();
-        if (data.usage === null || data.usage === undefined) {
-          throw new AiError('PROVIDER_ERROR', 'OpenAI omitted required usage metadata.', {
-            provider: AiProvider.OPENAI,
-            model: request.model,
-          });
-        }
         const refused = data.output.some(
           (item) =>
             item.type === 'message' && item.content.some((content) => content.type === 'refusal'),
         );
+        const incompleteReason = mapOpenAiIncompleteReason(data.incomplete_details?.reason);
+        const providerResponseId = safeProviderIdentifier(data.id);
+        const providerRequestId = safeProviderIdentifier(requestId);
+        const responseModel = safeModelIdentifier(data.model);
+        const responseErrorCode = safeProviderCode(data.error?.code);
         return {
           outputParsed: data.output_parsed,
-          model: data.model,
-          usage: mapOpenAiUsage(data.usage),
+          responseStatus: mapOpenAiResponseStatus(data.status),
+          ...(incompleteReason === undefined ? {} : { incompleteReason }),
+          ...(providerResponseId === undefined ? {} : { providerResponseId }),
+          ...(responseModel === undefined ? {} : { responseModel }),
+          ...(data.usage === null || data.usage === undefined
+            ? {}
+            : { usage: mapOpenAiUsage(data.usage) }),
           attempts: Math.max(attempts, 1),
           refused,
-          ...(requestId === null ? {} : { providerRequestId: requestId }),
+          ...(providerRequestId === undefined ? {} : { providerRequestId }),
+          ...(responseErrorCode === undefined ? {} : { responseErrorCode }),
         };
       } catch (error) {
         if (
@@ -168,6 +186,89 @@ function isLengthFinishError(error: unknown): boolean {
 
 function safeProviderCode(value: unknown): string | undefined {
   return typeof value === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : undefined;
+}
+
+function safeProviderIdentifier(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,249}$/u.test(value)
+    ? value
+    : undefined;
+}
+
+function safeModelIdentifier(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/u.test(value)
+    ? value
+    : undefined;
+}
+
+function mapOpenAiResponseStatus(value: unknown): OpenAiResponseStatus {
+  switch (value) {
+    case 'completed':
+      return 'COMPLETED';
+    case 'incomplete':
+      return 'INCOMPLETE';
+    case 'failed':
+      return 'FAILED';
+    case 'cancelled':
+      return 'CANCELLED';
+    case 'queued':
+      return 'QUEUED';
+    case 'in_progress':
+      return 'IN_PROGRESS';
+    default:
+      return 'UNKNOWN';
+  }
+}
+
+function mapOpenAiIncompleteReason(value: unknown): OpenAiIncompleteReason | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === 'max_output_tokens') return 'MAX_OUTPUT_TOKENS';
+  if (value === 'content_filter') return 'CONTENT_FILTER';
+  return 'UNKNOWN';
+}
+
+function executionEvidence(
+  response: OpenAiStructuredResponse<unknown>,
+  configuredModel: string,
+  latencyMs: number,
+  refusalCategory?: AiFailureExecutionEvidence['refusalCategory'],
+): AiFailureExecutionEvidence {
+  return parseAiFailureExecutionEvidence({
+    provider: AiProvider.OPENAI,
+    configuredModel,
+    ...(response.responseModel === undefined ? {} : { responseModel: response.responseModel }),
+    providerResponseStatus: response.responseStatus,
+    ...(response.incompleteReason === undefined
+      ? {}
+      : { providerIncompleteReason: response.incompleteReason }),
+    ...(response.providerRequestId === undefined
+      ? {}
+      : { providerRequestId: response.providerRequestId }),
+    ...(response.providerResponseId === undefined
+      ? {}
+      : { providerResponseId: response.providerResponseId }),
+    ...(response.usage === undefined ? {} : { usage: response.usage }),
+    attempts: response.attempts,
+    latencyMs,
+    ...(refusalCategory === undefined ? {} : { refusalCategory }),
+  });
+}
+
+function providerTerminalError(
+  response: OpenAiStructuredResponse<unknown>,
+  configuredModel: string,
+  evidence: AiFailureExecutionEvidence,
+): AiError {
+  return new AiError('PROVIDER_ERROR', 'OpenAI returned a non-success terminal response.', {
+    provider: AiProvider.OPENAI,
+    model: configuredModel,
+    details: {
+      responseStatus: response.responseStatus,
+      ...(response.responseErrorCode === undefined
+        ? {}
+        : { providerCode: response.responseErrorCode }),
+    },
+    executionEvidence: evidence,
+  });
 }
 
 function openAiFailureMetadata(error: unknown): ProviderFailureMetadata {
@@ -292,30 +393,85 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         toolChoice: 'none',
       });
 
+      const latencyMs = Math.max(0, Math.round(this.now() - startedAt));
+
+      if (
+        response.responseStatus === 'INCOMPLETE' &&
+        response.incompleteReason === 'MAX_OUTPUT_TOKENS'
+      ) {
+        const evidence = executionEvidence(response, profile.model, latencyMs);
+        throw new AiError(
+          'INCOMPLETE_MODEL_OUTPUT',
+          'OpenAI reached the configured output limit before completing structured output.',
+          {
+            provider: this.provider,
+            model: profile.model,
+            retryable: false,
+            executionEvidence: evidence,
+          },
+        );
+      }
+      if (
+        response.responseStatus === 'INCOMPLETE' &&
+        response.incompleteReason === 'CONTENT_FILTER'
+      ) {
+        const evidence = executionEvidence(response, profile.model, latencyMs, 'content_filter');
+        throw new AiError('MODEL_REFUSAL', 'OpenAI filtered the structured output response.', {
+          provider: this.provider,
+          model: profile.model,
+          retryable: false,
+          details: { category: 'content_filter' },
+          executionEvidence: evidence,
+        });
+      }
+      if (response.responseStatus !== 'COMPLETED') {
+        const evidence = executionEvidence(response, profile.model, latencyMs);
+        throw providerTerminalError(response, profile.model, evidence);
+      }
+
       if (response.refused) {
+        const evidence = executionEvidence(response, profile.model, latencyMs, 'model_refusal');
         throw new AiError('MODEL_REFUSAL', 'OpenAI refused the structured output request.', {
           provider: this.provider,
           model: profile.model,
+          details: { category: 'model_refusal' },
+          executionEvidence: evidence,
         });
       }
       if (response.outputParsed === null) {
+        const evidence = executionEvidence(response, profile.model, latencyMs);
         throw new AiError('EMPTY_MODEL_OUTPUT', 'OpenAI returned no parsed structured output.', {
           provider: this.provider,
           model: profile.model,
+          executionEvidence: evidence,
         });
       }
+      const evidence = executionEvidence(response, profile.model, latencyMs);
       const locallyValidated = request.outputSchema.safeParse(response.outputParsed);
       if (!locallyValidated.success) {
         throw new AiError(
           'INVALID_STRUCTURED_OUTPUT',
           'OpenAI output failed local schema validation.',
-          { provider: this.provider, model: profile.model, cause: locallyValidated.error },
+          {
+            provider: this.provider,
+            model: profile.model,
+            executionEvidence: evidence,
+            cause: locallyValidated.error,
+          },
         );
       }
-      if (response.model.trim().length === 0) {
+      if (response.responseModel === undefined) {
         throw new AiError('PROVIDER_ERROR', 'OpenAI returned an empty response model.', {
           provider: this.provider,
           model: profile.model,
+          executionEvidence: evidence,
+        });
+      }
+      if (response.usage === undefined) {
+        throw new AiError('PROVIDER_ERROR', 'OpenAI omitted required usage metadata.', {
+          provider: this.provider,
+          model: profile.model,
+          executionEvidence: evidence,
         });
       }
 
@@ -324,13 +480,13 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         output: locallyValidated.data,
         provider: this.provider,
         configuredModel: profile.model,
-        responseModel: response.model,
+        responseModel: response.responseModel,
         taskType: request.taskType,
         promptVersion: request.promptVersion,
         schemaVersion: request.schemaVersion,
         inputFingerprint,
         usage: response.usage,
-        latencyMs: Math.max(0, Math.round(this.now() - startedAt)),
+        latencyMs,
         attempts: response.attempts,
         refusal: { refused: false },
         ...(response.providerRequestId === undefined
@@ -356,9 +512,10 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         });
       }
       if (isLengthFinishError(error)) {
-        throw new AiError('EMPTY_MODEL_OUTPUT', 'OpenAI did not complete structured output.', {
+        throw new AiError('INCOMPLETE_MODEL_OUTPUT', 'OpenAI did not complete structured output.', {
           provider: this.provider,
           model: profile.model,
+          retryable: false,
           cause: error,
         });
       }

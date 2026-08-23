@@ -32,5 +32,19 @@ network-free kalkulacją tego samego planu oraz kosztu: aktualny profil Terra ma
 USD micros i mieści się w cap. Porównanie nie zmienia runtime defaultu Terra ani nie
 autoryzuje zmiany modelu. Produkcyjny `npm run eval:live` nadal wymaga obu opt-inów,
 credentiali i przejścia wszystkich limitów; dopiero wtedy wdraża odizolowany, ignorowany
-przez Git store `.tools/narrative-live-eval/` z bezpiecznymi metadata `AiRuns`. Baseline nie
-został uruchomiony; rzeczywisty koszt wynosi USD 0, dlatego Faza 3B3 pozostaje `REVIEW`.
+przez Git store `.tools/narrative-live-eval/` z bezpiecznymi metadata `AiRuns`.
+
+Jedyny autoryzowany run z 2026-08-23 został wykonany dokładnie raz na profilu Sonnet 5/Luna
+i zatrzymał się fail-closed na 18/46 (`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`). Sekwencje 1–17
+są kompletnie rozliczone: 17 prób i subtotal 32,386 USD micros (USD 0.032386). Próba 18 nie
+ma kompletnego usage/attempt settlement, dlatego pełny rzeczywisty koszt runu jest nieznany,
+`attemptAccountingComplete=false`, raport jakości i accepted manifest nie powstały. Nie było
+rerunu ani żadnego `GENERATE`/Anthropic call. AI pozostaje wyłączone, a Faza 3B3 ma status
+`REVIEW — LIVE BASELINE STOPPED SAFELY / FAILURE-EVIDENCE FIX IN REVIEW`.
+
+Retry policy `zero-retry-with-terminal-failure-accounting-v2` zachowuje zero retry. Runner
+rozlicza failed attempt tym samym integer-only cost engine tylko wtedy, gdy zamknięte
+`AiFailureExecutionEvidence` zawiera dokładne provider/configured-model binding, jedną próbę
+i kompletne usage. Przy brakującym polu zatrzymuje run bez partial reportu i bez zgadywania
+attempts, usage lub kosztu. Ten hardening oraz wszystkie jego testy są credential-free i
+wykonują zero provider calls.

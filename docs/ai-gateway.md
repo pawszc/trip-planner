@@ -102,9 +102,10 @@ Finalny live eval ma osobny fail-closed loader i nie jest włączany przez sam g
 Opt-in live eval nie wystarcza samodzielnie: preflight wymaga także `AI_ENABLED=true`,
 credentiali, wersjonowanej ceny każdego dokładnego configured modelu i planu mieszczącego
 się we wszystkich limitach. Unknown price lub przekroczenie rezerwacji blokuje call przed
-providerem. Runner v1 ma dokładnie 46 logical calls i wymaga `AI_MAX_RETRIES=0`: po thrown
-provider failure gateway nie udostępnia jeszcze bezpiecznego attempts/usage settlement, więc
-runner zatrzymuje się bez częściowego raportu. Checked-in katalog cen zawiera oficjalne
+providerem. Runner ma dokładnie 46 logical calls i wymaga `AI_MAX_RETRIES=0`. Polityka
+`zero-retry-with-terminal-failure-accounting-v2` rozlicza terminalny failed attempt tylko z
+kompletnego, zamkniętego evidence jednej próby; przy evidence niepełnym zatrzymuje się bez
+częściowego raportu i bez wymyślania usage, attempts lub kosztu. Checked-in katalog cen zawiera oficjalne
 stawki API zweryfikowane 2026-08-21. Credential-free `npm run eval:live:preflight` używa
 dokładnie tego samego frozen planu i integer-only cost estimatora, ale nie czyta opt-inów ani
 credentiali i nie ma ścieżki do executora, adaptera, gatewaya lub audit store. Pokazuje, że
@@ -148,6 +149,21 @@ walidację Zod. Gateway dodatkowo waliduje `result.output` tym samym schematem p
 metadanych i przed durable `SUCCEEDED`, więc custom/test adapter nie może ominąć kontraktu
 typem TypeScript.
 
+Klient OpenAI zachowuje z terminalnej odpowiedzi wyłącznie zamknięte metadata: status,
+`incomplete_details.reason`, bezpieczne request/response IDs, response model, usage, attempts
+i kontrolowany response error code. Adapter klasyfikuje je jawnie:
+
+- `COMPLETED` z poprawnym parsed outputem → sukces;
+- `INCOMPLETE / MAX_OUTPUT_TOKENS` → non-retryable `INCOMPLETE_MODEL_OUTPUT`;
+- `INCOMPLETE / CONTENT_FILTER` → `MODEL_REFUSAL` z kategorią `content_filter`;
+- `COMPLETED` bez parsed outputu → `EMPTY_MODEL_OUTPUT`;
+- `FAILED`, `CANCELLED`, `QUEUED`, `IN_PROGRESS` albo status nieznany → fail-closed
+  `PROVIDER_ERROR`.
+
+Nie ma continuation, auto-resume ani retry. `AiFailureExecutionEvidence` ma runtime-enforced
+allowlist i nie zawiera pola na prompt, input, output, raw JSON, provider body, raw message,
+stack lub dowolne `details`.
+
 `store: false` ogranicza utrwalenie obiektu odpowiedzi przez OpenAI, ale samo nie gwarantuje
 Zero Data Retention ani braku logów abuse monitoring. Ustawienia organizacji, ZDR i
 dozwolony zakres danych muszą zostać zatwierdzone przed ustawieniem `AI_ENABLED=true` dla
@@ -188,7 +204,8 @@ Lifecycle jednego UUID:
 1. Gateway tworzy fingerprint, `aiRunId` i event `STARTED`.
 2. Dopiero po trwałym `STARTED` wywołuje adapter.
 3. Po poprawnym wyniku zapisuje `SUCCEEDED`, a dopiero potem zwraca output.
-4. Po znormalizowanym błędzie zapisuje `FAILED`, a dopiero potem zwraca błąd.
+4. Po znormalizowanym błędzie zapisuje `FAILED` wraz z dostępnym closed execution evidence,
+   a dopiero potem zwraca błąd. Opakowanie durable `aiRunId` zachowuje evidence.
 
 Polityka jest zawsze fail-closed:
 
@@ -215,7 +232,8 @@ pierwotnego fail-closed błędu.
 czasie walidacji przed product write i nadal pozwala zachować runy smoke/eval bez planu.
 Encja ma status/provider/task, oba modele, wersje, fingerprint, timestamps, `expiresAt`,
 skonfigurowany effort, skonfigurowany i efektywny limit output tokens, token usage, latency,
-attempts, provider request ID, refusal oraz kontrolowany error code/retryability. Nowe runy
+attempts, provider request/response ID, allowlistowany response status/incomplete reason,
+refusal oraz kontrolowany error code/retryability. Nowe runy
 wypełniają metadata profilu przed `STARTED`; addytywne pola legacy pozostają nullable bez
 defaultu. Jest to efemeryczny audyt wykonania, a nie dane produktu.
 
@@ -286,11 +304,12 @@ bundle w pamięci. Osobny test CAP/SQLite używa produkcyjnego recordera/store/w
 realnym zapisie odczytuje exact lineage/fingerprint/bloki/references, sprawdza atomowość oraz
 zachowanie review i produktu po cleanup obu `AiRuns`.
 
-Finalny live baseline jest oddzielony od smoke i CI. Wymaga osobnej zgody na dokładny plan
-wywołań i konserwatywny koszt, a preflight/guard egzekwują maksymalnie 48 logical calls, 56
-provider attempts oraz USD 3.00. Implementacja nie wykonała żadnego live call; rzeczywisty
-koszt wynosi USD 0, więc bez zatwierdzonego, przechodzącego baseline Faza 3B3 pozostaje w
-`REVIEW`.
+Finalny live baseline jest oddzielony od smoke i CI. Jedyny autoryzowany run z 2026-08-23
+zatrzymał się fail-closed na sekwencji 18/46 (`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`). Znany
+subtotal 17 rozliczonych operacji wynosi 32,386 USD micros; próba 18 nie ma kompletnego
+settlement, więc nie wolno deklarować pełnego kosztu. Nie powstał report ani accepted
+manifest i nie wykonano rerunu. Ten hardening wykonuje zero live calls i kosztuje USD 0;
+Faza 3B3 pozostaje `REVIEW`.
 
 ## Produktowy use case 3B3
 
@@ -350,5 +369,5 @@ quality gate — ADR 0008.
 - adaptery obsługują wyłącznie tekstowy structured output;
 - precheck pozostaje wąski i nie zastępuje semantycznej oceny `JUDGE`; granica money-stage
   opisana wyżej wymaga potwierdzenia podczas review;
-- produkt nie jest jeszcze włączony publicznie, a finalny live baseline nie został
-  zatwierdzony ani wykonany; koszt wynosi USD 0 i Faza 3B3 pozostaje `REVIEW`.
+- produkt nie jest jeszcze włączony publicznie; jedyny finalny live baseline zatrzymał się
+  bez pełnego reportu, accepted manifestu lub rerunu, więc Faza 3B3 pozostaje `REVIEW`.

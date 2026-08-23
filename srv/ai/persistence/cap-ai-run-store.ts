@@ -88,6 +88,15 @@ function completionColumns(update: AiRunSucceededUpdate | AiRunFailedUpdate) {
     ...(update.providerRequestId === undefined
       ? {}
       : { providerRequestId: update.providerRequestId }),
+    ...(update.providerResponseId === undefined
+      ? {}
+      : { providerResponseId: update.providerResponseId }),
+    ...(update.providerResponseStatus === undefined
+      ? {}
+      : { providerResponseStatus: update.providerResponseStatus }),
+    ...(update.providerIncompleteReason === undefined
+      ? {}
+      : { providerIncompleteReason: update.providerIncompleteReason }),
     ...(update.refusal.category === undefined ? {} : { refusalCategory: update.refusal.category }),
     ...(update.status === 'FAILED'
       ? { errorCode: update.errorCode, retryable: update.retryable }

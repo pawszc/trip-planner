@@ -81,7 +81,11 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - atomowy mapper `NarrativeRuns`/`OptionNarratives`/`NarrativeFactReferences` z walidacją
   dokładnego audytu AI oraz historycznym scalar `NarrativeRuns.aiRunId`;
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
-- structured outputs, ponowną lokalną walidację, refusal i brak poprawnej treści;
+- structured outputs, ponowną lokalną walidację oraz pełną klasyfikację terminalnych
+  Responses API: completed/incomplete/failed/cancelled/queued/in-progress, max output,
+  content filter, refusal i completed bez parsed outputu;
+- zamknięty `AiFailureExecutionEvidence`, zachowanie evidence przez durable `aiRunId`, brak
+  raw contentu w serializacji oraz settlement failed attempt wyłącznie z kompletnego usage;
 - timeout, retry, zamknięty katalog błędów oraz redakcję kluczy i nagłówków;
 - dokładnie jeden allowlistowany `AI_PRE_START_FAILURE` dla każdej próby `GENERATE`/`JUDGE`
   bez durable `STARTED`, bez `aiRunId`/raw danych i zawsze z `providerCallAttempted=false`;
@@ -111,7 +115,10 @@ sprawdza między innymi:
 - kontrolowany niedobór z diagnostyką i zerem częściowych opcji;
 - rollback wszystkich zapisów po awarii providera.
 - INSERT `STARTED` oraz aktualizację tego samego `AiRuns` do `SUCCEEDED`/`FAILED`;
-- pełne bezpieczne metadata runu, opcjonalne powiązanie `PlanningRun` i brak raw payloadów;
+- pełne bezpieczne metadata runu, terminalne response ID/status/incomplete reason, opcjonalne
+  powiązanie `PlanningRun` i brak raw payloadów;
+- realny readback terminalnego `FAILED` z usage/attempts/latency i prawdziwym UUID, przy
+  zerowych rekordach produktu/review oraz nullowych nowych polach dla legacy/`STARTED`;
 - odrzucenie brakującego lub ponownie kończonego runu oraz cleanup wyłącznie przeterminowanych;
 - brak publicznego endpointu `/trip-planner/AiRuns`.
 - pełną offline composition `AiGateway` + mock adapter + persistent recorder + real store;
@@ -223,8 +230,18 @@ adaptera, gatewaya ani bazy oraz używa tej samej czystej logiki planu i kosztu.
 snapshot cen z 2026-08-21 daje ceiling 6,950,969 USD micros dla aktualnego Terra i 1,056,177
 USD micros dla porównawczego Luna; tylko Luna mieści się w cap. To porównanie nie zmienia
 runtime defaultu Terra ani nie stanowi rekomendacji zmiany modelu.
-Nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI. W trakcie
-implementacji nie wykonano żadnego live call; rzeczywisty koszt wynosi USD 0.
+Nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI. Jedyny
+autoryzowany run z 2026-08-23 zatrzymał się fail-closed na 18/46 (`R06`, `JUDGE`,
+`EMPTY_MODEL_OUTPUT`). Pierwsze 17 operacji ma kompletny subtotal USD 0.032386; próba 18
+nie ma kompletnego accounting, więc pełny koszt nie jest deklarowany. Nie powstał report ani
+accepted manifest i nie było rerunu. Testy tego hardeningu wykonują zero live calls i kosztują
+USD 0.
+
+Regresje runnera dowodzą dwóch osobnych ścieżek. Kompletne, exact-profile evidence jednej
+próby jest rozliczane tym samym integer-only cost engine, zwiększa provider attempts i daje
+`attemptAccountingComplete=true`; evidence niepełne pozostawia accounting false bez
+domyślnego usage lub kosztu. Obie ścieżki zatrzymują kolejną sekwencję i zwracają wyłącznie
+allowlistowany safe failure bez partial reportu.
 
 Testy `AiRuns` uruchamiają prawdziwy CAP 10 i SQLite in-memory. Store wykonuje krótkie,
 niezależne transakcje i nie utrzymuje transakcji podczas call providera. Aktywna transakcja
