@@ -7,6 +7,10 @@ import type {
   ProfiledAiTaskType,
 } from './contracts.ts';
 import type { AiErrorCode } from './errors.ts';
+import type {
+  AiProviderIncompleteReason,
+  AiProviderResponseStatus,
+} from './failure-execution-evidence.ts';
 
 export type AiRunStatus = 'STARTED' | 'SUCCEEDED' | 'FAILED';
 
@@ -31,6 +35,9 @@ export interface AiRunTelemetryEvent {
   attempts?: number;
   usage?: AiUsage;
   providerRequestId?: string;
+  providerResponseId?: string;
+  providerResponseStatus?: AiProviderResponseStatus;
+  providerIncompleteReason?: AiProviderIncompleteReason;
   refusal?: AiRefusalState;
   errorCode?: AiErrorCode;
   retryable?: boolean;

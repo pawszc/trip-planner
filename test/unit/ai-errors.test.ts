@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AiProvider } from '../../srv/ai/contracts.js';
 import { AI_ERROR_CODE_VALUES, AiError, normalizeProviderFailure } from '../../srv/ai/errors.js';
+import { parseAiFailureExecutionEvidence } from '../../srv/ai/failure-execution-evidence.js';
 
 const modelContext = {
   provider: AiProvider.OPENAI,
@@ -24,6 +25,7 @@ describe('normalized AI errors', () => {
       'PROVIDER_UNAVAILABLE',
       'PROVIDER_ERROR',
       'MODEL_REFUSAL',
+      'INCOMPLETE_MODEL_OUTPUT',
       'EMPTY_MODEL_OUTPUT',
       'INVALID_STRUCTURED_OUTPUT',
     ]);
@@ -101,5 +103,64 @@ describe('normalized AI errors', () => {
     expect(serialized).not.toContain('stack');
     expect(error.message).toContain('[REDACTED]');
     expect(error.details.OPENAI_API_KEY).toBe('[REDACTED]');
+  });
+
+  it('serializes only the closed failure-evidence allowlist', () => {
+    const evidence = parseAiFailureExecutionEvidence({
+      provider: 'OPENAI',
+      configuredModel: 'gpt-5.6-luna',
+      responseModel: 'gpt-5.6-luna-2026-08-01',
+      providerResponseStatus: 'INCOMPLETE',
+      providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      providerRequestId: 'req_safe',
+      providerResponseId: 'resp_safe',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 3,
+        reasoningTokens: 1,
+      },
+      attempts: 1,
+      latencyMs: 20,
+    });
+    const rawSentinels = [
+      'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+      'PROMPT_SENTINEL',
+      'CANDIDATE_SENTINEL',
+      'RAW_PROVIDER_MESSAGE_SENTINEL',
+      'https://private.example.test/item',
+      'EXTERNAL_ITEM_ID_SENTINEL',
+    ];
+    const error = new AiError('INCOMPLETE_MODEL_OUTPUT', 'Terminal response was incomplete.', {
+      provider: AiProvider.OPENAI,
+      model: 'gpt-5.6-luna',
+      executionEvidence: evidence,
+      cause: new Error(rawSentinels.join(' ')),
+    });
+    const serialized = JSON.stringify(error.toSafeJSON());
+
+    expect(error.executionEvidence).toEqual(evidence);
+    for (const sentinel of rawSentinels) expect(serialized).not.toContain(sentinel);
+    expect(serialized).not.toContain('cause');
+    expect(serialized).not.toContain('stack');
+  });
+
+  it('rejects forbidden evidence fields and unsafe provider identifiers', () => {
+    expect(() =>
+      parseAiFailureExecutionEvidence({
+        provider: 'OPENAI',
+        configuredModel: 'gpt-5.6-luna',
+        prompt: 'PROMPT_SENTINEL',
+      }),
+    ).toThrow(/forbidden field/i);
+    expect(() =>
+      parseAiFailureExecutionEvidence({
+        provider: 'OPENAI',
+        configuredModel: 'gpt-5.6-luna',
+        providerResponseId: 'https://private.example.test/item',
+      }),
+    ).toThrow(/providerResponseId/i);
   });
 });

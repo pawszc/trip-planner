@@ -440,12 +440,97 @@ describe('narrative live-eval execution without provider calls', () => {
         caseId: 'P01',
         taskType: 'JUDGE',
         logicalCallSequence: 1,
+        completedLogicalCalls: 0,
         underlyingCode: 'PROVIDER_UNAVAILABLE',
+        knownCumulativeProviderAttempts: 0,
+        knownCumulativeEstimatedCostUsdMicros: 0,
       });
     }
 
     expect(completed).toBe(false);
     expect(calls).toBe(1);
+  });
+
+  it('settles one failed attempt from complete evidence and stops before the next sequence', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    let calls = 0;
+    let failure: unknown;
+
+    try {
+      await runNarrativeQualityLiveEvaluation({
+        env: enabledEnvironment,
+        config,
+        priceSnapshot: configuredPriceSnapshot(config),
+        createExecutor: async () => ({
+          async call(descriptor) {
+            calls += 1;
+            throw new AiError(
+              'INCOMPLETE_MODEL_OUTPUT',
+              'Controlled terminal incomplete response.',
+              {
+                provider: descriptor.profile.provider,
+                model: descriptor.profile.model,
+                retryable: false,
+                executionEvidence: {
+                  provider: descriptor.profile.provider,
+                  configuredModel: descriptor.profile.model,
+                  responseModel: `${descriptor.profile.model}-response-v1`,
+                  providerResponseStatus: 'INCOMPLETE',
+                  providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+                  providerRequestId: 'req_live_runner',
+                  providerResponseId: 'resp_live_runner',
+                  usage: {
+                    inputTokens: 100,
+                    outputTokens: 20,
+                    totalTokens: 120,
+                    cacheReadTokens: 0,
+                    cacheWriteTokens: 80,
+                    reasoningTokens: 5,
+                  },
+                  attempts: 1,
+                  latencyMs: 250,
+                },
+                cause: new Error(
+                  'sk-proj-private PROMPT_SENTINEL CANDIDATE_SENTINEL RAW_PROVIDER_MESSAGE',
+                ),
+              },
+            );
+          },
+        }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(calls).toBe(1);
+    expect(toSafeNarrativeLiveEvalFailure(failure)).toEqual({
+      status: 'FAILED',
+      code: 'LIVE_EVAL_EXECUTION_FAILED',
+      reportProduced: false,
+      providerCallMayHaveOccurred: true,
+      attemptAccountingComplete: true,
+      caseId: 'P01',
+      taskType: 'JUDGE',
+      logicalCallSequence: 1,
+      completedLogicalCalls: 0,
+      underlyingCode: 'INCOMPLETE_MODEL_OUTPUT',
+      providerResponseStatus: 'INCOMPLETE',
+      providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      attempts: 1,
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 80,
+        reasoningTokens: 5,
+      },
+      knownCumulativeProviderAttempts: 1,
+      knownCumulativeEstimatedCostUsdMicros: 4,
+    });
+    expect(JSON.stringify(toSafeNarrativeLiveEvalFailure(failure))).not.toMatch(
+      /sk-proj-private|PROMPT_SENTINEL|CANDIDATE_SENTINEL|RAW_PROVIDER_MESSAGE/,
+    );
   });
 
   it('fails closed on fake configured-model drift after one logical call', async () => {
@@ -509,6 +594,74 @@ describe('narrative live-eval CLI boundary', () => {
     expect(lines.join('\n')).not.toMatch(
       /Synthetic evaluation summary|factReferences|sourceUrl|externalItemId|api[_-]?key/iu,
     );
+  });
+
+  it('emits only allow-listed settled failure accounting and no raw sentinels', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    const lines: string[] = [];
+    let calls = 0;
+    const sentinels = [
+      'sk-proj-stdout-sentinel',
+      'PROMPT_STDOUT_SENTINEL',
+      'CANDIDATE_STDOUT_SENTINEL',
+      'RAW_PROVIDER_STDOUT_SENTINEL',
+      'https://private.example.test/source',
+      'EXTERNAL_ITEM_STDOUT_SENTINEL',
+    ];
+
+    const exitCode = await runNarrativeQualityLiveEvalScript(
+      enabledEnvironment,
+      (line) => lines.push(line),
+      {
+        loadPriceSnapshot: () => configuredPriceSnapshot(config),
+        createExecutor: async () => ({
+          async call(descriptor) {
+            calls += 1;
+            throw new AiError('INCOMPLETE_MODEL_OUTPUT', 'Controlled terminal failure.', {
+              provider: descriptor.profile.provider,
+              model: descriptor.profile.model,
+              executionEvidence: {
+                provider: descriptor.profile.provider,
+                configuredModel: descriptor.profile.model,
+                responseModel: `${descriptor.profile.model}-response-v1`,
+                providerResponseStatus: 'INCOMPLETE',
+                providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+                usage: {
+                  inputTokens: 100,
+                  outputTokens: 20,
+                  totalTokens: 120,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 80,
+                  reasoningTokens: 5,
+                },
+                attempts: 1,
+                latencyMs: 250,
+              },
+              cause: new Error(sentinels.join(' ')),
+            });
+          },
+        }),
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(calls).toBe(1);
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[1]!)).toMatchObject({
+      status: 'FAILED',
+      code: 'LIVE_EVAL_EXECUTION_FAILED',
+      underlyingCode: 'INCOMPLETE_MODEL_OUTPUT',
+      logicalCallSequence: 1,
+      completedLogicalCalls: 0,
+      providerCallMayHaveOccurred: true,
+      attempts: 1,
+      knownCumulativeProviderAttempts: 1,
+      knownCumulativeEstimatedCostUsdMicros: 4,
+      attemptAccountingComplete: true,
+      reportProduced: false,
+    });
+    const stdout = lines.join('\n');
+    for (const sentinel of sentinels) expect(stdout).not.toContain(sentinel);
   });
 
   it.each([

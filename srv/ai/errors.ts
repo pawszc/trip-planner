@@ -1,4 +1,8 @@
 import type { AiProvider } from './contracts.ts';
+import {
+  parseAiFailureExecutionEvidence,
+  type AiFailureExecutionEvidence,
+} from './failure-execution-evidence.ts';
 import { redactSensitiveData } from './redaction.ts';
 
 export const AI_ERROR_CODE_VALUES = [
@@ -15,6 +19,7 @@ export const AI_ERROR_CODE_VALUES = [
   'PROVIDER_UNAVAILABLE',
   'PROVIDER_ERROR',
   'MODEL_REFUSAL',
+  'INCOMPLETE_MODEL_OUTPUT',
   'EMPTY_MODEL_OUTPUT',
   'INVALID_STRUCTURED_OUTPUT',
 ] as const;
@@ -28,6 +33,7 @@ export interface AiErrorOptions {
   model?: string;
   retryable?: boolean;
   details?: AiErrorDetails;
+  executionEvidence?: AiFailureExecutionEvidence;
   cause?: unknown;
 }
 
@@ -37,6 +43,7 @@ export interface SafeAiError {
   message: string;
   retryable: boolean;
   details: AiErrorDetails;
+  executionEvidence?: AiFailureExecutionEvidence;
   provider?: AiProvider;
   model?: string;
 }
@@ -48,6 +55,7 @@ export class AiError extends Error {
   public readonly model?: string;
   public readonly retryable: boolean;
   public readonly details: AiErrorDetails;
+  public readonly executionEvidence?: AiFailureExecutionEvidence;
 
   constructor(code: AiErrorCode, message: string, options: AiErrorOptions = {}) {
     const redactedMessage = redactSensitiveData(message);
@@ -73,6 +81,9 @@ export class AiError extends Error {
       }
     }
     this.details = Object.freeze(safeDetails);
+    if (options.executionEvidence !== undefined) {
+      this.executionEvidence = parseAiFailureExecutionEvidence(options.executionEvidence);
+    }
     if (options.provider !== undefined) {
       this.provider = options.provider;
     }
@@ -88,6 +99,9 @@ export class AiError extends Error {
       message: this.message,
       retryable: this.retryable,
       details: this.details,
+      ...(this.executionEvidence === undefined
+        ? {}
+        : { executionEvidence: this.executionEvidence }),
       ...(this.provider === undefined ? {} : { provider: this.provider }),
       ...(this.model === undefined ? {} : { model: this.model }),
     };

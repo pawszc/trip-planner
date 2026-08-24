@@ -299,6 +299,73 @@ describe('task-aware AI gateway', () => {
     expect(anthropic.calls).toBe(0);
   });
 
+  it('preserves closed terminal evidence through FAILED audit and durable run ID wrapping', async () => {
+    const recorder = new MemoryRecorder();
+    const openai = new FakeAdapter(AiProvider.OPENAI);
+    const rawSentinels = 'RAW_PROMPT RAW_CANDIDATE RAW_PROVIDER_MESSAGE https://private.test/x';
+    openai.failWith = new AiError(
+      'INCOMPLETE_MODEL_OUTPUT',
+      'OpenAI terminal response was incomplete.',
+      {
+        provider: AiProvider.OPENAI,
+        model: 'gpt-5.6-luna',
+        retryable: false,
+        executionEvidence: {
+          provider: AiProvider.OPENAI,
+          configuredModel: 'gpt-5.6-luna',
+          responseModel: 'gpt-5.6-luna-snapshot',
+          providerResponseStatus: 'INCOMPLETE',
+          providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+          providerRequestId: 'req_gateway_safe',
+          providerResponseId: 'resp_gateway_safe',
+          usage: {
+            inputTokens: 100,
+            outputTokens: 20,
+            totalTokens: 120,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 80,
+            reasoningTokens: 5,
+          },
+          attempts: 1,
+          latencyMs: 250,
+        },
+        cause: new Error(rawSentinels),
+      },
+    );
+    const subject = gateway(enabledConfig(), [openai], recorder);
+
+    let failure: AiError | undefined;
+    try {
+      await subject.call(request(AiTaskType.DECIDE));
+    } catch (error) {
+      if (error instanceof AiError) failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      code: 'INCOMPLETE_MODEL_OUTPUT',
+      details: { aiRunId: fixedRunIds[0] },
+      executionEvidence: {
+        providerResponseStatus: 'INCOMPLETE',
+        providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+        attempts: 1,
+      },
+    });
+    expect(recorder.events[1]).toMatchObject({
+      status: 'FAILED',
+      errorCode: 'INCOMPLETE_MODEL_OUTPUT',
+      responseModel: 'gpt-5.6-luna-snapshot',
+      providerRequestId: 'req_gateway_safe',
+      providerResponseId: 'resp_gateway_safe',
+      providerResponseStatus: 'INCOMPLETE',
+      providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      attempts: 1,
+      latencyMs: 250,
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    });
+    expect(JSON.stringify(failure?.toSafeJSON())).not.toContain(rawSentinels);
+    expect(JSON.stringify(recorder.events)).not.toContain(rawSentinels);
+  });
+
   it('fails closed before the adapter when STARTED recording fails', async () => {
     const recorder = new MemoryRecorder();
     recorder.failStatus = 'STARTED';

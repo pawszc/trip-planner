@@ -10,13 +10,12 @@ uncertainty, provenance, and safety.
 
 ## Status
 
-`REVIEW`
+`REVIEW — LIVE BASELINE STOPPED SAFELY / FAILURE-EVIDENCE FIX IN REVIEW`
 
 The contract and its versioned synthetic golden dataset, schema, and rubric were merged to
-`main` before implementation started. The implementation now runs on its dedicated branch
-and is ready for the Draft PR review loop. `REVIEW` does not mean that the release gate has
-passed: the separately approved final live baseline has not been executed, so this phase
-cannot become `DONE`.
+`main` before implementation started. The only authorized final live baseline was executed
+once on 2026-08-23 and stopped fail-closed at sequence 18/46. No complete quality report or
+accepted baseline exists, no rerun was performed, and this phase cannot become `DONE`.
 
 The golden labels and initial thresholds are architect-curated for this phase. Changing a
 label, critical-case membership, formula, threshold, or cost cap during implementation is a
@@ -40,19 +39,33 @@ contract change, not a test fix.
       baseline binding, integer-only cost estimation, schema parity, deterministic contract
       replay, executable E2E properties, and fail-closed live preflight/budget guards are
       implemented and covered by offline tests.
-- [x] The live runner freezes a 46-call synthetic-only plan, requires zero retries for complete
-      failure accounting, deploys an isolated safe-metadata `AiRuns` store only after preflight,
+- [x] The live runner freezes a 46-call synthetic-only plan, requires zero retries, settles a
+      terminal failed attempt only from complete closed usage/attempt/profile evidence, deploys
+      an isolated safe-metadata `AiRuns` store only after preflight,
       and shares its plan/cost estimator with a credential-free comparison of exact Terra and
       Luna prices. Terra exceeds the unchanged USD 3 cap; Luna remains comparison-only.
-- [x] No live or paid call was made during implementation or documentation work; actual cost
-      is USD 0.
+- [x] This failure-evidence hardening work makes zero live/paid calls and costs USD 0.
 - [x] A failure before durable `STARTED` creates no review and no fabricated UUID, blocks the
       provider and product write, and emits exactly one independent privacy-safe operational
       signal with `providerCallAttempted=false`; post-`STARTED` paths retain their real audit.
-- [ ] The final synthetic live baseline still requires separate approval of its exact call
-      plan and conservative cost estimate. It was deliberately not run in this phase review.
+- [ ] A further synthetic live baseline would require new explicit human authorization. The
+      failed run does not authorize a rerun, smoke test or diagnostic provider request.
 - [ ] `DONE` still requires a passing approved baseline, completed review, merge, and
       verification on `main`.
+
+### Privacy-safe evidence from the authorized run
+
+- Exactly one live command was executed from source commit
+  `7af918ded8ee7b30d3fdabd92d705c2dd34e7c49` with `ANTHROPIC / claude-sonnet-5 / low /
+1600` for `GENERATE`, `OPENAI / gpt-5.6-luna / low / 768` for `JUDGE`, zero retries and
+  the frozen 46-call plan.
+- Sequences 1–17 completed operationally. Sequence 18 stopped on case `R06`, task `JUDGE`,
+  with `LIVE_EVAL_EXECUTION_FAILED` / `EMPTY_MODEL_OUTPUT`.
+- The 17 fully settled Luna operations have the known subtotal 32,386 USD micros
+  (USD 0.032386). Attempt 18 has no complete usage/attempt settlement, so full actual run
+  cost must not be claimed and `attemptAccountingComplete=false`.
+- No `GENERATE`/Anthropic call occurred. No complete report, accepted manifest, commit or PR
+  was produced, and no rerun was performed. AI remains disabled by default.
 
 ### Review item: precheck/JUDGE money boundary
 
@@ -451,9 +464,9 @@ average never masks one critical false accept.
   - maximum estimated cost no greater than USD 3.00;
   - a successful offline preflight.
 - No CI, test, build, startup, or postinstall hook may enable live eval.
-- No live call is authorized by this contract PR. Before the first live baseline, report
-  planned calls and conservative cost; after explicit approval, report actual calls, usage,
-  attempts, models, latency, and estimated cost without raw content or secrets.
+- No live call is authorized by this failure-evidence PR. The single authorized baseline has
+  already stopped safely; another baseline requires a new decision. Report only settled usage
+  and cost, never inferred values for the unaccounted attempt.
 
 ## Escalation triggers
 

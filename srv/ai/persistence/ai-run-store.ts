@@ -1,5 +1,9 @@
 import type { AiEffort, AiProvider, AiRefusalState, AiTaskType, AiUsage } from '../contracts.ts';
 import type { AiErrorCode } from '../errors.ts';
+import type {
+  AiProviderIncompleteReason,
+  AiProviderResponseStatus,
+} from '../failure-execution-evidence.ts';
 
 export interface AiRunStartedRecord {
   ID: string;
@@ -27,6 +31,9 @@ export interface AiRunSucceededUpdate {
   latencyMs?: number;
   attempts?: number;
   providerRequestId?: string;
+  providerResponseId?: string;
+  providerResponseStatus?: AiProviderResponseStatus;
+  providerIncompleteReason?: AiProviderIncompleteReason;
   refusal: AiRefusalState;
   retryable: false;
 }
@@ -39,6 +46,9 @@ export interface AiRunFailedUpdate {
   latencyMs?: number;
   attempts?: number;
   providerRequestId?: string;
+  providerResponseId?: string;
+  providerResponseStatus?: AiProviderResponseStatus;
+  providerIncompleteReason?: AiProviderIncompleteReason;
   refusal: AiRefusalState;
   errorCode: AiErrorCode;
   retryable: boolean;

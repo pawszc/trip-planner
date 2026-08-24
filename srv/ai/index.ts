@@ -43,6 +43,18 @@ export {
   createMissingCredentialsError,
   normalizeProviderFailure,
 } from './errors.ts';
+export {
+  AI_FAILURE_REFUSAL_CATEGORY_VALUES,
+  AI_PROVIDER_INCOMPLETE_REASON_VALUES,
+  AI_PROVIDER_RESPONSE_STATUS_VALUES,
+  parseAiFailureExecutionEvidence,
+} from './failure-execution-evidence.ts';
+export type {
+  AiFailureExecutionEvidence,
+  AiFailureRefusalCategory,
+  AiProviderIncompleteReason,
+  AiProviderResponseStatus,
+} from './failure-execution-evidence.ts';
 export type {
   AiErrorCode,
   AiErrorDetails,

@@ -62,7 +62,9 @@ function successResponse<TOutput>(
 ): OpenAiStructuredResponse<TOutput> {
   return {
     outputParsed: request.outputSchema.parse(validOutput),
-    model: `${request.model}-snapshot`,
+    responseStatus: 'COMPLETED',
+    providerResponseId: 'resp_adapter_test',
+    responseModel: `${request.model}-snapshot`,
     usage,
     providerRequestId: 'openai-request-id',
     attempts: 1,
@@ -209,7 +211,7 @@ describe('OpenAI Responses adapter', () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
-  it('normalizes explicit refusal and null parsed output', async () => {
+  it('classifies terminal response states and preserves safe execution evidence', async () => {
     const refusalFactory: OpenAiClientFactory = () => ({
       async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
         return { ...successResponse(request), refused: true };
@@ -220,13 +222,63 @@ describe('OpenAI Responses adapter', () => {
         return { ...successResponse(request), outputParsed: null };
       },
     });
+    const incompleteFactory: OpenAiClientFactory = () => ({
+      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
+        return {
+          ...successResponse(request),
+          responseStatus: 'INCOMPLETE',
+          incompleteReason: 'MAX_OUTPUT_TOKENS',
+          outputParsed: null,
+        };
+      },
+    });
+    const filteredFactory: OpenAiClientFactory = () => ({
+      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
+        return {
+          ...successResponse(request),
+          responseStatus: 'INCOMPLETE',
+          incompleteReason: 'CONTENT_FILTER',
+          outputParsed: null,
+        };
+      },
+    });
 
     await expect(
       callAdapter(new OpenAiResponsesAdapter(config(), refusalFactory)),
     ).rejects.toMatchObject({ code: 'MODEL_REFUSAL' });
     await expect(
       callAdapter(new OpenAiResponsesAdapter(config(), emptyFactory)),
-    ).rejects.toMatchObject({ code: 'EMPTY_MODEL_OUTPUT' });
+    ).rejects.toMatchObject({
+      code: 'EMPTY_MODEL_OUTPUT',
+      executionEvidence: {
+        providerResponseStatus: 'COMPLETED',
+        attempts: 1,
+        usage,
+      },
+    });
+    await expect(
+      callAdapter(new OpenAiResponsesAdapter(config(), incompleteFactory)),
+    ).rejects.toMatchObject({
+      code: 'INCOMPLETE_MODEL_OUTPUT',
+      retryable: false,
+      executionEvidence: {
+        providerResponseStatus: 'INCOMPLETE',
+        providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+        attempts: 1,
+        usage,
+      },
+    });
+    await expect(
+      callAdapter(new OpenAiResponsesAdapter(config(), filteredFactory)),
+    ).rejects.toMatchObject({
+      code: 'MODEL_REFUSAL',
+      details: { category: 'content_filter' },
+      executionEvidence: {
+        providerResponseStatus: 'INCOMPLETE',
+        providerIncompleteReason: 'CONTENT_FILTER',
+        refusalCategory: 'content_filter',
+      },
+    });
   });
 
   it('locally validates parsed output with the original Zod schema', async () => {
@@ -247,7 +299,7 @@ describe('OpenAI Responses adapter', () => {
   it('rejects an empty response model from OpenAI', async () => {
     const emptyModelFactory: OpenAiClientFactory = () => ({
       async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
-        return { ...successResponse(request), model: '   ' };
+        return { ...successResponse(request), responseModel: '' };
       },
     });
 
@@ -296,6 +348,117 @@ describe('OpenAI Responses adapter', () => {
 });
 
 describe('official OpenAI SDK transport', () => {
+  function sdkFactoryFor(payload: Readonly<Record<string, unknown>>): OpenAiClientFactory {
+    return (options) =>
+      createOpenAiSdkClient({
+        ...options,
+        fetchImplementation: async () =>
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'content-type': 'application/json', 'x-request-id': 'req_sdk_terminal' },
+          }),
+      });
+  }
+
+  function terminalPayload(overrides: Readonly<Record<string, unknown>>) {
+    return {
+      id: 'resp_sdk_terminal',
+      object: 'response',
+      created_at: 1,
+      status: 'completed',
+      model: 'gpt-profile-model-snapshot',
+      output: [],
+      usage: {
+        input_tokens: 11,
+        output_tokens: 7,
+        total_tokens: 18,
+        input_tokens_details: { cached_tokens: 2, cache_write_tokens: 1 },
+        output_tokens_details: { reasoning_tokens: 0 },
+      },
+      ...overrides,
+    };
+  }
+
+  async function terminalAdapterError(payload: Readonly<Record<string, unknown>>) {
+    try {
+      await callAdapter(new OpenAiResponsesAdapter(config(), sdkFactoryFor(payload)));
+    } catch (error) {
+      if (error instanceof AiError) return error;
+      throw error;
+    }
+    throw new Error('Expected terminal SDK response to fail locally.');
+  }
+
+  it('classifies SDK incomplete max-output responses with complete safe evidence', async () => {
+    const error = await terminalAdapterError(
+      terminalPayload({
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+      }),
+    );
+
+    expect(error).toMatchObject({
+      code: 'INCOMPLETE_MODEL_OUTPUT',
+      retryable: false,
+      executionEvidence: {
+        provider: 'OPENAI',
+        configuredModel: 'gpt-profile-model',
+        responseModel: 'gpt-profile-model-snapshot',
+        providerResponseStatus: 'INCOMPLETE',
+        providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+        providerRequestId: 'req_sdk_terminal',
+        providerResponseId: 'resp_sdk_terminal',
+        attempts: 1,
+        usage,
+      },
+    });
+  });
+
+  it('classifies SDK content-filter incompletes as refusal', async () => {
+    const error = await terminalAdapterError(
+      terminalPayload({
+        status: 'incomplete',
+        incomplete_details: { reason: 'content_filter' },
+      }),
+    );
+
+    expect(error).toMatchObject({
+      code: 'MODEL_REFUSAL',
+      details: { category: 'content_filter' },
+      executionEvidence: {
+        providerResponseStatus: 'INCOMPLETE',
+        providerIncompleteReason: 'CONTENT_FILTER',
+        refusalCategory: 'content_filter',
+      },
+    });
+  });
+
+  it('keeps EMPTY_MODEL_OUTPUT specific to SDK completed responses without parsed output', async () => {
+    const error = await terminalAdapterError(terminalPayload({ status: 'completed' }));
+
+    expect(error).toMatchObject({
+      code: 'EMPTY_MODEL_OUTPUT',
+      executionEvidence: { providerResponseStatus: 'COMPLETED', attempts: 1, usage },
+    });
+  });
+
+  it('maps SDK failed responses to a controlled provider error without raw message text', async () => {
+    const rawMessage = 'RAW_PROVIDER_MESSAGE_SENTINEL';
+    const error = await terminalAdapterError(
+      terminalPayload({
+        status: 'failed',
+        error: { code: 'server_error', message: rawMessage },
+      }),
+    );
+
+    expect(error).toMatchObject({
+      code: 'PROVIDER_ERROR',
+      details: { responseStatus: 'FAILED', providerCode: 'server_error' },
+      executionEvidence: { providerResponseStatus: 'FAILED', attempts: 1, usage },
+    });
+    expect(JSON.stringify(error.toSafeJSON())).not.toContain(rawMessage);
+  });
+
   it('uses responses.parse with zodTextFormat and a tool-free, non-stored payload offline', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const fetchImplementation: typeof fetch = async (_input, init) => {
@@ -362,6 +525,9 @@ describe('official OpenAI SDK transport', () => {
 
     expect(response).toMatchObject({
       outputParsed: validOutput,
+      responseStatus: 'COMPLETED',
+      providerResponseId: 'resp_test',
+      responseModel: 'gpt-5.6-luna',
       providerRequestId: 'req_sdk_test',
       attempts: 1,
       usage,

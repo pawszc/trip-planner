@@ -209,6 +209,7 @@ type NarrativeReviewFailureCode : String(80) enum {
   PROVIDER_UNAVAILABLE;
   PROVIDER_ERROR;
   MODEL_REFUSAL;
+  INCOMPLETE_MODEL_OUTPUT;
   EMPTY_MODEL_OUTPUT;
   INVALID_STRUCTURED_OUTPUT;
   INVALID_NARRATIVE_MODEL_VIEW;
@@ -303,6 +304,10 @@ entity AiRuns : cuid, managed {
   attempts : Integer;
 
   providerRequestId : String(250);
+  // Nullable, bez defaultu: terminalne metadane istnieją tylko, gdy provider je zwrócił.
+  providerResponseId : String(250);
+  providerResponseStatus : String(40);
+  providerIncompleteReason : String(40);
   refusal : Boolean not null default false;
   refusalCategory : String(80);
 

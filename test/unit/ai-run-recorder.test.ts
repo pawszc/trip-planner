@@ -157,22 +157,31 @@ describe('persistent AI run recorder', () => {
     ]);
   });
 
-  it('maps FAILED without a raw provider error', async () => {
+  it('maps FAILED terminal response evidence without a raw provider error', async () => {
     const store = new RecordingStore();
     const recorder = new PersistentAiRunRecorder(store, 30);
 
     await recorder.record({
-      ...startedEvent({
-        provider: AiProvider.ANTHROPIC,
-        configuredModel: 'claude-sonnet-5',
-        configuredEffort: 'low',
-        configuredMaxOutputTokens: 1_600,
-        effectiveMaxOutputTokens: 1_600,
-      }),
+      ...startedEvent(),
       status: 'FAILED',
       completedAt: '2026-08-12T10:00:02.000Z',
-      refusal: { refused: true, category: 'policy' },
-      errorCode: 'MODEL_REFUSAL',
+      responseModel: 'gpt-5.6-luna-snapshot',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 80,
+        reasoningTokens: 5,
+      },
+      latencyMs: 250,
+      attempts: 1,
+      providerRequestId: 'req-safe',
+      providerResponseId: 'resp-safe',
+      providerResponseStatus: 'INCOMPLETE',
+      providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      refusal: { refused: false },
+      errorCode: 'INCOMPLETE_MODEL_OUTPUT',
       retryable: false,
     });
 
@@ -182,8 +191,23 @@ describe('persistent AI run recorder', () => {
         update: {
           status: 'FAILED',
           completedAt: '2026-08-12T10:00:02.000Z',
-          refusal: { refused: true, category: 'policy' },
-          errorCode: 'MODEL_REFUSAL',
+          responseModel: 'gpt-5.6-luna-snapshot',
+          usage: {
+            inputTokens: 100,
+            outputTokens: 20,
+            totalTokens: 120,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 80,
+            reasoningTokens: 5,
+          },
+          latencyMs: 250,
+          attempts: 1,
+          providerRequestId: 'req-safe',
+          providerResponseId: 'resp-safe',
+          providerResponseStatus: 'INCOMPLETE',
+          providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+          refusal: { refused: false },
+          errorCode: 'INCOMPLETE_MODEL_OUTPUT',
           retryable: false,
         },
       },
