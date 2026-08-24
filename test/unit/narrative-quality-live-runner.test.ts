@@ -181,6 +181,16 @@ describe('narrative live-eval plan and preflight', () => {
     expect(plan.calls.filter(({ taskType }) => taskType === 'JUDGE')).toHaveLength(
       NARRATIVE_LIVE_EVAL_EXPECTED_JUDGE_CALLS,
     );
+    expect(
+      plan.calls
+        .filter(({ taskType }) => taskType === 'JUDGE')
+        .every(
+          ({ configuredModel, configuredMaxOutputTokens, maximumOutputTokensPerAttempt }) =>
+            configuredModel === 'gpt-5.6-luna' &&
+            configuredMaxOutputTokens === 2_048 &&
+            maximumOutputTokensPerAttempt === 2_048,
+        ),
+    ).toBe(true);
     expect(plan.calls[0]).toMatchObject({
       plannedSequence: 1,
       caseId: 'P01',
@@ -451,7 +461,7 @@ describe('narrative live-eval execution without provider calls', () => {
     expect(calls).toBe(1);
   });
 
-  it('settles one failed attempt from complete evidence and stops before the next sequence', async () => {
+  it('settles incomplete max-output evidence and stops without retry, resume, continuation or fallback', async () => {
     const config = loadAiConfig(enabledEnvironment);
     let calls = 0;
     let failure: unknown;
@@ -514,6 +524,9 @@ describe('narrative live-eval execution without provider calls', () => {
       logicalCallSequence: 1,
       completedLogicalCalls: 0,
       underlyingCode: 'INCOMPLETE_MODEL_OUTPUT',
+      provider: 'OPENAI',
+      configuredModel: 'gpt-5.6-luna',
+      responseModel: 'gpt-5.6-luna-response-v1',
       providerResponseStatus: 'INCOMPLETE',
       providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
       attempts: 1,
@@ -525,6 +538,7 @@ describe('narrative live-eval execution without provider calls', () => {
         cacheWriteTokens: 80,
         reasoningTokens: 5,
       },
+      latencyMs: 250,
       knownCumulativeProviderAttempts: 1,
       knownCumulativeEstimatedCostUsdMicros: 4,
     });
@@ -583,8 +597,37 @@ describe('narrative live-eval CLI boundary', () => {
     expect(lines).toHaveLength(2);
     expect(JSON.parse(lines[0]!)).toMatchObject({
       status: 'PREFLIGHT_PASSED',
+      planVersion: 'narrative-quality-live-plan-v1',
+      tokenCeilingVersion: 'utf8-wire-bytes-plus-4096-protocol-tokens-v1',
+      costCeilingVersion: 'full-ceiling-each-token-class-v1',
+      retryPolicyVersion: 'zero-retry-with-terminal-failure-accounting-v2',
+      workloadFingerprint: '280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8',
       plannedLogicalCalls: 46,
       plannedMaximumAttempts: 46,
+      plannedMaximumCostUsdMicros: expect.any(Number),
+      priceCatalogVersion: 'narrative-quality-price-catalog-v1',
+      pricingVerifiedAt: '2026-08-21',
+      limits: {
+        maxLogicalCalls: 48,
+        maxProviderAttempts: 56,
+        maxEstimatedCostUsdMicros: 3_000_000,
+      },
+      profiles: [
+        {
+          taskType: 'GENERATE',
+          provider: 'ANTHROPIC',
+          configuredModel: 'claude-sonnet-5',
+          configuredEffort: 'low',
+          configuredMaxOutputTokens: 1_600,
+        },
+        {
+          taskType: 'JUDGE',
+          provider: 'OPENAI',
+          configuredModel: 'gpt-5.6-luna',
+          configuredEffort: 'low',
+          configuredMaxOutputTokens: 2_048,
+        },
+      ],
       syntheticOnly: true,
     });
     expect(JSON.parse(lines[1]!)).toMatchObject({
@@ -654,7 +697,13 @@ describe('narrative live-eval CLI boundary', () => {
       logicalCallSequence: 1,
       completedLogicalCalls: 0,
       providerCallMayHaveOccurred: true,
+      provider: 'OPENAI',
+      configuredModel: 'gpt-5.6-luna',
+      responseModel: 'gpt-5.6-luna-response-v1',
+      providerResponseStatus: 'INCOMPLETE',
+      providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
       attempts: 1,
+      latencyMs: 250,
       knownCumulativeProviderAttempts: 1,
       knownCumulativeEstimatedCostUsdMicros: 4,
       attemptAccountingComplete: true,

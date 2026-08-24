@@ -66,6 +66,8 @@ export interface NarrativeLiveEvalCostPreflight {
   };
   readonly configuredCostCapUsdMicros: number;
   readonly configuredCostCapUsd: string;
+  readonly costCapHeadroomUsdMicros: number;
+  readonly costCapHeadroomUsd: string;
   readonly withinLogicalCallCap: boolean;
   readonly withinProviderAttemptCap: boolean;
   readonly withinCostCap: boolean;
@@ -78,6 +80,23 @@ export interface BuildNarrativeLiveEvalCostPreflightInput {
   readonly priceSnapshot: AiPriceSnapshot;
   readonly limits?: LiveEvalLimits;
   readonly resolvedDataset?: ResolvedNarrativeQualityDataset;
+}
+
+function costCapHeadroom(configuredCapUsdMicros: number, plannedCostUsdMicros: number): number {
+  if (
+    !Number.isSafeInteger(configuredCapUsdMicros) ||
+    configuredCapUsdMicros < 0 ||
+    !Number.isSafeInteger(plannedCostUsdMicros) ||
+    plannedCostUsdMicros < 0
+  ) {
+    throw new EvalContractError(
+      'INVALID_EVAL_INPUT',
+      'Live-eval cost headroom requires non-negative safe USD-micros integers.',
+    );
+  }
+  return configuredCapUsdMicros >= plannedCostUsdMicros
+    ? configuredCapUsdMicros - plannedCostUsdMicros
+    : 0;
 }
 
 function sumCosts(costs: readonly number[]): number {
@@ -225,6 +244,10 @@ export function summarizeNarrativeLiveEvalCostPreflight(
   maxRetries: number,
 ): NarrativeLiveEvalCostPreflight {
   const costBreakdown = buildCostBreakdown(plan, estimate);
+  const costCapHeadroomUsdMicros = costCapHeadroom(
+    estimate.limits.maxEstimatedCostUsdMicros,
+    estimate.plannedMaximumCostUsdMicros,
+  );
   return {
     plan: plan.safe,
     workloadFingerprint: workloadFingerprint(plan),
@@ -242,6 +265,8 @@ export function summarizeNarrativeLiveEvalCostPreflight(
     },
     configuredCostCapUsdMicros: estimate.limits.maxEstimatedCostUsdMicros,
     configuredCostCapUsd: formatUsdMicrosDecimal(estimate.limits.maxEstimatedCostUsdMicros),
+    costCapHeadroomUsdMicros,
+    costCapHeadroomUsd: formatUsdMicrosDecimal(costCapHeadroomUsdMicros),
     withinLogicalCallCap: estimate.withinLogicalCallCap,
     withinProviderAttemptCap: estimate.withinProviderAttemptCap,
     withinCostCap: estimate.withinCostCap,

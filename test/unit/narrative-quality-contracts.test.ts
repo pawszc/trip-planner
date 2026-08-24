@@ -178,6 +178,27 @@ function goldenRubric(): unknown {
   ) as unknown;
 }
 
+describe('narrative quality contract version binding', () => {
+  it('increments only the model profile contract for the Luna 2048 runtime profile', () => {
+    expect(versions()).toEqual({
+      groundedContextVersion: 'grounded-option-context-v1',
+      modelViewVersion: 'narrative-model-view-v1',
+      qualityContextVersion: 'narrative-quality-context-v1',
+      constraintSnapshotVersion: 'narrative-constraint-snapshot-v1',
+      generatePromptVersion: 'grounded-option-narrative-prompt-v2',
+      generateSchemaVersion: 'grounded-option-narrative-schema-v1',
+      judgePromptVersion: 'narrative-quality-judge-prompt-v1',
+      judgeSchemaVersion: 'narrative-quality-judge-schema-v1',
+      rubricVersion: 'narrative-quality-rubric-v1',
+      datasetVersion: 'narrative-quality-v1',
+      publicationPolicyVersion: 'narrative-publication-policy-v1',
+      safetyPrecheckVersion: 'narrative-safety-precheck-v1',
+      modelProfileVersion: 'narrative-quality-model-profile-v2',
+      priceCatalogVersion: 'narrative-quality-price-catalog-v1',
+    });
+  });
+});
+
 describe('narrative-model-view-v1', () => {
   it('preserves required facts and safe provenance while excluding raw source fields', () => {
     const grounded = context();

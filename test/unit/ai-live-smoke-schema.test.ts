@@ -129,7 +129,7 @@ describe('credential and live-smoke gates', () => {
       'AI_GENERATE_PROFILE: provider=ANTHROPIC model=claude-sonnet-5 effort=low maxOutputTokens=1600',
     );
     expect(output).toContain(
-      'AI_JUDGE_PROFILE: provider=OPENAI model=gpt-5.6-terra effort=low maxOutputTokens=768',
+      'AI_JUDGE_PROFILE: provider=OPENAI model=gpt-5.6-luna effort=low maxOutputTokens=2048',
     );
     expect(output).toContain('AI_RUN_RETENTION_DAYS: 30');
     expect(output).not.toContain(openAiKey);

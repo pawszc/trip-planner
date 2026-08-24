@@ -161,7 +161,7 @@ const metadataMismatchCases: readonly [string, ResultMutator][] = [
 ];
 
 describe('task-aware AI gateway', () => {
-  it('routes DECIDE to OpenAI Luna, GENERATE to Anthropic Sonnet and JUDGE to OpenAI Terra', async () => {
+  it('routes DECIDE and JUDGE to OpenAI Luna and GENERATE to Anthropic Sonnet', async () => {
     const openai = new FakeAdapter(AiProvider.OPENAI);
     const anthropic = new FakeAdapter(AiProvider.ANTHROPIC);
     const subject = gateway(enabledConfig(), [openai, anthropic]);
@@ -172,12 +172,12 @@ describe('task-aware AI gateway', () => {
 
     expect(decide.configuredModel).toBe('gpt-5.6-luna');
     expect(generate.configuredModel).toBe('claude-sonnet-5');
-    expect(judge.configuredModel).toBe('gpt-5.6-terra');
+    expect(judge.configuredModel).toBe('gpt-5.6-luna');
     expect(openai.calls).toBe(2);
     expect(anthropic.calls).toBe(1);
     expect(openai.receivedProfiles.map(({ taskType, model }) => ({ taskType, model }))).toEqual([
       { taskType: AiTaskType.DECIDE, model: 'gpt-5.6-luna' },
-      { taskType: AiTaskType.JUDGE, model: 'gpt-5.6-terra' },
+      { taskType: AiTaskType.JUDGE, model: 'gpt-5.6-luna' },
     ]);
     expect(anthropic.receivedProfiles[0]).toMatchObject({
       taskType: AiTaskType.GENERATE,

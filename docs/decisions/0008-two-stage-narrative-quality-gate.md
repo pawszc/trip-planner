@@ -170,13 +170,17 @@ guard rezerwuje worst-case attempts i koszt przed każdym kolejnym call i fail-c
 operację, która mogłaby przekroczyć limit. Runner v1 planuje dokładnie 46 calls. Checked-in
 katalog zawiera oficjalne stawki API zweryfikowane 2026-08-21, a osobna czysta komenda
 cost-preflight używa tego samego planera bez opt-inów, credentiali, executora lub sieci.
-Aktualny profil Terra przekracza cap USD 3; porównawczy Luna mieści się w cap, ale nie zmienia
-to profilu runtime i wymaga osobnej decyzji człowieka. CI, test, build, startup i postinstall
-nie mogą włączyć live eval.
+Po dwóch osobno zatwierdzonych i bezpiecznie zatrzymanych runach profil
+`narrative-quality-model-profile-v2` przypina Luna/low/2048 jako pierwszy runtime scenario.
+Canonical ceiling wynosi 1,185,201 USD micros: 401,101 dla czterech `GENERATE` i 784,100 dla
+42 `JUDGE`; kodowy headroom do capu to 1,814,799 micros. Terra/2048 kosztuje 8,241,209 micros
+i pozostaje wyłącznie comparison scenario ponad capem, nigdy automatycznym fallbackiem.
+Workload fingerprint to
+`280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`.
 
-Podczas implementacji nie wykonano żadnego live ani paid call; rzeczywisty koszt wynosi USD 0. Finalny baseline wymaga osobnej zgody i nie został uruchomiony. Z tego powodu Faza 3B3
-pozostaje w statusie `REVIEW`, nawet po zielonej weryfikacji offline, i nie może zostać
-oznaczona `DONE`.
+Ten output-budget fix wykonuje zero live/paid calls i kosztuje USD 0. Nie autoryzuje kolejnego
+baseline. Faza 3B3 pozostaje w statusie `REVIEW`, nawet po zielonej weryfikacji offline, i nie
+może zostać oznaczona `DONE`.
 
 ## Konsekwencje
 

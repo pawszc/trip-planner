@@ -10,12 +10,13 @@ uncertainty, provenance, and safety.
 
 ## Status
 
-`REVIEW — LIVE BASELINE STOPPED SAFELY / FAILURE-EVIDENCE FIX IN REVIEW`
+`REVIEW — TWO LIVE BASELINES STOPPED SAFELY / JUDGE OUTPUT-BUDGET FIX IN REVIEW`
 
 The contract and its versioned synthetic golden dataset, schema, and rubric were merged to
-`main` before implementation started. The only authorized final live baseline was executed
-once on 2026-08-23 and stopped fail-closed at sequence 18/46. No complete quality report or
-accepted baseline exists, no rerun was performed, and this phase cannot become `DONE`.
+`main` before implementation started. Two separately authorized final live baselines were each
+executed exactly once and stopped fail-closed at sequences 18/46 and 23/46. No complete quality
+report or accepted baseline exists, no rerun was performed, and this phase cannot become
+`DONE`.
 
 The golden labels and initial thresholds are architect-curated for this phase. Changing a
 label, critical-case membership, formula, threshold, or cost cap during implementation is a
@@ -42,20 +43,27 @@ contract change, not a test fix.
 - [x] The live runner freezes a 46-call synthetic-only plan, requires zero retries, settles a
       terminal failed attempt only from complete closed usage/attempt/profile evidence, deploys
       an isolated safe-metadata `AiRuns` store only after preflight,
-      and shares its plan/cost estimator with a credential-free comparison of exact Terra and
-      Luna prices. Terra exceeds the unchanged USD 3 cap; Luna remains comparison-only.
-- [x] This failure-evidence hardening work makes zero live/paid calls and costs USD 0.
+      and shares its plan/cost estimator with a credential-free runtime Luna scenario and exact
+      Terra comparison. The runtime `JUDGE` profile is `OPENAI / gpt-5.6-luna / low / 2048`;
+      Terra remains comparison-only and exceeds the unchanged USD 3 cap.
+- [x] `narrative-quality-model-profile-v2` records only the accepted Luna output-budget change.
+      Dataset, prompts, schema, rubric, publication policy, safety precheck, price catalog,
+      effort, calls, retry policy and hard caps remain frozen.
+- [x] Privacy-safe preflight evidence includes exact profiles, workload fingerprint, pricing
+      metadata, plan and ceiling versions, planned calls/attempts/cost and limits. Failure
+      evidence may additionally carry only available provider/model/latency allowlisted fields.
+- [x] This output-budget and evidence work makes zero live/paid calls and costs USD 0.
 - [x] A failure before durable `STARTED` creates no review and no fabricated UUID, blocks the
       provider and product write, and emits exactly one independent privacy-safe operational
       signal with `providerCallAttempted=false`; post-`STARTED` paths retain their real audit.
 - [ ] A further synthetic live baseline would require new explicit human authorization. The
-      failed run does not authorize a rerun, smoke test or diagnostic provider request.
+      two failed runs do not authorize a rerun, smoke test or diagnostic provider request.
 - [ ] `DONE` still requires a passing approved baseline, completed review, merge, and
       verification on `main`.
 
-### Privacy-safe evidence from the authorized run
+### Privacy-safe evidence from the two authorized runs
 
-- Exactly one live command was executed from source commit
+- The first live command was executed exactly once from source commit
   `7af918ded8ee7b30d3fdabd92d705c2dd34e7c49` with `ANTHROPIC / claude-sonnet-5 / low /
 1600` for `GENERATE`, `OPENAI / gpt-5.6-luna / low / 768` for `JUDGE`, zero retries and
   the frozen 46-call plan.
@@ -66,6 +74,18 @@ contract change, not a test fix.
   cost must not be claimed and `attemptAccountingComplete=false`.
 - No `GENERATE`/Anthropic call occurred. No complete report, accepted manifest, commit or PR
   was produced, and no rerun was performed. AI remains disabled by default.
+- The second live command was executed exactly once from source commit
+  `a4785502c6fe01e978dea1a85aa8d90ff66b90a6` with the same exact profiles and ceilings,
+  zero retries, 46 planned logical calls and 46 maximum attempts. Its preflight ceiling was
+  1,056,177 USD micros under the unchanged 3,000,000 USD-micros cap.
+- Sequences 1–22 completed operationally. Sequence 23 stopped on case `R12`, task `JUDGE`,
+  with `INCOMPLETE_MODEL_OUTPUT`, provider status `INCOMPLETE` and reason
+  `MAX_OUTPUT_TOKENS`. The attempt used 5,810 input, 768 output and 350 reasoning tokens.
+- Accounting is complete for all 23 attempts and the known cumulative cost is 45,732 USD
+  micros. No later sequence or `GENERATE`/Anthropic call occurred; no partial quality report,
+  rerun, resume, continuation or model/provider fallback was produced.
+- The output-budget fix is offline-only and does not authorize another smoke, diagnostic or
+  baseline provider request. AI remains disabled by default.
 
 ### Review item: precheck/JUDGE money boundary
 
@@ -464,9 +484,10 @@ average never masks one critical false accept.
   - maximum estimated cost no greater than USD 3.00;
   - a successful offline preflight.
 - No CI, test, build, startup, or postinstall hook may enable live eval.
-- No live call is authorized by this failure-evidence PR. The single authorized baseline has
-  already stopped safely; another baseline requires a new decision. Report only settled usage
-  and cost, never inferred values for the unaccounted attempt.
+- No live call is authorized by this offline output-budget PR. Both separately authorized
+  one-shot baselines have already stopped safely; another baseline requires a new decision.
+  Report only settled usage and cost: the first run has one unaccounted attempt, while all 23
+  attempts in the second run have complete accounting.
 
 ## Escalation triggers
 

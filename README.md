@@ -49,8 +49,9 @@ nie jako aktualna oferta.
 
 Gateway udostępnia jeden kontrakt strukturalnych wywołań i osobny profil
 `provider + model + effort + max output tokens` dla `DECIDE`, `GENERATE` i `JUDGE`.
-Domyślnie są to OpenAI Luna (`DECIDE`), Anthropic Sonnet (`GENERATE`) i OpenAI Terra
-(`JUDGE`). Request produktu nie ma provider override; opcjonalny limit może tylko obniżyć
+Domyślnie są to OpenAI Luna (`DECIDE`), Anthropic Sonnet 5 (`GENERATE`) i OpenAI Luna
+(`JUDGE`, `low`, 2048 wspólnych tokenów reasoning + visible output). Request produktu nie ma
+provider override; opcjonalny limit może tylko obniżyć
 limit profilu. Zmiana providera wymaga jawnego modelu. Nazwy modeli są jawne i nigdy nie są
 cicho zmieniane.
 
@@ -143,12 +144,14 @@ zapisu, odczytu, atomowości oraz przetrwania cleanupu obu `AiRuns`.
 
 Finalny live baseline używa wyłącznie danych syntetycznych, wymaga osobnej
 zgody, preflightu oraz limitów 48 logicznych wywołań, 56 prób i USD 3.00. Runner v1 planuje
-dokładnie 46 wywołań i wymaga `AI_MAX_RETRIES=0`, ponieważ błąd providera nie udostępnia
-jeszcze bezpiecznego rozliczenia prób. Credential-free `npm run eval:live:preflight` oblicza
-ten sam plan i pokazuje, że aktualny Terra przekracza cap, a porównawczy Luna mieści się w
-cap; nie zmienia to runtime defaultu ani nie autoryzuje zmiany modelu. Baseline nie został
-uruchomiony; rzeczywisty koszt wynosi USD 0, a faza pozostaje w `REVIEW`. Nigdy nie commituj
-`.env` ani kluczy. Pełny kontrakt, konfiguracja, bezpieczeństwo i ograniczenia są opisane w
+dokładnie 46 wywołań i wymaga `AI_MAX_RETRIES=0`. Credential-free
+`npm run eval:live:preflight` oblicza ten sam plan: zaakceptowany runtime Luna/2048 ma ceiling
+1,185,201 USD micros i 1,814,799 micros zapasu do capu, a Terra/2048 pozostaje wyłącznie
+comparison scenario ponad capem. Dwa osobno autoryzowane one-shot baseline zatrzymały się
+fail-closed przed raportem jakości; nie wykonano rerunu. Model profile contract ma wersję
+`narrative-quality-model-profile-v2`, AI pozostaje domyślnie wyłączone, a faza pozostaje w
+`REVIEW`. Ten offline fix nie autoryzuje kolejnego baseline. Nigdy nie commituj `.env` ani
+kluczy. Pełny kontrakt, konfiguracja, bezpieczeństwo i ograniczenia są opisane w
 `docs/ai-gateway.md`.
 
 ## API
