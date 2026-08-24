@@ -29,6 +29,16 @@ jobs:
       - name: Verify project
         run: npm run verify:full
 
+      - name: Verify live-eval cost preflight
+        run: npm run eval:live:preflight
+
+      - name: Verify clean diff and worktree
+        shell: bash
+        run: |
+          git diff --check
+          git status --short
+          test -z "$(git status --short)"
+
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4
