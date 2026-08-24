@@ -10,8 +10,8 @@ import {
 import { loadAiPriceSnapshot, type AiPriceSnapshot } from '../srv/evals/price-snapshot.ts';
 
 export const NARRATIVE_LIVE_COST_SCENARIO_IDS = [
-  'SCENARIO_CURRENT_TERRA',
-  'SCENARIO_COST_FALLBACK_LUNA',
+  'SCENARIO_RUNTIME_LUNA',
+  'SCENARIO_COMPARISON_TERRA',
 ] as const;
 
 export type NarrativeLiveCostScenarioId = (typeof NARRATIVE_LIVE_COST_SCENARIO_IDS)[number];
@@ -70,6 +70,8 @@ export const narrativeLiveCostPreflightOutputSchema = z
     plannedMaximumCostUsd: usdDecimal,
     configuredCostCapUsdMicros: positiveSafeInteger,
     configuredCostCapUsd: usdDecimal,
+    costCapHeadroomUsdMicros: nonNegativeSafeInteger,
+    costCapHeadroomUsd: usdDecimal,
     withinLogicalCallCap: z.boolean(),
     withinProviderAttemptCap: z.boolean(),
     withinCostCap: z.boolean(),
@@ -101,7 +103,7 @@ const COST_PREFLIGHT_PROFILE_ENV = Object.freeze({
   AI_GENERATE_MAX_OUTPUT_TOKENS: '1600',
   AI_JUDGE_PROVIDER: 'openai',
   AI_JUDGE_EFFORT: 'low',
-  AI_JUDGE_MAX_OUTPUT_TOKENS: '768',
+  AI_JUDGE_MAX_OUTPUT_TOKENS: '2048',
 });
 
 export function createNarrativeLiveCostScenarioConfig(
@@ -109,7 +111,7 @@ export function createNarrativeLiveCostScenarioConfig(
 ): AiConfig {
   return loadAiConfig({
     ...COST_PREFLIGHT_PROFILE_ENV,
-    AI_JUDGE_MODEL: scenarioId === 'SCENARIO_CURRENT_TERRA' ? 'gpt-5.6-terra' : 'gpt-5.6-luna',
+    AI_JUDGE_MODEL: scenarioId === 'SCENARIO_RUNTIME_LUNA' ? 'gpt-5.6-luna' : 'gpt-5.6-terra',
   });
 }
 
@@ -141,6 +143,8 @@ function safeOutput(
     plannedMaximumCostUsd: summary.plannedMaximumCostUsd,
     configuredCostCapUsdMicros: summary.configuredCostCapUsdMicros,
     configuredCostCapUsd: summary.configuredCostCapUsd,
+    costCapHeadroomUsdMicros: summary.costCapHeadroomUsdMicros,
+    costCapHeadroomUsd: summary.costCapHeadroomUsd,
     withinLogicalCallCap: summary.withinLogicalCallCap,
     withinProviderAttemptCap: summary.withinProviderAttemptCap,
     withinCostCap: summary.withinCostCap,

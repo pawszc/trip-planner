@@ -28,9 +28,9 @@ export const AI_CONFIG_DEFAULTS = Object.freeze({
     [AiTaskType.JUDGE]: Object.freeze({
       taskType: AiTaskType.JUDGE,
       provider: AiProvider.OPENAI,
-      model: 'gpt-5.6-terra',
+      model: 'gpt-5.6-luna',
       effort: 'low' as const,
-      maxOutputTokens: 768,
+      maxOutputTokens: 2_048,
     }),
   }),
   timeoutMs: 30_000,

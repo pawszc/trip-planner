@@ -227,21 +227,32 @@ guard egzekwują maksymalnie 48 logical calls, 56 attempts i USD 3.00 przed każ
 Plan v1 ma dokładnie 46 calls i wymaga `AI_MAX_RETRIES=0`. Osobny
 `npm run eval:live:preflight` działa bez opt-inów i credentiali, nie konstruuje executora,
 adaptera, gatewaya ani bazy oraz używa tej samej czystej logiki planu i kosztu. Oficjalny
-snapshot cen z 2026-08-21 daje ceiling 6,950,969 USD micros dla aktualnego Terra i 1,056,177
-USD micros dla porównawczego Luna; tylko Luna mieści się w cap. To porównanie nie zmienia
-runtime defaultu Terra ani nie stanowi rekomendacji zmiany modelu.
-Nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI. Jedyny
-autoryzowany run z 2026-08-23 zatrzymał się fail-closed na 18/46 (`R06`, `JUDGE`,
-`EMPTY_MODEL_OUTPUT`). Pierwsze 17 operacji ma kompletny subtotal USD 0.032386; próba 18
-nie ma kompletnego accounting, więc pełny koszt nie jest deklarowany. Nie powstał report ani
-accepted manifest i nie było rerunu. Testy tego hardeningu wykonują zero live calls i kosztują
-USD 0.
+snapshot cen z 2026-08-21 oraz integer-only cost engine dają dla zaakceptowanego runtime
+`OPENAI / gpt-5.6-luna / low / 2048` ceiling 1,185,201 USD micros: 401,101 dla
+`GENERATE` i 784,100 dla `JUDGE`. Zapas do capu USD 3.00 wynosi 1,814,799 USD micros,
+a workload fingerprint to
+`280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`.
+`gpt-5.6-terra / low / 2048` pozostaje wyłącznie scenariuszem porównawczym i z ceiling
+8,241,209 USD micros jest blokowany przez niezmieniony cap. Nie jest to ścieżka fallbacku.
+Preflight nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI.
+
+Dwa osobno autoryzowane one-shot runy zatrzymały się fail-closed bez rerunu. Run z
+2026-08-23 zatrzymał się na 18/46 (`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`); 17 kompletnie
+rozliczonych operacji ma subtotal 32,386 USD micros, a próba 18 nie ma kompletnego
+accounting. Drugi run ze źródła `a4785502c6fe01e978dea1a85aa8d90ff66b90a6`
+zatrzymał się na 23/46 (`R12`, `JUDGE`, `INCOMPLETE_MODEL_OUTPUT`, status `INCOMPLETE`,
+reason `MAX_OUTPUT_TOKENS`); accounting wszystkich 23 prób jest kompletny, a znany koszt
+wynosi 45,732 USD micros. Nie powstał report jakości ani accepted manifest. Ta poprawka
+wykonuje zero live/provider calls, kosztuje USD 0 i nie autoryzuje kolejnego baseline.
 
 Regresje runnera dowodzą dwóch osobnych ścieżek. Kompletne, exact-profile evidence jednej
 próby jest rozliczane tym samym integer-only cost engine, zwiększa provider attempts i daje
 `attemptAccountingComplete=true`; evidence niepełne pozostawia accounting false bez
 domyślnego usage lub kosztu. Obie ścieżki zatrzymują kolejną sekwencję i zwracają wyłącznie
-allowlistowany safe failure bez partial reportu.
+allowlistowany safe failure bez partial reportu, rerunu, resume, continuation ani fallbacku.
+Safe preflight zawiera exact profiles, wersje, fingerprint workloadu, wersję i datę weryfikacji
+cennika, planowane calls/attempts/koszt oraz limity. Safe failure może dodatkowo przenieść
+wyłącznie dostępne `provider`, `configuredModel`, `responseModel` i `latencyMs`.
 
 Testy `AiRuns` uruchamiają prawdziwy CAP 10 i SQLite in-memory. Store wykonuje krótkie,
 niezależne transakcje i nie utrzymuje transakcji podczas call providera. Aktywna transakcja

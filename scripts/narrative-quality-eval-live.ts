@@ -44,31 +44,30 @@ function safePreflight(summary: NarrativeLiveEvalPreflightSummary) {
     tokenCeilingVersion: summary.plan.tokenCeilingVersion,
     costCeilingVersion: summary.plan.costCeilingVersion,
     retryPolicyVersion: summary.plan.retryPolicyVersion,
+    workloadFingerprint: summary.workloadFingerprint,
     syntheticOnly: summary.plan.syntheticOnly,
     plannedLogicalCalls: summary.plan.plannedLogicalCalls,
     plannedMaximumAttempts: summary.plan.plannedMaximumAttempts,
     plannedMaximumCostUsdMicros: summary.plannedMaximumCostUsdMicros,
     priceCatalogVersion: summary.priceCatalogVersion,
+    pricingVerifiedAt: summary.pricingVerifiedAt,
     limits: summary.limits,
-    profiles: summary.plan.calls
-      .filter(
-        (call, index, calls) =>
-          calls.findIndex(
-            (candidate) =>
-              candidate.taskType === call.taskType &&
-              candidate.provider === call.provider &&
-              candidate.configuredModel === call.configuredModel,
-          ) === index,
-      )
-      .map(
-        ({ taskType, provider, configuredModel, configuredEffort, configuredMaxOutputTokens }) => ({
-          taskType,
-          provider,
-          configuredModel,
-          configuredEffort,
-          configuredMaxOutputTokens,
-        }),
-      ),
+    profiles: [
+      {
+        taskType: 'GENERATE',
+        provider: summary.profiles.generate.provider,
+        configuredModel: summary.profiles.generate.configuredModel,
+        configuredEffort: summary.profiles.generate.effort,
+        configuredMaxOutputTokens: summary.profiles.generate.maxOutputTokens,
+      },
+      {
+        taskType: 'JUDGE',
+        provider: summary.profiles.judge.provider,
+        configuredModel: summary.profiles.judge.configuredModel,
+        configuredEffort: summary.profiles.judge.effort,
+        configuredMaxOutputTokens: summary.profiles.judge.maxOutputTokens,
+      },
+    ],
   };
 }
 

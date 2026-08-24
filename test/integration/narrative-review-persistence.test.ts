@@ -119,7 +119,7 @@ function startedEvent(
     provider,
     configuredModel: isGenerate ? 'generate-offline-v1' : 'judge-offline-v1',
     configuredEffort: 'low',
-    configuredMaxOutputTokens: isGenerate ? 1_600 : 768,
+    configuredMaxOutputTokens: isGenerate ? 1_600 : 2_048,
     effectiveMaxOutputTokens: isGenerate ? 1_200 : 600,
     taskType: isGenerate ? AiTaskType.GENERATE : AiTaskType.JUDGE,
     promptVersion: expectation.promptVersion,

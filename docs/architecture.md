@@ -331,9 +331,12 @@ osobny test produkcyjnych writerów dowodzi zapisu CAP/SQLite. Live baseline jes
 jawnych opt-inów, a guard rezerwuje koszt przed każdym wywołaniem i egzekwuje maksymalnie 48
 logicznych calls, 56 attempts i USD 3.00. Czysty `npm run eval:live:preflight` współdzieli
 plan i cost estimator, ale nie importuje ścieżki wykonawczej i działa bez opt-inów,
-credentiali, bazy lub sieci. Porównuje exact Terra i Luna bez zmiany profilu runtime. Baseline
-nie został uruchomiony; koszt implementacji wynosi USD 0 i Faza 3B3 pozostaje w `REVIEW` do
-osobnej zgody oraz przejścia wszystkich bramek.
+credentiali, bazy lub sieci. Pierwszym runtime scenario jest exact Luna/low/2048; canonical
+ceiling wynosi 1,185,201 USD micros, a kodowo wyliczony zapas do capu 1,814,799 micros. Exact
+Terra/2048 pozostaje wyłącznie comparison scenario ponad capem, nie fallbackiem. Dwa osobno
+autoryzowane runy zatrzymały się fail-closed przed raportem jakości i nie były ponawiane.
+Ten offline fix wykonuje zero provider calls, nie autoryzuje kolejnego baseline i pozostawia
+Fazę 3B3 w `REVIEW` do osobnej zgody oraz przejścia wszystkich bramek.
 
 ## Stos technologiczny
 

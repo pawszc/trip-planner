@@ -1,6 +1,6 @@
 # Przepływ AI
 
-## Stan Fazy 3B3 (`REVIEW — LIVE BASELINE STOPPED SAFELY / FAILURE-EVIDENCE FIX IN REVIEW`)
+## Stan Fazy 3B3 (`REVIEW — TWO LIVE BASELINES STOPPED SAFELY / OUTPUT-BUDGET FIX IN REVIEW`)
 
 Faza 3B3 rozszerza pierwszy jawny use case produktu, bound action
 `RankedOptions.generateNarrative()`, o fail-closed bramkę jakości. Akcja opisuje pojedynczą
@@ -130,9 +130,12 @@ resolvery, kontrakty, metryki, gates i report path, ale ma
 JSON Schema. Live E2E ma osobne, deterministic `requiredProperties`, które nie korzystają z
 werdyktu ani findings `JUDGE`; sama walidacja publication bundle pozostaje dowodem in-memory,
 a realny zapis/linkage jest testowany na produkcyjnym CAP/SQLite. Faza nie wykonuje
-`DECIDE`. Jedyny autoryzowany finalny synthetic live baseline został wykonany dokładnie raz
-2026-08-23 i zatrzymał się fail-closed na 18/46 (`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`).
-Sekwencje 1–17 mają kompletny subtotal USD 0.032386; accounting próby 18 jest niepełny, więc
-pełny koszt nie jest deklarowany. Nie powstał report ani accepted manifest, nie było rerunu i
-AI pozostaje wyłączone. Ten failure-evidence hardening wykonuje zero provider calls i kosztuje
-USD 0, dlatego faza pozostaje w `REVIEW`.
+`DECIDE`. Pierwszy osobno autoryzowany one-shot baseline z 2026-08-23 zatrzymał się na 18/46
+(`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`): 17 prób ma subtotal 32,386 USD micros, a accounting
+próby 18 jest niepełny. Drugi osobno autoryzowany one-shot baseline z source
+`a4785502c6fe01e978dea1a85aa8d90ff66b90a6` zatrzymał się na 23/46 (`R12`, `JUDGE`,
+`INCOMPLETE_MODEL_OUTPUT`, `INCOMPLETE/MAX_OUTPUT_TOKENS`); accounting jest kompletny dla 23
+prób i 45,732 USD micros. W obu runach nie osiągnięto `GENERATE`, nie powstał report ani
+accepted manifest i nie było rerunu. Offline fix przypina Luna/low/2048 jako runtime JUDGE,
+podnosi wyłącznie `narrative-quality-model-profile-v2` i wykonuje zero provider calls za USD 0.
+AI pozostaje wyłączone, faza pozostaje w `REVIEW`, a kolejny baseline wymaga nowej zgody.

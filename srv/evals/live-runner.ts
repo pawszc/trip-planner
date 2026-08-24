@@ -120,10 +120,14 @@ export interface SafeNarrativeLiveEvalFailure {
   readonly logicalCallSequence?: number;
   readonly completedLogicalCalls?: number;
   readonly underlyingCode?: string;
+  readonly provider?: 'OPENAI' | 'ANTHROPIC';
+  readonly configuredModel?: string;
+  readonly responseModel?: string;
   readonly providerResponseStatus?: AiProviderResponseStatus;
   readonly providerIncompleteReason?: AiProviderIncompleteReason;
   readonly attempts?: number;
   readonly usage?: Readonly<Required<AiUsage>>;
+  readonly latencyMs?: number;
   readonly knownCumulativeProviderAttempts?: number;
   readonly knownCumulativeEstimatedCostUsdMicros?: number;
 }
@@ -226,10 +230,14 @@ export class NarrativeLiveEvalExecutionError extends Error {
   readonly underlyingCode: string;
   readonly completedLogicalCalls: number;
   readonly attemptAccountingComplete: boolean;
+  readonly provider?: 'OPENAI' | 'ANTHROPIC';
+  readonly configuredModel?: string;
+  readonly responseModel?: string;
   readonly providerResponseStatus?: AiProviderResponseStatus;
   readonly providerIncompleteReason?: AiProviderIncompleteReason;
   readonly attempts?: number;
   readonly usage?: Readonly<Required<AiUsage>>;
+  readonly latencyMs?: number;
   readonly knownCumulativeProviderAttempts: number;
   readonly knownCumulativeEstimatedCostUsdMicros: number;
 
@@ -251,6 +259,11 @@ export class NarrativeLiveEvalExecutionError extends Error {
     this.attemptAccountingComplete = accounting.attemptAccountingComplete;
     this.knownCumulativeProviderAttempts = accounting.knownCumulativeProviderAttempts;
     this.knownCumulativeEstimatedCostUsdMicros = accounting.knownCumulativeEstimatedCostUsdMicros;
+    if (accounting.provider !== undefined) this.provider = accounting.provider;
+    if (accounting.configuredModel !== undefined) {
+      this.configuredModel = accounting.configuredModel;
+    }
+    if (accounting.responseModel !== undefined) this.responseModel = accounting.responseModel;
     if (accounting.providerResponseStatus !== undefined) {
       this.providerResponseStatus = accounting.providerResponseStatus;
     }
@@ -259,16 +272,21 @@ export class NarrativeLiveEvalExecutionError extends Error {
     }
     if (accounting.attempts !== undefined) this.attempts = accounting.attempts;
     if (accounting.usage !== undefined) this.usage = accounting.usage;
+    if (accounting.latencyMs !== undefined) this.latencyMs = accounting.latencyMs;
   }
 }
 
 interface FailureAccounting {
   readonly completedLogicalCalls: number;
   readonly attemptAccountingComplete: boolean;
+  readonly provider?: 'OPENAI' | 'ANTHROPIC';
+  readonly configuredModel?: string;
+  readonly responseModel?: string;
   readonly providerResponseStatus?: AiProviderResponseStatus;
   readonly providerIncompleteReason?: AiProviderIncompleteReason;
   readonly attempts?: number;
   readonly usage?: Readonly<Required<AiUsage>>;
+  readonly latencyMs?: number;
   readonly knownCumulativeProviderAttempts: number;
   readonly knownCumulativeEstimatedCostUsdMicros: number;
 }
@@ -284,6 +302,11 @@ function settleFailureAccounting(
   const evidence = error instanceof AiError ? error.executionEvidence : undefined;
   const common = {
     completedLogicalCalls,
+    ...(evidence?.provider === undefined ? {} : { provider: evidence.provider }),
+    ...(evidence?.configuredModel === undefined
+      ? {}
+      : { configuredModel: evidence.configuredModel }),
+    ...(evidence?.responseModel === undefined ? {} : { responseModel: evidence.responseModel }),
     ...(evidence?.providerResponseStatus === undefined
       ? {}
       : { providerResponseStatus: evidence.providerResponseStatus }),
@@ -292,6 +315,7 @@ function settleFailureAccounting(
       : { providerIncompleteReason: evidence.providerIncompleteReason }),
     ...(evidence?.attempts === undefined ? {} : { attempts: evidence.attempts }),
     ...(evidence?.usage === undefined ? {} : { usage: evidence.usage }),
+    ...(evidence?.latencyMs === undefined ? {} : { latencyMs: evidence.latencyMs }),
   };
   if (reservation === undefined) {
     return {
@@ -347,6 +371,9 @@ export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiv
       logicalCallSequence: error.logicalCallSequence,
       completedLogicalCalls: error.completedLogicalCalls,
       underlyingCode: error.underlyingCode,
+      ...(error.provider === undefined ? {} : { provider: error.provider }),
+      ...(error.configuredModel === undefined ? {} : { configuredModel: error.configuredModel }),
+      ...(error.responseModel === undefined ? {} : { responseModel: error.responseModel }),
       ...(error.providerResponseStatus === undefined
         ? {}
         : { providerResponseStatus: error.providerResponseStatus }),
@@ -355,6 +382,7 @@ export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiv
         : { providerIncompleteReason: error.providerIncompleteReason }),
       ...(error.attempts === undefined ? {} : { attempts: error.attempts }),
       ...(error.usage === undefined ? {} : { usage: error.usage }),
+      ...(error.latencyMs === undefined ? {} : { latencyMs: error.latencyMs }),
       knownCumulativeProviderAttempts: error.knownCumulativeProviderAttempts,
       knownCumulativeEstimatedCostUsdMicros: error.knownCumulativeEstimatedCostUsdMicros,
     };

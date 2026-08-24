@@ -468,8 +468,8 @@ describe('Phase 3B3 narrative quality gate runtime', () => {
       status: 'SUCCEEDED',
       provider: 'OPENAI',
       configuredEffort: 'low',
-      configuredMaxOutputTokens: 768,
-      effectiveMaxOutputTokens: 768,
+      configuredMaxOutputTokens: 2048,
+      effectiveMaxOutputTokens: 2048,
       errorCode: null,
     });
     expect(reviews).toHaveLength(1);

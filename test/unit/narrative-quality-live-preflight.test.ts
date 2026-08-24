@@ -12,6 +12,7 @@ import {
   type AiPriceSnapshot,
 } from '../../srv/evals/price-snapshot.ts';
 import {
+  NARRATIVE_LIVE_COST_SCENARIO_IDS,
   createNarrativeLiveCostScenarioConfig,
   narrativeLiveCostPreflightOutputSchema,
   runNarrativeQualityLiveCostPreflightScript,
@@ -87,64 +88,27 @@ describe('credential-free narrative live cost preflight', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
 
     const outputs = parseOutputs(lines);
-    const terra = outputs.find(({ scenarioId }) => scenarioId === 'SCENARIO_CURRENT_TERRA')!;
-    const luna = outputs.find(({ scenarioId }) => scenarioId === 'SCENARIO_COST_FALLBACK_LUNA')!;
-    expect(terra).toMatchObject({
-      status: 'COST_PREFLIGHT_BLOCKED',
+    expect(outputs.map(({ scenarioId }) => scenarioId)).toEqual([
+      'SCENARIO_RUNTIME_LUNA',
+      'SCENARIO_COMPARISON_TERRA',
+    ]);
+    expect(NARRATIVE_LIVE_COST_SCENARIO_IDS.join('|')).not.toMatch(/FALLBACK/u);
+    const luna = outputs.find(({ scenarioId }) => scenarioId === 'SCENARIO_RUNTIME_LUNA')!;
+    const terra = outputs.find(({ scenarioId }) => scenarioId === 'SCENARIO_COMPARISON_TERRA')!;
+    expect(luna).toMatchObject({
+      status: 'COST_PREFLIGHT_PASSED',
       pricingVerifiedAt: '2026-08-21',
       plannedLogicalCalls: 46,
       plannedGenerateCalls: 4,
       plannedJudgeCalls: 42,
       plannedMaximumAttempts: 46,
       maxRetries: 0,
-      plannedMaximumCostUsdMicros: 6_950_969,
-      plannedMaximumCostUsd: '6.950969',
+      plannedMaximumCostUsdMicros: 1_185_201,
+      plannedMaximumCostUsd: '1.185201',
       configuredCostCapUsdMicros: 3_000_000,
       configuredCostCapUsd: '3.000000',
-      withinLogicalCallCap: true,
-      withinProviderAttemptCap: true,
-      withinCostCap: false,
-      withinAllCaps: false,
-      costBreakdown: {
-        generate: {
-          plannedCalls: 4,
-          plannedMaximumCostUsdMicros: 401_101,
-          plannedMaximumCostUsd: '0.401101',
-        },
-        judge: {
-          plannedCalls: 42,
-          plannedMaximumCostUsdMicros: 6_549_868,
-          plannedMaximumCostUsd: '6.549868',
-        },
-        byProviderModel: [
-          {
-            provider: 'OPENAI',
-            configuredModel: 'gpt-5.6-terra',
-            plannedCalls: 42,
-            plannedMaximumCostUsdMicros: 6_549_868,
-            plannedMaximumCostUsd: '6.549868',
-          },
-          {
-            provider: 'ANTHROPIC',
-            configuredModel: 'claude-sonnet-5',
-            plannedCalls: 4,
-            plannedMaximumCostUsdMicros: 401_101,
-            plannedMaximumCostUsd: '0.401101',
-          },
-        ],
-      },
-    });
-    expect(luna).toMatchObject({
-      status: 'COST_PREFLIGHT_PASSED',
-      plannedLogicalCalls: 46,
-      plannedGenerateCalls: 4,
-      plannedJudgeCalls: 42,
-      plannedMaximumAttempts: 46,
-      maxRetries: 0,
-      plannedMaximumCostUsdMicros: 1_056_177,
-      plannedMaximumCostUsd: '1.056177',
-      configuredCostCapUsdMicros: 3_000_000,
-      configuredCostCapUsd: '3.000000',
+      costCapHeadroomUsdMicros: 1_814_799,
+      costCapHeadroomUsd: '1.814799',
       withinLogicalCallCap: true,
       withinProviderAttemptCap: true,
       withinCostCap: true,
@@ -157,16 +121,16 @@ describe('credential-free narrative live cost preflight', () => {
         },
         judge: {
           plannedCalls: 42,
-          plannedMaximumCostUsdMicros: 655_076,
-          plannedMaximumCostUsd: '0.655076',
+          plannedMaximumCostUsdMicros: 784_100,
+          plannedMaximumCostUsd: '0.784100',
         },
         byProviderModel: [
           {
             provider: 'OPENAI',
             configuredModel: 'gpt-5.6-luna',
             plannedCalls: 42,
-            plannedMaximumCostUsdMicros: 655_076,
-            plannedMaximumCostUsd: '0.655076',
+            plannedMaximumCostUsdMicros: 784_100,
+            plannedMaximumCostUsd: '0.784100',
           },
           {
             provider: 'ANTHROPIC',
@@ -178,7 +142,53 @@ describe('credential-free narrative live cost preflight', () => {
         ],
       },
     });
-    expect(terra.profiles.generate).toEqual({
+    expect(terra).toMatchObject({
+      status: 'COST_PREFLIGHT_BLOCKED',
+      plannedLogicalCalls: 46,
+      plannedGenerateCalls: 4,
+      plannedJudgeCalls: 42,
+      plannedMaximumAttempts: 46,
+      maxRetries: 0,
+      plannedMaximumCostUsdMicros: 8_241_209,
+      plannedMaximumCostUsd: '8.241209',
+      configuredCostCapUsdMicros: 3_000_000,
+      configuredCostCapUsd: '3.000000',
+      withinLogicalCallCap: true,
+      withinProviderAttemptCap: true,
+      costCapHeadroomUsdMicros: 0,
+      costCapHeadroomUsd: '0.000000',
+      withinCostCap: false,
+      withinAllCaps: false,
+      costBreakdown: {
+        generate: {
+          plannedCalls: 4,
+          plannedMaximumCostUsdMicros: 401_101,
+          plannedMaximumCostUsd: '0.401101',
+        },
+        judge: {
+          plannedCalls: 42,
+          plannedMaximumCostUsdMicros: 7_840_108,
+          plannedMaximumCostUsd: '7.840108',
+        },
+        byProviderModel: [
+          {
+            provider: 'OPENAI',
+            configuredModel: 'gpt-5.6-terra',
+            plannedCalls: 42,
+            plannedMaximumCostUsdMicros: 7_840_108,
+            plannedMaximumCostUsd: '7.840108',
+          },
+          {
+            provider: 'ANTHROPIC',
+            configuredModel: 'claude-sonnet-5',
+            plannedCalls: 4,
+            plannedMaximumCostUsdMicros: 401_101,
+            plannedMaximumCostUsd: '0.401101',
+          },
+        ],
+      },
+    });
+    expect(luna.profiles.generate).toEqual({
       provider: 'ANTHROPIC',
       configuredModel: 'claude-sonnet-5',
       effort: 'low',
@@ -187,19 +197,22 @@ describe('credential-free narrative live cost preflight', () => {
       maximumInputTokensPerAttempt: 14_674,
       maximumOutputTokensPerAttempt: 1_600,
     });
-    expect(terra.profiles.judge).toEqual({
+    expect(luna.profiles.judge).toEqual({
       provider: 'OPENAI',
-      configuredModel: 'gpt-5.6-terra',
+      configuredModel: 'gpt-5.6-luna',
       effort: 'low',
-      maxOutputTokens: 768,
+      maxOutputTokens: 2_048,
       minimumInputTokensPerAttempt: 24_176,
       maximumInputTokensPerAttempt: 72_619,
-      maximumOutputTokensPerAttempt: 768,
+      maximumOutputTokensPerAttempt: 2_048,
     });
-    expect(luna.profiles.judge).toEqual({
-      ...terra.profiles.judge,
-      configuredModel: 'gpt-5.6-luna',
+    expect(terra.profiles.judge).toEqual({
+      ...luna.profiles.judge,
+      configuredModel: 'gpt-5.6-terra',
     });
+    expect(luna.workloadFingerprint).toBe(
+      '280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8',
+    );
     expect(terra.workloadFingerprint).toBe(luna.workloadFingerprint);
 
     const forbiddenKeys = new Set([
@@ -228,11 +241,11 @@ describe('credential-free narrative live cost preflight', () => {
   it('uses identical requests, contracts, token ceilings and call order except for JUDGE model', () => {
     const priceSnapshot = loadAiPriceSnapshot();
     const terra = buildNarrativeLiveEvalCostPreflight({
-      config: createNarrativeLiveCostScenarioConfig('SCENARIO_CURRENT_TERRA'),
+      config: createNarrativeLiveCostScenarioConfig('SCENARIO_COMPARISON_TERRA'),
       priceSnapshot,
     });
     const luna = buildNarrativeLiveEvalCostPreflight({
-      config: createNarrativeLiveCostScenarioConfig('SCENARIO_COST_FALLBACK_LUNA'),
+      config: createNarrativeLiveCostScenarioConfig('SCENARIO_RUNTIME_LUNA'),
       priceSnapshot,
     });
     const normalizeJudgeModel = (summary: typeof terra) =>
@@ -258,8 +271,40 @@ describe('credential-free narrative live cost preflight', () => {
     expect(
       luna.plan.calls
         .filter(({ taskType }) => taskType === 'JUDGE')
-        .every(({ configuredModel }) => configuredModel === 'gpt-5.6-luna'),
+        .every(
+          ({ configuredModel, configuredMaxOutputTokens, maximumOutputTokensPerAttempt }) =>
+            configuredModel === 'gpt-5.6-luna' &&
+            configuredMaxOutputTokens === 2_048 &&
+            maximumOutputTokensPerAttempt === 2_048,
+        ),
     ).toBe(true);
+  });
+
+  it('changes the workload fingerprint when the shared JUDGE output ceiling changes', () => {
+    const priceSnapshot = loadAiPriceSnapshot();
+    const runtime = buildNarrativeLiveEvalCostPreflight({
+      config: createNarrativeLiveCostScenarioConfig('SCENARIO_RUNTIME_LUNA'),
+      priceSnapshot,
+    });
+    const priorCeiling = buildNarrativeLiveEvalCostPreflight({
+      config: loadAiConfig({
+        AI_MAX_RETRIES: '0',
+        AI_GENERATE_PROVIDER: 'anthropic',
+        AI_GENERATE_MODEL: 'claude-sonnet-5',
+        AI_GENERATE_EFFORT: 'low',
+        AI_GENERATE_MAX_OUTPUT_TOKENS: '1600',
+        AI_JUDGE_PROVIDER: 'openai',
+        AI_JUDGE_MODEL: 'gpt-5.6-luna',
+        AI_JUDGE_EFFORT: 'low',
+        AI_JUDGE_MAX_OUTPUT_TOKENS: '768',
+      }),
+      priceSnapshot,
+    });
+
+    expect(runtime.workloadFingerprint).not.toBe(priorCeiling.workloadFingerprint);
+    expect(priorCeiling.workloadFingerprint).toBe(
+      '5ec2a80a15349b8b3c7ed8e2a121274d26ac3b8f5bd28382348620b30c22b2e9',
+    );
   });
 
   it('fails closed for an unknown scenario model before emitting partial scenario output', () => {
@@ -362,14 +407,14 @@ describe('credential-free narrative live cost preflight', () => {
     expect(parseOutputs(lines)).toHaveLength(2);
   });
 
-  it('does not change the runtime JUDGE default or enable AI', () => {
+  it('uses the accepted runtime JUDGE profile without enabling AI', () => {
     const config = loadAiConfig({});
     expect(config.enabled).toBe(false);
     expect(config.taskProfiles.JUDGE).toMatchObject({
       provider: 'OPENAI',
-      model: 'gpt-5.6-terra',
+      model: 'gpt-5.6-luna',
       effort: 'low',
-      maxOutputTokens: 768,
+      maxOutputTokens: 2_048,
     });
   });
 });

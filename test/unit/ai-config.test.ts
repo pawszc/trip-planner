@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   AI_CONFIG_DEFAULTS,
@@ -6,6 +7,20 @@ import {
   resolveMaxOutputTokens,
 } from '../../srv/ai/config.js';
 import { AiProvider, AiTaskType } from '../../srv/ai/contracts.js';
+
+function loadEnvExample(): Record<string, string> {
+  const lines = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8').split(
+    /\r?\n/u,
+  );
+  return Object.fromEntries(
+    lines
+      .filter((line) => line.length > 0 && !line.startsWith('#'))
+      .map((line) => {
+        const separator = line.indexOf('=');
+        return [line.slice(0, separator), line.slice(separator + 1)];
+      }),
+  );
+}
 
 describe('task-aware AI configuration', () => {
   it('loads safe defaults for DECIDE, GENERATE and JUDGE without credentials', () => {
@@ -32,9 +47,9 @@ describe('task-aware AI configuration', () => {
         JUDGE: {
           taskType: AiTaskType.JUDGE,
           provider: AiProvider.OPENAI,
-          model: 'gpt-5.6-terra',
+          model: 'gpt-5.6-luna',
           effort: 'low',
-          maxOutputTokens: 768,
+          maxOutputTokens: 2_048,
         },
       },
       providers: { OPENAI: {}, ANTHROPIC: {} },
@@ -43,6 +58,24 @@ describe('task-aware AI configuration', () => {
       runRetentionDays: 30,
     });
     expect(AI_CONFIG_DEFAULTS.enabled).toBe(false);
+  });
+
+  it('keeps .env.example aligned with disabled runtime defaults and the exact JUDGE profile', () => {
+    const example = loadEnvExample();
+    const config = loadAiConfig(example);
+
+    expect(example).toMatchObject({
+      AI_ENABLED: 'false',
+      AI_LIVE_SMOKE_ENABLED: 'false',
+      AI_LIVE_EVAL_ENABLED: 'false',
+      AI_JUDGE_PROVIDER: 'openai',
+      AI_JUDGE_MODEL: 'gpt-5.6-luna',
+      AI_JUDGE_EFFORT: 'low',
+      AI_JUDGE_MAX_OUTPUT_TOKENS: '2048',
+    });
+    expect(config.enabled).toBe(false);
+    expect(config.liveSmokeEnabled).toBe(false);
+    expect(config.taskProfiles.JUDGE).toEqual(AI_CONFIG_DEFAULTS.taskProfiles.JUDGE);
   });
 
   it('accepts complete task-specific overrides', () => {
@@ -299,7 +332,7 @@ describe('task-aware AI configuration', () => {
 
     expect(config.taskProfiles.DECIDE.model).toBe('gpt-5.6-luna');
     expect(config.taskProfiles.GENERATE.model).toBe('claude-sonnet-5');
-    expect(config.taskProfiles.JUDGE.model).toBe('gpt-5.6-terra');
+    expect(config.taskProfiles.JUDGE.model).toBe('gpt-5.6-luna');
   });
 
   it('does not use the removed global token limit as a profile fallback', () => {
@@ -307,7 +340,7 @@ describe('task-aware AI configuration', () => {
 
     expect(config.taskProfiles.DECIDE.maxOutputTokens).toBe(512);
     expect(config.taskProfiles.GENERATE.maxOutputTokens).toBe(1_600);
-    expect(config.taskProfiles.JUDGE.maxOutputTokens).toBe(768);
+    expect(config.taskProfiles.JUDGE.maxOutputTokens).toBe(2_048);
   });
 
   it('produces a credential-safe summary with all profiles and retention', () => {

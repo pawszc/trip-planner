@@ -28,7 +28,11 @@ Routing jest task-aware. Konfiguracja zawiera osobny `AiExecutionProfile` dla `D
 | ---------- | --------- | ----------------- | ------ | ----------------: |
 | `DECIDE`   | OpenAI    | `gpt-5.6-luna`    | `none` |               512 |
 | `GENERATE` | Anthropic | `claude-sonnet-5` | `low`  |              1600 |
-| `JUDGE`    | OpenAI    | `gpt-5.6-terra`   | `low`  |               768 |
+| `JUDGE`    | OpenAI    | `gpt-5.6-luna`    | `low`  |              2048 |
+
+Faza 3B3 przypina ten profil JUDGE przez `narrative-quality-model-profile-v2`. Limit 2048 jest
+wspólnym budżetem reasoning i visible structured output; nie wprowadza retry, continuation,
+resume ani fallbacku modelu.
 
 Normalny `StructuredAiRequest` nie ma provider override i nie może zmienić modelu ani
 effort. Opcjonalny limit requestu może tylko obniżyć limit profilu. Testy wstrzykują

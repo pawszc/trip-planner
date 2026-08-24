@@ -52,7 +52,7 @@ interface AiExecutionProfile {
 | ---------- | --------- | ----------------- | ------ | ----------------: |
 | `DECIDE`   | OpenAI    | `gpt-5.6-luna`    | `none` |               512 |
 | `GENERATE` | Anthropic | `claude-sonnet-5` | `low`  |              1600 |
-| `JUDGE`    | OpenAI    | `gpt-5.6-terra`   | `low`  |               768 |
+| `JUDGE`    | OpenAI    | `gpt-5.6-luna`    | `low`  |              2048 |
 
 OpenAI akceptuje wszystkie sześć wartości effort. Anthropic odrzuca `none`. Niepoprawny
 profil kończy się `INVALID_AI_CONFIGURATION` przed utworzeniem klienta lub requestem
@@ -81,9 +81,9 @@ Credentiale są opcjonalne do chwili faktycznego wywołania wybranego adaptera.
 | `AI_GENERATE_EFFORT`            | `low`             | effort zgodny z providerem       |
 | `AI_GENERATE_MAX_OUTPUT_TOKENS` | `1600`            | integer 1–8192                   |
 | `AI_JUDGE_PROVIDER`             | `openai`          | `openai` albo `anthropic`        |
-| `AI_JUDGE_MODEL`                | `gpt-5.6-terra`   | niepusty tekst                   |
+| `AI_JUDGE_MODEL`                | `gpt-5.6-luna`    | niepusty tekst                   |
 | `AI_JUDGE_EFFORT`               | `low`             | effort zgodny z providerem       |
-| `AI_JUDGE_MAX_OUTPUT_TOKENS`    | `768`             | integer 1–8192                   |
+| `AI_JUDGE_MAX_OUTPUT_TOKENS`    | `2048`            | integer 1–8192                   |
 | `AI_TIMEOUT_MS`                 | `30000`           | integer 1000–120000              |
 | `AI_MAX_RETRIES`                | `1`               | integer 0–2                      |
 | `AI_RUN_RETENTION_DAYS`         | `30`              | integer 1–365                    |
@@ -109,11 +109,22 @@ częściowego raportu i bez wymyślania usage, attempts lub kosztu. Checked-in k
 stawki API zweryfikowane 2026-08-21. Credential-free `npm run eval:live:preflight` używa
 dokładnie tego samego frozen planu i integer-only cost estimatora, ale nie czyta opt-inów ani
 credentiali i nie ma ścieżki do executora, adaptera, gatewaya lub audit store. Pokazuje, że
-aktualny profil Terra przekracza cap USD 3, a porównawczy profil Luna mieści się w cap; nie
-zmienia to runtime defaultu ani nie autoryzuje zmiany modelu. Po przejściu wszystkich guardów
-produkcyjnych każdy baseline dostaje odizolowany SQLite store pod
+runtime Luna/low/2048 ma ceiling 1,185,201 USD micros (401,101 `GENERATE`, 784,100 `JUDGE`)
+i 1,814,799 micros headroomu, a Terra/2048 kosztuje 8,241,209 micros i pozostaje wyłącznie
+comparison scenario ponad capem. Oba mają workload fingerprint
+`280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`;
+nie istnieje automatyczny fallback między nimi. Po przejściu wszystkich guardów produkcyjnych
+każdy baseline dostaje odizolowany SQLite store pod
 `.tools/narrative-live-eval/`; zawiera on wyłącznie allow-listed `AiRuns`, bez promptu,
 kontekstu, narracji, raw payloadu lub sekretu.
+
+`narrative-quality-model-profile-v2` zmienia tylko exact JUDGE profile na
+`OPENAI/gpt-5.6-luna/low/2048`. Wersje datasetu, promptów, schemas, rubryki, publication
+policy, safety prechecku i price catalogu pozostają bez zmian. Live `PREFLIGHT_PASSED`
+allowlistuje workload fingerprint, datę weryfikacji cen, exact profile, wersje planu/token/
+cost/retry, calls/attempts/cost i limits. Safe failure allowlistuje dostępne
+provider/configuredModel/responseModel/latency obok status/reason/usage/attempts, nigdy
+provider IDs, błędu, payloadu ani raw contentu.
 
 Do końca Fazy 3B dostępne są deprecated aliases:
 
@@ -304,12 +315,14 @@ bundle w pamięci. Osobny test CAP/SQLite używa produkcyjnego recordera/store/w
 realnym zapisie odczytuje exact lineage/fingerprint/bloki/references, sprawdza atomowość oraz
 zachowanie review i produktu po cleanup obu `AiRuns`.
 
-Finalny live baseline jest oddzielony od smoke i CI. Jedyny autoryzowany run z 2026-08-23
-zatrzymał się fail-closed na sekwencji 18/46 (`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`). Znany
-subtotal 17 rozliczonych operacji wynosi 32,386 USD micros; próba 18 nie ma kompletnego
-settlement, więc nie wolno deklarować pełnego kosztu. Nie powstał report ani accepted
-manifest i nie wykonano rerunu. Ten hardening wykonuje zero live calls i kosztuje USD 0;
-Faza 3B3 pozostaje `REVIEW`.
+Finalny live baseline jest oddzielony od smoke i CI. Pierwszy osobno autoryzowany run z
+2026-08-23 zatrzymał się na 18/46 (`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`); 17 prób ma subtotal
+32,386 USD micros, a próba 18 nie ma pełnego settlement. Drugi osobno autoryzowany run z
+source `a4785502c6fe01e978dea1a85aa8d90ff66b90a6` zatrzymał się na 23/46 (`R12`, `JUDGE`,
+`INCOMPLETE_MODEL_OUTPUT`, `INCOMPLETE/MAX_OUTPUT_TOKENS`) z kompletnym accountingiem 23 prób
+i 45,732 USD micros. Nie powstał report ani accepted manifest, nie osiągnięto `GENERATE` i nie
+wykonano rerunu. Ten offline fix wykonuje zero provider calls, kosztuje USD 0, nie autoryzuje
+kolejnego baseline i utrzymuje Fazę 3B3 w `REVIEW`.
 
 ## Produktowy use case 3B3
 
@@ -369,5 +382,6 @@ quality gate — ADR 0008.
 - adaptery obsługują wyłącznie tekstowy structured output;
 - precheck pozostaje wąski i nie zastępuje semantycznej oceny `JUDGE`; granica money-stage
   opisana wyżej wymaga potwierdzenia podczas review;
-- produkt nie jest jeszcze włączony publicznie; jedyny finalny live baseline zatrzymał się
-  bez pełnego reportu, accepted manifestu lub rerunu, więc Faza 3B3 pozostaje `REVIEW`.
+- produkt nie jest jeszcze włączony publicznie; dwa osobno autoryzowane live baseline
+  zatrzymały się bez reportu, accepted manifestu lub rerunu, więc Faza 3B3 pozostaje
+  `REVIEW`.

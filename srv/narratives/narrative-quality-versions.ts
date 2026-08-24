@@ -7,5 +7,5 @@ export const NARRATIVE_QUALITY_RUBRIC_VERSION = 'narrative-quality-rubric-v1';
 export const NARRATIVE_QUALITY_DATASET_VERSION = 'narrative-quality-v1';
 export const NARRATIVE_PUBLICATION_POLICY_VERSION = 'narrative-publication-policy-v1';
 export const NARRATIVE_SAFETY_PRECHECK_VERSION = 'narrative-safety-precheck-v1';
-export const NARRATIVE_MODEL_PROFILE_VERSION = 'narrative-quality-model-profile-v1';
+export const NARRATIVE_MODEL_PROFILE_VERSION = 'narrative-quality-model-profile-v2';
 export const NARRATIVE_PRICE_CATALOG_VERSION = 'narrative-quality-price-catalog-v1';
