@@ -3,6 +3,8 @@ import { SUPPORTED_CURRENCY_CODES, type SupportedCurrencyCode } from '../domain/
 import { DomainError } from '../domain/domain-error.ts';
 import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 import type { GroundedOptionContext } from './grounded-option-context.ts';
+import { NARRATIVE_FINALIZATION_VERSION } from './narrative-finalization.ts';
+import { NARRATIVE_GENERATION_VIEW_VERSION } from './narrative-generation-view.ts';
 import {
   buildNarrativeModelView,
   NARRATIVE_MODEL_VIEW_VERSION,
@@ -55,6 +57,8 @@ export type NarrativeConstraintSnapshot = JsonObject & {
 export type NarrativeQualityContractVersions = JsonObject & {
   readonly groundedContextVersion: string;
   readonly modelViewVersion: typeof NARRATIVE_MODEL_VIEW_VERSION;
+  readonly generationViewVersion: typeof NARRATIVE_GENERATION_VIEW_VERSION;
+  readonly finalizationVersion: typeof NARRATIVE_FINALIZATION_VERSION;
   readonly qualityContextVersion: typeof NARRATIVE_QUALITY_CONTEXT_VERSION;
   readonly constraintSnapshotVersion: typeof NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION;
   readonly generatePromptVersion: typeof OPTION_NARRATIVE_PROMPT_VERSION;
@@ -221,6 +225,8 @@ function validateVersions(
     [
       'groundedContextVersion',
       'modelViewVersion',
+      'generationViewVersion',
+      'finalizationVersion',
       'qualityContextVersion',
       'constraintSnapshotVersion',
       'generatePromptVersion',
@@ -238,6 +244,16 @@ function validateVersions(
   );
   requireVersion(versions.groundedContextVersion, context.version, 'groundedContextVersion');
   requireVersion(versions.modelViewVersion, NARRATIVE_MODEL_VIEW_VERSION, 'modelViewVersion');
+  requireVersion(
+    versions.generationViewVersion,
+    NARRATIVE_GENERATION_VIEW_VERSION,
+    'generationViewVersion',
+  );
+  requireVersion(
+    versions.finalizationVersion,
+    NARRATIVE_FINALIZATION_VERSION,
+    'finalizationVersion',
+  );
   requireVersion(
     versions.qualityContextVersion,
     NARRATIVE_QUALITY_CONTEXT_VERSION,
@@ -285,6 +301,8 @@ function validateVersions(
   return {
     groundedContextVersion: versions.groundedContextVersion,
     modelViewVersion: versions.modelViewVersion,
+    generationViewVersion: versions.generationViewVersion,
+    finalizationVersion: versions.finalizationVersion,
     qualityContextVersion: versions.qualityContextVersion,
     constraintSnapshotVersion: versions.constraintSnapshotVersion,
     generatePromptVersion: versions.generatePromptVersion,
@@ -311,7 +329,7 @@ function deepFreeze<T>(value: T): T {
 function assertQualitySize(value: JsonObject): void {
   if (Buffer.byteLength(canonicalizeJson(value), 'utf8') > NARRATIVE_QUALITY_CONTEXT_MAX_BYTES) {
     invalidQualityContext(
-      `Narrative quality context exceeds the ${NARRATIVE_QUALITY_CONTEXT_MAX_BYTES}-byte v1 limit.`,
+      `Narrative quality context exceeds the ${NARRATIVE_QUALITY_CONTEXT_MAX_BYTES}-byte v2 limit.`,
     );
   }
 }

@@ -2,6 +2,11 @@ import { canonicalizeJson } from '../ai/contracts.ts';
 import type { JsonValue } from '../ai/contracts.ts';
 import type { GroundedFact, GroundedOptionContext } from './grounded-option-context.ts';
 import type { NarrativeJudgeReasonCode } from './narrative-judge.ts';
+import { validateFinalizedNarrative } from './narrative-finalization.ts';
+import {
+  buildNarrativeGenerationView,
+  type NarrativeGenerationView,
+} from './narrative-generation-view.ts';
 import {
   buildNarrativeModelView,
   collectNarrativeExcludedValues,
@@ -43,6 +48,13 @@ export type NarrativeSafetyPrecheckResult =
   | { readonly passed: false; readonly findings: readonly NarrativeSafetyPrecheckFinding[] };
 
 export interface NarrativeSafetyPrecheckInput {
+  readonly context: GroundedOptionContext;
+  readonly modelView: NarrativeModelView;
+  readonly generationView: NarrativeGenerationView;
+  readonly narrativeOutput: unknown;
+}
+
+export interface AuthoredNarrativeSafetyPrecheckInput {
   readonly context: GroundedOptionContext;
   readonly modelView: NarrativeModelView;
   readonly narrativeOutput: unknown;
@@ -157,9 +169,11 @@ function addUniqueFinding(
   }
 }
 
-/** Narrow deterministic checks only; semantic entailment remains the JUDGE's responsibility. */
-export function runNarrativeSafetyPrecheck(
-  input: NarrativeSafetyPrecheckInput,
+function runSafetyChecks(
+  input: AuthoredNarrativeSafetyPrecheckInput & {
+    readonly generationView?: NarrativeGenerationView;
+  },
+  requireFinalization: boolean,
 ): NarrativeSafetyPrecheckResult {
   const expectedModelView = buildNarrativeModelView(input.context);
   if (canonicalizeJson(expectedModelView) !== canonicalizeJson(input.modelView)) {
@@ -172,6 +186,29 @@ export function runNarrativeSafetyPrecheck(
     input.narrativeOutput,
     input.context,
   );
+  if (requireFinalization) {
+    if (input.generationView === undefined) {
+      return {
+        passed: false,
+        findings: [finding('UNTRUSTED_CONTENT_EXPOSED', 1)],
+      };
+    }
+    const generationView = buildNarrativeGenerationView(input.context, input.modelView);
+    if (
+      canonicalizeJson(generationView) !== canonicalizeJson(input.generationView) ||
+      !validateFinalizedNarrative({
+        context: input.context,
+        modelView: input.modelView,
+        generationView,
+        output: narrative,
+      })
+    ) {
+      return {
+        passed: false,
+        findings: [finding('UNTRUSTED_CONTENT_EXPOSED', 1)],
+      };
+    }
+  }
   const excludedValues = [...collectNarrativeExcludedValues(input.context)].sort(
     (left, right) => right.length - left.length,
   );
@@ -214,4 +251,24 @@ export function runNarrativeSafetyPrecheck(
   }
 
   return findings.length === 0 ? { passed: true, findings: [] } : { passed: false, findings };
+}
+
+/**
+ * Production/E2E boundary. Exact generation-view and deterministic-finalization evidence is
+ * mandatory; callers cannot silently fall back to the authored-candidate policy.
+ */
+export function runNarrativeSafetyPrecheck(
+  input: NarrativeSafetyPrecheckInput,
+): NarrativeSafetyPrecheckResult {
+  return runSafetyChecks(input, true);
+}
+
+/**
+ * Eval-only safety scan for frozen, authored JUDGE-stage candidates that predate provider/tail
+ * separation. Runtime and E2E generation must never use this entry point.
+ */
+export function runAuthoredNarrativeSafetyPrecheck(
+  input: AuthoredNarrativeSafetyPrecheckInput,
+): NarrativeSafetyPrecheckResult {
+  return runSafetyChecks(input, false);
 }
