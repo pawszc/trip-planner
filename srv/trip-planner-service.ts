@@ -30,6 +30,11 @@ import { buildPlanningPersistenceBundle } from './persistence/planning-result-re
 import { CapNarrativeQualityReader } from './narratives/cap-narrative-quality-reader.ts';
 import { CapNarrativeReviewStore } from './narratives/cap-narrative-review-store.ts';
 import { CapNarrativeReviewWriter } from './narratives/cap-narrative-review-writer.ts';
+import { NARRATIVE_FINALIZATION_VERSION } from './narratives/narrative-finalization.ts';
+import {
+  buildNarrativeGenerationView,
+  NARRATIVE_GENERATION_VIEW_VERSION,
+} from './narratives/narrative-generation-view.ts';
 import {
   createNarrativeJudgeRequest,
   parseNarrativeJudgeOutput,
@@ -41,6 +46,11 @@ import {
 } from './narratives/narrative-model-view.ts';
 import { buildNarrativePersistenceBundle } from './narratives/narrative-persistence.ts';
 import { decideNarrativePublication } from './narratives/narrative-publication-policy.ts';
+import {
+  NARRATIVE_JUDGE_REASON_DIMENSIONS,
+  type NarrativeJudgeDimension,
+  type NarrativeJudgeReasonCode,
+} from './narratives/narrative-quality-rubric.ts';
 import {
   buildNarrativeQualityContext,
   createNarrativeFingerprint,
@@ -186,6 +196,8 @@ function rejectNarrativeError(request: Request, error: unknown): never {
             'INVALID_GROUNDED_OPTION_CONTEXT',
             'INVALID_NARRATIVE_PERSISTENCE',
             'INVALID_NARRATIVE_MODEL_VIEW',
+            'INVALID_NARRATIVE_GENERATION_VIEW',
+            'INVALID_NARRATIVE_FINALIZATION',
             'INVALID_NARRATIVE_QUALITY_CONTEXT',
             'INVALID_NARRATIVE_JUDGE_OUTPUT',
             'INVALID_NARRATIVE_REVIEW_PERSISTENCE',
@@ -258,6 +270,8 @@ function createNarrativeVersions(
   const qualityVersions: NarrativeQualityContractVersions = {
     groundedContextVersion,
     modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
+    generationViewVersion: NARRATIVE_GENERATION_VIEW_VERSION,
+    finalizationVersion: NARRATIVE_FINALIZATION_VERSION,
     qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
     constraintSnapshotVersion: NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
     generatePromptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
@@ -339,6 +353,17 @@ function toNarrativeReviewDimensions(
   return Object.fromEntries(
     output.dimensions.map(({ dimension, status }) => [dimension, status]),
   ) as unknown as NarrativeReviewDimensionResults;
+}
+
+function precheckFindingDimension(reasonCode: NarrativeJudgeReasonCode): NarrativeJudgeDimension {
+  const dimensions = NARRATIVE_JUDGE_REASON_DIMENSIONS[reasonCode];
+  if (dimensions.length !== 1) {
+    throw new DomainError(
+      'INVALID_NARRATIVE_REVIEW_PERSISTENCE',
+      'A deterministic precheck finding must have one canonical review dimension.',
+    );
+  }
+  return dimensions[0]!;
 }
 
 function narrativeQualityRejected(): DomainError {
@@ -755,9 +780,10 @@ export default class TripPlannerService extends cds.ApplicationService {
         // remain in a separate envelope and do not mutate the frozen 3B2 grounded context.
         const { context, constraints } = await this.narrativeQualityReader.read(rankedOptionId);
         const modelView = buildNarrativeModelView(context);
+        const generationView = buildNarrativeGenerationView(context, modelView);
         const versions = createNarrativeVersions(context.version);
         const gateway = this.createNarrativeGateway();
-        const generateRequest = createOptionNarrativeRequest(context, modelView);
+        const generateRequest = createOptionNarrativeRequest(context, modelView, generationView);
         const generateInputFingerprint = createInputFingerprint(generateRequest.input);
 
         let generateResult;
@@ -804,6 +830,7 @@ export default class TripPlannerService extends cds.ApplicationService {
         const precheck = runNarrativeSafetyPrecheck({
           context,
           modelView,
+          generationView,
           narrativeOutput,
         });
         if (!precheck.passed) {
@@ -819,6 +846,7 @@ export default class TripPlannerService extends cds.ApplicationService {
               stage: 'PRECHECK',
               failureCode: 'PRECHECK_REJECTED',
               findings: precheck.findings.map((finding) => ({
+                dimension: precheckFindingDimension(finding.reasonCode),
                 reasonCode: finding.reasonCode,
                 severity: finding.severity,
                 blockSequences: [finding.blockSequence],
@@ -956,6 +984,7 @@ export default class TripPlannerService extends cds.ApplicationService {
         const narrativeBundle = buildNarrativePersistenceBundle({
           context,
           modelView,
+          generationView,
           output: narrativeOutput,
           aiRunId: generateResult.aiRunId,
           completedAt: new Date().toISOString(),

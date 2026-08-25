@@ -4,7 +4,7 @@ import {
   createInputFingerprint,
   isValidAiRunId,
   AiTaskType,
-  validateStructuredAiOutput,
+  validateBoundStructuredAiOutput,
   type AiCallResult,
   type AiUsage,
   type StructuredAiRequest,
@@ -30,7 +30,10 @@ import {
   type NarrativeReviewAiRunExpectation,
   type NarrativeReviewDimensionResults,
 } from '../narratives/narrative-review-persistence.ts';
-import { runNarrativeSafetyPrecheck } from '../narratives/narrative-safety-precheck.ts';
+import {
+  runNarrativeSafetyPrecheck,
+  type NarrativeSafetyPrecheckFinding,
+} from '../narratives/narrative-safety-precheck.ts';
 import {
   parseOptionNarrativeOutput,
   type OptionNarrativeOutput,
@@ -41,6 +44,7 @@ import {
   loadNarrativeQualityDataset,
   resolveNarrativeQualityDataset,
   type NarrativeQualityDimension,
+  type NarrativeQualityReasonCode,
   type ResolvedNarrativeQualityDataset,
 } from './dataset.ts';
 import {
@@ -73,7 +77,7 @@ import {
   NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
   evaluateNarrativeE2eRequiredProperties,
 } from './required-properties.ts';
-import { resolveSyntheticNarrativeQualityFixture } from './synthetic-fixtures.ts';
+import { resolveSyntheticNarrativeQualityFixture } from './synthetic-fixtures-v2.ts';
 
 export * from './live-plan.ts';
 
@@ -178,8 +182,8 @@ const SAFE_EVAL_FAILURE_CODE_VALUES = new Set<string>([
   'LIVE_EVAL_BLOCKED',
 ]);
 
-function uniqueInOrder<T>(values: readonly T[]): readonly T[] {
-  return [...new Set(values)];
+function uniqueSorted<T extends string>(values: readonly T[]): readonly T[] {
+  return [...new Set(values)].sort();
 }
 
 function normalizeUsage(usage: AiUsage): BillableTokenUsage {
@@ -233,7 +237,7 @@ function validateExecutionResult<TOutput>(
       'A live-eval result failed local metadata, audit, refusal, or profile validation.',
     );
   }
-  const parsedOutput = validateStructuredAiOutput(descriptor.request, result.output);
+  const parsedOutput = validateBoundStructuredAiOutput(descriptor.request, result.output);
   if (!parsedOutput.success) {
     throw new EvalContractError(
       'LIVE_EVAL_BLOCKED',
@@ -624,12 +628,14 @@ export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiv
   };
 }
 
-function precheckOutcome(prepared: PreparedSemanticCase): SemanticCaseOutcome {
-  if (prepared.precheck.passed) {
-    throw new EvalContractError('INVALID_EVAL_INPUT', 'A passing precheck has no reject outcome.');
-  }
-  const reasonCodes = uniqueInOrder(prepared.precheck.findings.map(({ reasonCode }) => reasonCode));
-  const failedDimensions = uniqueInOrder(
+function precheckSemanticEvidence(findings: readonly NarrativeSafetyPrecheckFinding[]): {
+  readonly failedDimensions: readonly NarrativeQualityDimension[];
+  readonly reasonCodes: readonly NarrativeQualityReasonCode[];
+} {
+  const reasonCodes = uniqueSorted(
+    findings.map(({ reasonCode }) => reasonCode),
+  ) as readonly NarrativeQualityReasonCode[];
+  const failedDimensions = uniqueSorted(
     reasonCodes.map((reasonCode) => {
       const dimension =
         PRECHECK_DIMENSION_BY_REASON[reasonCode as keyof typeof PRECHECK_DIMENSION_BY_REASON];
@@ -642,6 +648,20 @@ function precheckOutcome(prepared: PreparedSemanticCase): SemanticCaseOutcome {
       return dimension;
     }),
   );
+  if (failedDimensions.length === 0 || reasonCodes.length === 0) {
+    throw new EvalContractError(
+      'INVALID_EVAL_INPUT',
+      'A failed deterministic precheck must retain closed semantic evidence.',
+    );
+  }
+  return { failedDimensions, reasonCodes };
+}
+
+function precheckOutcome(prepared: PreparedSemanticCase): SemanticCaseOutcome {
+  if (prepared.precheck.passed) {
+    throw new EvalContractError('INVALID_EVAL_INPUT', 'A passing precheck has no reject outcome.');
+  }
+  const { failedDimensions, reasonCodes } = precheckSemanticEvidence(prepared.precheck.findings);
   return {
     caseId: prepared.qualityCase.authored.id,
     actualDecision: 'REJECT',
@@ -657,10 +677,10 @@ function judgeOutcome(caseId: string, output: NarrativeJudgeOutput): SemanticCas
     caseId,
     actualDecision: decideNarrativePublication(output),
     actualStage: 'JUDGE',
-    failedDimensions: output.dimensions
-      .filter(({ status }) => status === 'FAIL')
-      .map(({ dimension }) => dimension),
-    reasonCodes: uniqueInOrder(output.findings.map(({ reasonCode }) => reasonCode)),
+    failedDimensions: uniqueSorted(
+      output.dimensions.filter(({ status }) => status === 'FAIL').map(({ dimension }) => dimension),
+    ),
+    reasonCodes: uniqueSorted(output.findings.map(({ reasonCode }) => reasonCode)),
     strictJudgeOutputValid: true,
   };
 }
@@ -982,9 +1002,11 @@ export async function runNarrativeQualityLiveEvaluation(
       const precheck = runNarrativeSafetyPrecheck({
         context,
         modelView: prepared.modelView,
+        generationView: prepared.generationView,
         narrativeOutput: candidate,
       });
       if (!precheck.passed) {
+        const { failedDimensions, reasonCodes } = precheckSemanticEvidence(precheck.findings);
         endToEndOutcomes.push({
           caseId,
           generateLogicalCalls: 1,
@@ -992,6 +1014,8 @@ export async function runNarrativeQualityLiveEvaluation(
           generatedSchemaValid: true,
           exactReferencesValid: true,
           actualDecision: 'REJECT',
+          actualFailedDimensions: failedDimensions,
+          actualReasonCodes: reasonCodes,
           judgeStructuredOutputValid: null,
           requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
           requiredPropertyResults,
@@ -1020,6 +1044,8 @@ export async function runNarrativeQualityLiveEvaluation(
           generatedSchemaValid: true,
           exactReferencesValid: true,
           actualDecision: 'REJECT',
+          actualFailedDimensions: [],
+          actualReasonCodes: [],
           judgeStructuredOutputValid: false,
           requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
           requiredPropertyResults,
@@ -1032,6 +1058,14 @@ export async function runNarrativeQualityLiveEvaluation(
       }
       const judgeOutput = judged.result.output;
       const actualDecision = decideNarrativePublication(judgeOutput);
+      const actualFailedDimensions = uniqueSorted(
+        judgeOutput.dimensions
+          .filter(({ status }) => status === 'FAIL')
+          .map(({ dimension }) => dimension),
+      );
+      const actualReasonCodes = uniqueSorted(
+        judgeOutput.findings.map(({ reasonCode }) => reasonCode),
+      );
       const publicationBundleLinkageValidInMemory =
         actualDecision === 'PUBLISH' &&
         validatePublicationBundleLinkageInMemory({
@@ -1050,6 +1084,8 @@ export async function runNarrativeQualityLiveEvaluation(
         generatedSchemaValid: true,
         exactReferencesValid: true,
         actualDecision,
+        actualFailedDimensions,
+        actualReasonCodes,
         judgeStructuredOutputValid: true,
         requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
         requiredPropertyResults,

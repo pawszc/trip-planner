@@ -107,7 +107,22 @@ export function validateStructuredAiOutput<TOutput>(
   if (!staged.success) return staged;
   // The full local contract remains the final backstop after explicit transport and binding
   // phases. A staged validator can classify stricter invariants but cannot bypass this schema.
-  const local = request.outputSchema.safeParse(transport.data);
+  const local = request.outputSchema.safeParse(staged.output);
+  return local.success
+    ? { success: true, output: local.data }
+    : { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };
+}
+
+/**
+ * Revalidates an adapter result that has already crossed the provider transport boundary and been
+ * locally bound. Keeping this separate prevents a provider payload from bypassing its findings-only
+ * (or blocks-only) schema while allowing the gateway to enforce the full final output contract.
+ */
+export function validateBoundStructuredAiOutput<TOutput>(
+  request: StructuredAiRequest<TOutput>,
+  output: unknown,
+): StructuredAiOutputValidationResult<TOutput> {
+  const local = request.outputSchema.safeParse(output);
   return local.success
     ? { success: true, output: local.data }
     : { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };

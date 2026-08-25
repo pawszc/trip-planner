@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { isValidAiRunId } from '../ai/contracts.ts';
+import { createInputFingerprint, isValidAiRunId } from '../ai/contracts.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import { GROUNDED_OPTION_CONTEXT_VERSION } from './grounded-option-context.ts';
+import { NARRATIVE_FINALIZATION_VERSION } from './narrative-finalization.ts';
+import { NARRATIVE_GENERATION_VIEW_VERSION } from './narrative-generation-view.ts';
 import type { NarrativePersistenceBundle, NarrativeRunRecord } from './narrative-persistence.ts';
 import { NARRATIVE_MODEL_VIEW_VERSION } from './narrative-model-view.ts';
 import {
   NARRATIVE_JUDGE_DIMENSIONS,
   NARRATIVE_JUDGE_REASON_CODES,
+  NARRATIVE_JUDGE_REASON_DIMENSIONS,
   NARRATIVE_JUDGE_REASON_SEVERITIES,
   NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
   type NarrativeJudgeDimension,
@@ -16,6 +19,8 @@ import {
 import {
   OPTION_NARRATIVE_PROMPT_VERSION,
   OPTION_NARRATIVE_SCHEMA_VERSION,
+  optionNarrativeOutputSchema,
+  type OptionNarrativeOutput,
 } from './option-narrative.ts';
 import type { NarrativeQualityContractVersions } from './narrative-quality-context.ts';
 import {
@@ -82,6 +87,7 @@ export interface NarrativeReviewAiRunExpectation {
 }
 
 export interface NarrativeReviewFindingInput {
+  readonly dimension: NarrativeReviewDimension;
   readonly reasonCode: NarrativeReviewFindingCode;
   readonly severity: NarrativeReviewFindingSeverity;
   readonly blockSequences: readonly number[];
@@ -100,6 +106,8 @@ export interface NarrativeReviewRunRecord {
   readonly contextFingerprint: string;
   readonly modelViewVersion: string;
   readonly modelViewFingerprint: string;
+  readonly generationViewVersion: string;
+  readonly finalizationVersion: string;
   readonly narrativeFingerprint: string | null;
   readonly qualityContextVersion: string;
   readonly qualityContextFingerprint: string | null;
@@ -140,6 +148,7 @@ export interface NarrativeReviewFindingRecord {
   readonly planningRun_ID: string;
   readonly rankedOption_ID: string;
   readonly sequence: number;
+  readonly dimension: NarrativeReviewDimension;
   readonly reasonCode: NarrativeReviewFindingCode;
   readonly severity: NarrativeReviewFindingSeverity;
   readonly blockSequences: string;
@@ -160,6 +169,8 @@ export interface ReviewedNarrativeRunRecord extends NarrativeRunRecord {
   readonly judgeAiRunId: string;
   readonly modelViewVersion: string;
   readonly modelViewFingerprint: string;
+  readonly generationViewVersion: string;
+  readonly finalizationVersion: string;
   readonly narrativeFingerprint: string;
   readonly qualityContextVersion: string;
   readonly qualityContextFingerprint: string;
@@ -217,6 +228,13 @@ const FACT_ID_PATTERN = /^fact_[a-f0-9]{64}$/u;
 const FINDING_CODES = new Set<string>(NARRATIVE_REVIEW_FINDING_CODE_VALUES);
 const FAILURE_CODES = new Set<string>(NARRATIVE_REVIEW_FAILURE_CODE_VALUES);
 const DIMENSIONS = new Set<string>(NARRATIVE_REVIEW_DIMENSION_VALUES);
+const FINDING_INPUT_KEYS = [
+  'blockSequences',
+  'dimension',
+  'factIds',
+  'reasonCode',
+  'severity',
+] as const;
 
 function invalidReviewPersistence(message: string): never {
   throw new DomainError('INVALID_NARRATIVE_REVIEW_PERSISTENCE', message);
@@ -264,6 +282,49 @@ function requireUuid(value: string, field: string): string {
     invalidReviewPersistence(`Narrative review ${field} must be a UUID.`);
   }
   return value;
+}
+
+function reconstructPublishedNarrative(bundle: NarrativePersistenceBundle): OptionNarrativeOutput {
+  const blocks = [...bundle.optionNarratives].sort((left, right) => left.sequence - right.sequence);
+  if (
+    new Set(blocks.map(({ ID }) => ID)).size !== blocks.length ||
+    new Set(bundle.factReferences.map(({ ID }) => ID)).size !== bundle.factReferences.length
+  ) {
+    invalidReviewPersistence('Narrative publication rows must have unique IDs.');
+  }
+
+  const reconstructed = {
+    contextFingerprint: bundle.narrativeRun.contextFingerprint,
+    blocks: blocks.map((block, blockIndex) => {
+      if (block.sequence !== blockIndex + 1) {
+        invalidReviewPersistence(
+          'Narrative publication block sequences must be exact, contiguous, and unique.',
+        );
+      }
+      const references = bundle.factReferences
+        .filter((reference) => reference.optionNarrative_ID === block.ID)
+        .sort((left, right) => left.sequence - right.sequence);
+      if (
+        references.some((reference, referenceIndex) => reference.sequence !== referenceIndex + 1)
+      ) {
+        invalidReviewPersistence(
+          'Narrative publication fact-reference sequences must be exact, contiguous, and unique.',
+        );
+      }
+      return {
+        kind: block.kind,
+        text: block.text,
+        factReferences: references.map(({ factId }) => factId),
+      };
+    }),
+  };
+  const parsed = optionNarrativeOutputSchema.safeParse(reconstructed);
+  if (!parsed.success) {
+    invalidReviewPersistence(
+      'Narrative publication rows do not reconstruct the exact narrative output contract.',
+    );
+  }
+  return parsed.data;
 }
 
 function normalizeAudit(
@@ -320,11 +381,24 @@ function normalizeFinding(
   rankedOptionId: string,
   nextId: () => string,
 ): NarrativeReviewFindingRecord {
-  if (typeof finding !== 'object' || finding === null) {
+  if (typeof finding !== 'object' || finding === null || Array.isArray(finding)) {
     invalidReviewPersistence('Narrative review finding must be a controlled object.');
+  }
+  const findingKeys = Object.keys(finding).sort();
+  if (
+    findingKeys.length !== FINDING_INPUT_KEYS.length ||
+    FINDING_INPUT_KEYS.some((key, index) => findingKeys[index] !== key)
+  ) {
+    invalidReviewPersistence('Narrative review finding must contain only the exact v3 fields.');
   }
   if (!FINDING_CODES.has(finding.reasonCode)) {
     invalidReviewPersistence('Narrative review finding reason code is invalid.');
+  }
+  if (!DIMENSIONS.has(finding.dimension)) {
+    invalidReviewPersistence('Narrative review finding dimension is invalid.');
+  }
+  if (!NARRATIVE_JUDGE_REASON_DIMENSIONS[finding.reasonCode].includes(finding.dimension)) {
+    invalidReviewPersistence('Narrative review finding dimension does not match its reason code.');
   }
   if (finding.severity !== 'MAJOR' && finding.severity !== 'CRITICAL') {
     invalidReviewPersistence('Narrative review finding severity is invalid.');
@@ -335,17 +409,19 @@ function normalizeFinding(
   if (!Array.isArray(finding.blockSequences) || finding.blockSequences.length === 0) {
     invalidReviewPersistence('Narrative review finding requires at least one block sequence.');
   }
-  const blockSequences = [...finding.blockSequences].sort((left, right) => left - right);
+  const blockSequences = [...finding.blockSequences];
   if (
     blockSequences.some(
       (value, index) =>
         !Number.isSafeInteger(value) ||
         value < 1 ||
         value > 8 ||
-        (index > 0 && value === blockSequences[index - 1]),
+        (index > 0 && value <= blockSequences[index - 1]!),
     )
   ) {
-    invalidReviewPersistence('Narrative review finding block sequences are invalid.');
+    invalidReviewPersistence(
+      'Narrative review finding block sequences must be exact, ascending, and unique.',
+    );
   }
   if (!Array.isArray(finding.factIds) || finding.factIds.length > 32) {
     invalidReviewPersistence('Narrative review finding fact IDs must be an array.');
@@ -365,6 +441,7 @@ function normalizeFinding(
     planningRun_ID: planningRunId,
     rankedOption_ID: rankedOptionId,
     sequence,
+    dimension: finding.dimension,
     reasonCode: finding.reasonCode,
     severity: finding.severity,
     blockSequences: blockSequences.join(','),
@@ -372,6 +449,30 @@ function normalizeFinding(
     blockSequenceCount: blockSequences.length,
     factIdCount: factIds.length,
   };
+}
+
+function semanticFindingKey(finding: NarrativeReviewFindingRecord): string {
+  return [
+    finding.dimension,
+    finding.reasonCode,
+    finding.blockSequences,
+    finding.factIds ?? '',
+  ].join('|');
+}
+
+function assertExactDerivedDimensions(
+  dimensions: NarrativeReviewDimensionResults,
+  findings: readonly NarrativeReviewFindingRecord[],
+): void {
+  const failedDimensions = new Set(findings.map(({ dimension }) => dimension));
+  for (const dimension of NARRATIVE_REVIEW_DIMENSION_VALUES) {
+    const expected = failedDimensions.has(dimension) ? 'FAIL' : 'PASS';
+    if (dimensions[dimension] !== expected) {
+      invalidReviewPersistence(
+        'Narrative review dimensions must be exactly derived from explicit finding dimensions.',
+      );
+    }
+  }
 }
 
 function createIdGenerator(source: () => string): () => string {
@@ -394,6 +495,8 @@ function validateVersions(
   for (const [value, expected, field] of [
     [versions.groundedContextVersion, GROUNDED_OPTION_CONTEXT_VERSION, 'groundedContextVersion'],
     [versions.modelViewVersion, NARRATIVE_MODEL_VIEW_VERSION, 'modelViewVersion'],
+    [versions.generationViewVersion, NARRATIVE_GENERATION_VIEW_VERSION, 'generationViewVersion'],
+    [versions.finalizationVersion, NARRATIVE_FINALIZATION_VERSION, 'finalizationVersion'],
     [versions.qualityContextVersion, NARRATIVE_QUALITY_CONTEXT_VERSION, 'qualityContextVersion'],
     [
       versions.constraintSnapshotVersion,
@@ -466,6 +569,10 @@ function buildReviewBundle(
   const findings = findingInputs.map((finding, index) =>
     normalizeFinding(finding, index + 1, reviewRunId, planningRunId, rankedOptionId, nextId),
   );
+  if (new Set(findings.map(semanticFindingKey)).size !== findings.length) {
+    invalidReviewPersistence('Narrative review cannot persist duplicate semantic findings.');
+  }
+  if (dimensions !== null) assertExactDerivedDimensions(dimensions, findings);
   const passedDimensionCount =
     dimensions === null
       ? 0
@@ -486,6 +593,8 @@ function buildReviewBundle(
       contextFingerprint: requireFingerprint(input.contextFingerprint, 'contextFingerprint'),
       modelViewVersion: versions.modelViewVersion,
       modelViewFingerprint: requireFingerprint(input.modelViewFingerprint, 'modelViewFingerprint'),
+      generationViewVersion: versions.generationViewVersion,
+      finalizationVersion: versions.finalizationVersion,
       narrativeFingerprint: optionalFingerprint(input.narrativeFingerprint, 'narrativeFingerprint'),
       qualityContextVersion: versions.qualityContextVersion,
       qualityContextFingerprint: optionalFingerprint(
@@ -588,8 +697,10 @@ export function buildNarrativeReviewRejectionBundle(
     const hasFailedDimension = NARRATIVE_REVIEW_DIMENSION_VALUES.some(
       (dimension) => dimensions[dimension] === 'FAIL',
     );
-    if (!hasFailedDimension && findings.length === 0) {
-      invalidReviewPersistence('An all-pass, finding-free semantic result cannot be rejected.');
+    if (!hasFailedDimension || findings.length === 0) {
+      invalidReviewPersistence(
+        'A semantic rejection requires both failed dimensions and explicit findings.',
+      );
     }
   } else if (
     input.generateAudit.status !== 'SUCCEEDED' ||
@@ -662,6 +773,21 @@ export function buildNarrativeReviewPublicationBundle(
     );
   }
 
+  const publishedNarrative = reconstructPublishedNarrative(input.narrativeBundle);
+  const publishedNarrativeFingerprint = createInputFingerprint(publishedNarrative);
+  if (
+    requireFingerprint(
+      input.narrativeBundle.narrativeFingerprint,
+      'persistenceBundle narrativeFingerprint',
+    ) !== publishedNarrativeFingerprint ||
+    requireFingerprint(input.narrativeFingerprint, 'narrativeFingerprint') !==
+      publishedNarrativeFingerprint
+  ) {
+    invalidReviewPersistence(
+      'Narrative publication bytes do not match the exact narrative fingerprint judged for publication.',
+    );
+  }
+
   const review = buildReviewBundle(input, 'JUDGE', 'PUBLISH', null, dimensions, []);
   if (review.expectedJudgeAiRun?.status !== 'SUCCEEDED') {
     invalidReviewPersistence('Narrative publication has no terminal JUDGE audit expectation.');
@@ -676,6 +802,8 @@ export function buildNarrativeReviewPublicationBundle(
       judgeAiRunId: review.expectedJudgeAiRun.ID,
       modelViewVersion: row.modelViewVersion,
       modelViewFingerprint: row.modelViewFingerprint,
+      generationViewVersion: row.generationViewVersion,
+      finalizationVersion: row.finalizationVersion,
       narrativeFingerprint: row.narrativeFingerprint!,
       qualityContextVersion: row.qualityContextVersion,
       qualityContextFingerprint: row.qualityContextFingerprint!,

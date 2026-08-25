@@ -9,7 +9,7 @@ import {
   AI_REFUSAL_CATEGORY_VALUES,
   createInputFingerprint,
   isValidAiRunId,
-  validateStructuredAiOutput,
+  validateBoundStructuredAiOutput,
   type AiRefusalCategory,
 } from './contracts.ts';
 import type {
@@ -204,7 +204,7 @@ function validateResultOutput<TOutput>(
   request: StructuredAiRequest<TOutput>,
   profile: AiExecutionProfile,
 ): TOutput {
-  const validation = validateStructuredAiOutput(request, result.output);
+  const validation = validateBoundStructuredAiOutput(request, result.output);
   if (!validation.success) {
     let executionEvidence: AiFailureExecutionEvidence;
     try {

@@ -8,6 +8,11 @@ import {
   type StructuredAiRequest,
 } from '../ai/contracts.ts';
 import type { GroundedOptionContext } from '../narratives/grounded-option-context.ts';
+import { finalizeNarrativeOutput } from '../narratives/narrative-finalization.ts';
+import {
+  buildNarrativeGenerationView,
+  type NarrativeGenerationView,
+} from '../narratives/narrative-generation-view.ts';
 import {
   createNarrativeJudgeRequest,
   type NarrativeJudgeOutput,
@@ -22,10 +27,9 @@ import {
   type NarrativeConstraintSnapshot,
   type NarrativeQualityContext,
 } from '../narratives/narrative-quality-context.ts';
-import { runNarrativeSafetyPrecheck } from '../narratives/narrative-safety-precheck.ts';
+import { runAuthoredNarrativeSafetyPrecheck } from '../narratives/narrative-safety-precheck.ts';
 import {
   createOptionNarrativeRequest,
-  parseOptionNarrativeOutput,
   type OptionNarrativeOutput,
 } from '../narratives/option-narrative.ts';
 import {
@@ -44,10 +48,10 @@ import { NARRATIVE_EVAL_CONTRACT_VERSIONS } from './report.ts';
 import {
   buildSyntheticNarrativeConstraintSnapshot,
   resolveSyntheticNarrativeQualityFixture,
-} from './synthetic-fixtures.ts';
+} from './synthetic-fixtures-v2.ts';
 
-export const NARRATIVE_LIVE_EVAL_PLAN_VERSION = 'narrative-quality-live-plan-v1';
-export const NARRATIVE_LIVE_EVAL_EXECUTION_CONTRACT_VERSION = 'narrative-quality-live-execution-v2';
+export const NARRATIVE_LIVE_EVAL_PLAN_VERSION = 'narrative-quality-live-plan-v2';
+export const NARRATIVE_LIVE_EVAL_EXECUTION_CONTRACT_VERSION = 'narrative-quality-live-execution-v3';
 export const NARRATIVE_LIVE_EVAL_FAILURE_ACCOUNTING_VERSION = 'post-response-failure-accounting-v3';
 export const NARRATIVE_LIVE_EVAL_TOKEN_CEILING_VERSION =
   'utf8-wire-bytes-plus-4096-protocol-tokens-v1';
@@ -106,7 +110,7 @@ export interface NarrativeLiveEvalSafePlan {
 export interface PreparedSemanticCase {
   readonly qualityCase: ResolvedNarrativeQualityCase;
   readonly modelView: NarrativeModelView;
-  readonly precheck: ReturnType<typeof runNarrativeSafetyPrecheck>;
+  readonly precheck: ReturnType<typeof runAuthoredNarrativeSafetyPrecheck>;
   readonly constraints: NarrativeConstraintSnapshot;
   readonly qualityContext?: NarrativeQualityContext;
   readonly judgeRequest?: StructuredAiRequest<NarrativeJudgeOutput>;
@@ -115,6 +119,7 @@ export interface PreparedSemanticCase {
 export interface PreparedEndToEndCase {
   readonly qualityCase: ResolvedNarrativeQualityEndToEndCase;
   readonly modelView: NarrativeModelView;
+  readonly generationView: NarrativeGenerationView;
   readonly constraints: NarrativeConstraintSnapshot;
   readonly generateRequest: StructuredAiRequest<OptionNarrativeOutput>;
   readonly maximumJudgeRequest: StructuredAiRequest<NarrativeJudgeOutput>;
@@ -251,7 +256,7 @@ function prepareSemanticCase(
 ): PreparedSemanticCase {
   const modelView = buildNarrativeModelView(qualityCase.groundedContext);
   const constraints = buildSyntheticNarrativeConstraintSnapshot(authoredContext);
-  const precheck = runNarrativeSafetyPrecheck({
+  const precheck = runAuthoredNarrativeSafetyPrecheck({
     context: qualityCase.groundedContext,
     modelView,
     narrativeOutput: qualityCase.candidate,
@@ -273,25 +278,28 @@ function prepareSemanticCase(
   };
 }
 
-function maximumLocallyValidCandidate(context: GroundedOptionContext): OptionNarrativeOutput {
-  const factReferences = context.facts.slice(0, 32).map(({ factId }) => factId);
+function maximumLocallyValidCandidate(
+  context: GroundedOptionContext,
+  modelView: NarrativeModelView,
+  generationView: NarrativeGenerationView,
+): OptionNarrativeOutput {
+  const factReferences = generationView.facts.slice(0, 32).map(({ factId }) => factId);
   if (factReferences.length === 0) {
     throw new EvalContractError(
       'INVALID_EVAL_INPUT',
       'An E2E planning context has no grounded fact reference.',
     );
   }
-  return parseOptionNarrativeOutput(
-    {
-      contextFingerprint: context.fingerprint,
-      blocks: Array.from({ length: 8 }, () => ({
-        kind: 'ADVANTAGE',
-        text: '界'.repeat(1_200),
-        factReferences,
-      })),
-    },
+  return finalizeNarrativeOutput({
     context,
-  );
+    modelView,
+    generationView,
+    providerBlocks: Array.from({ length: 6 }, () => ({
+      kind: 'ADVANTAGE' as const,
+      text: '界'.repeat(1_200),
+      factReferences,
+    })),
+  });
 }
 
 function prepareEndToEndCase(
@@ -299,17 +307,23 @@ function prepareEndToEndCase(
   authoredContext: NarrativeQualityAuthoringContext,
 ): PreparedEndToEndCase {
   const modelView = buildNarrativeModelView(qualityCase.groundedContext);
+  const generationView = buildNarrativeGenerationView(qualityCase.groundedContext, modelView);
   const constraints = buildSyntheticNarrativeConstraintSnapshot(authoredContext);
-  const generateRequest = createOptionNarrativeRequest(qualityCase.groundedContext, modelView);
+  const generateRequest = createOptionNarrativeRequest(
+    qualityCase.groundedContext,
+    modelView,
+    generationView,
+  );
   const maximumQualityContext = buildNarrativeLiveEvalQualityContext(
     qualityCase.groundedContext,
     modelView,
-    maximumLocallyValidCandidate(qualityCase.groundedContext),
+    maximumLocallyValidCandidate(qualityCase.groundedContext, modelView, generationView),
     constraints,
   );
   return {
     qualityCase,
     modelView,
+    generationView,
     constraints,
     generateRequest,
     maximumJudgeRequest: createNarrativeJudgeRequest(maximumQualityContext),
