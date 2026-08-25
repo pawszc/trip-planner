@@ -19,6 +19,7 @@ export const OPTION_NARRATIVE_FINAL_MAX_BLOCKS = 8;
 const PROVENANCE_FACT_KEY_PREFIX = 'provenance.';
 const MONEY_CLAIM_PATTERN =
   /(?:\b(?:PLN|EUR)\s*[-+]?\d(?:[\d\s.,]*\d)?|\b[-+]?\d(?:[\d\s.,]*\d)?\s*(?:PLN|EUR|zł|€))(?![\p{L}\p{N}_])/giu;
+const CURRENCY_CLAIM_PATTERN = /(?<![\p{L}\p{N}_])(?:PLN|EUR|zł|€)(?![\p{L}\p{N}_])/giu;
 const ISO_INSTANT_CLAIM_PATTERN =
   /(?<!\d)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})(?!\d)/gu;
 const CALENDAR_DATE_CLAIM_PATTERN =
@@ -32,7 +33,7 @@ const NUMBER_CLAIM_PATTERN = /(?<![\p{L}\p{N}_])[-+]?\d+(?:[.,]\d+)?(?![\p{L}\p{
 // against completing a non-KNOWN value.
 const PROVIDER_CODE_OWNED_CLAIM_PATTERNS = [
   /(?:^|[^a-z0-9])(?:unknown|missing|absent|unavailable|incomplete|not\s+(?:known|provided|available))(?=$|[^a-z0-9])/u,
-  /(?:^|[^a-z0-9])(?:nieznan[a-z]*|brakuj[a-z]*|niedostepn[a-z]*|niekompletn[a-z]*|nieobecn[a-z]*|nie\s+(?:podan[a-z]*|znan[a-z]*|dostepn[a-z]*))(?=$|[^a-z0-9])/u,
+  /(?:^|[^a-z0-9])(?:nieznan[a-z]*|brak|brakuj[a-z]*|niedostepn[a-z]*|niekompletn[a-z]*|nieobecn[a-z]*|nie\s+(?:podan[a-z]*|znan[a-z]*|dostepn[a-z]*))(?=$|[^a-z0-9])/u,
   /(?:^|[^a-z0-9])(?:cached?|fixture|demonstrat[a-z]*|test\s+data|fresh\s+data|real[- ]?time|live\s+(?:availability|offer|data|prices?)|currently\s+available|available\s+now|availability\s+(?:is\s+)?current|up[- ]to[- ]date)(?=$|[^a-z0-9])/u,
   /(?:^|[^a-z0-9])(?:dane\s+(?:testow[a-z]*|demonstracyjn[a-z]*|aktualn[a-z]*|biezac[a-z]*|swiez[a-z]*)|oferta\s+(?:aktualn[a-z]*|biezac[a-z]*|na\s+zywo)|dostepnosc\s+(?:aktualn[a-z]*|biezac[a-z]*|na\s+zywo)|na\s+zywo|w\s+czasie\s+rzeczywistym|pamieci\s+podrecznej)(?=$|[^a-z0-9])/u,
 ] as const;
@@ -50,13 +51,13 @@ const NON_KNOWN_FACT_LABELS = [
 
 type NonKnownFactKey = (typeof NON_KNOWN_FACT_LABELS)[number][0];
 
-const NON_KNOWN_PROVIDER_TERM_PATTERNS: Readonly<Record<NonKnownFactKey, RegExp>> = {
+const NON_KNOWN_SUBJECT_PATTERNS: Readonly<Record<NonKnownFactKey, RegExp>> = {
   'option.budget.summary':
     /(?:^|[^a-z0-9])(?:total\s+(?:cost|budget)|per\s+person|remaining\s+budget|within\s+budget|calkowit[a-z]*\s+koszt|laczny\s+koszt|na\s+osobe|pozostal[a-z]*\s+budzet|w\s+budzecie)(?=$|[^a-z0-9])/u,
   'option.budget.category.TRANSPORT':
-    /(?:^|[^a-z0-9])(?:transport|transportation|przejazd[a-z]*|podroz[a-z]*)(?=$|[^a-z0-9])/u,
+    /(?:^|[^a-z0-9])(?:(?:train|flight|bus)(?:\s+(?:travel|ticket))?|transport[a-z]*|przejazd[a-z]*|podroz[a-z]*|pociag[a-z]*|autobus[a-z]*|lot(?:u|em|nicz[a-z]*)|bilet[a-z]*)(?=$|[^a-z0-9])/u,
   'option.budget.category.ACCOMMODATION':
-    /(?:^|[^a-z0-9])(?:accommodation|lodging|hotel|nocleg[a-z]*|zakwaterowan[a-z]*)(?=$|[^a-z0-9])/u,
+    /(?:^|[^a-z0-9])(?:accommodation|lodging|stay|rooms?|hotel[a-z]*|nocleg[a-z]*|pobyt[a-z]*|pokoj[a-z]*|zakwaterowan[a-z]*)(?=$|[^a-z0-9])/u,
   'option.budget.category.LOCAL_TRANSPORT':
     /(?:^|[^a-z0-9])(?:local\s+transport|transit|komunikacj[a-z]*\s+miejsk[a-z]*|transport[a-z]*\s+lokaln[a-z]*)(?=$|[^a-z0-9])/u,
   'option.budget.category.FOOD':
@@ -68,6 +69,35 @@ const NON_KNOWN_PROVIDER_TERM_PATTERNS: Readonly<Record<NonKnownFactKey, RegExp>
   'option.budget.category.BUFFER':
     /(?:^|[^a-z0-9])(?:budget\s+buffer|contingency|bufor[a-z]*)(?=$|[^a-z0-9])/u,
 };
+
+const NON_KNOWN_MONETARY_ASSERTION_PATTERN =
+  /(?:^|[^a-z0-9])(?:costs?|prices?|pricing|amounts?|fares?|koszt[a-z]*|cen(?:a|y|e|ie|ami|ach|om)?|kwot[a-z]*|taryf[a-z]*)(?=$|[^a-z0-9])/u;
+const NON_KNOWN_VALUE_STATUS_ASSERTION_PATTERN =
+  /(?:^|[^a-z0-9])(?:free|complimentary|included|confirmed|bezplatn[a-z]*|darmow[a-z]*|wliczon[a-z]*|potwierdzon[a-z]*)(?=$|[^a-z0-9])/u;
+const CONFIRMATION_ASSERTION_PATTERN =
+  /(?:^|[^a-z0-9])(?:confirmed|potwierdzon[a-z]*)(?=$|[^a-z0-9])/u;
+const NON_KNOWN_AVAILABILITY_ASSERTION_PATTERN =
+  /(?:^|[^a-z0-9])(?:available|availability|dostepn[a-z]*|dostepnosc)(?=$|[^a-z0-9])/u;
+const CLAIM_CLAUSE_SEPARATOR_PATTERN =
+  /(?:[;!?\r\n]+|[.,](?!\d)|\b(?:while|whereas|but|natomiast|podczas\s+gdy)\b)/u;
+const LOCAL_TRANSPORT_SUBJECT_FRAGMENT_PATTERN =
+  /(?:local\s+transport|transit|komunikacj[a-z]*\s+miejsk[a-z]*|transport[a-z]*\s+lokaln[a-z]*)/gu;
+const UNSAFE_SOURCE_VALUE_PATTERN =
+  /(?:https?:\/\/|www\.|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|<\/?[a-z][^>]*>|\b(?:sk|pk|api|token|secret)[-_][A-Za-z0-9_-]{6,}\b)/iu;
+const SOURCE_PROVIDER_FRAMING_PATTERN =
+  /(?:^|[^a-z0-9])(?:provider|source\s+provider|provider\s+source|dostawc[a-z]*(?:\s+zrodl[a-z]*)?|zrodl[a-z]*\s+dostawc[a-z]*)(?=$|[^a-z0-9])/u;
+const SOURCE_ID_FRAMING_PATTERN =
+  /(?:^|[^a-z0-9])(?:source[-_ ]*(?:id|identifier)|id\s+(?:of\s+)?(?:the\s+)?source|identyfikator\s+zrodl[a-z]*)(?=$|[^a-z0-9])/u;
+const SOURCE_KEY_FRAMING_PATTERN =
+  /(?:^|[^a-z0-9])(?:source[-_ ]*key|key\s+(?:of\s+)?(?:the\s+)?source|klucz\s+zrodl[a-z]*)(?=$|[^a-z0-9])/u;
+const SOURCE_FETCHED_AT_FRAMING_PATTERN =
+  /(?:^|[^a-z0-9])(?:(?:source\s+(?:was\s+)?)?fetched[-_ ]*at|source\s+timestamp|czas\s+pobran[a-z]*\s+zrodl[a-z]*)(?=$|[^a-z0-9])/u;
+const EXTERNAL_ITEM_ID_FRAMING_PATTERN =
+  /(?:^|[^a-z0-9])(?:external[-_ ]*(?:item[-_ ]*)?id|id\s+(?:of\s+)?external\s+item|zewnetrzn[a-z]*\s+identyfikator(?:\s+elementu)?|identyfikator(?:\s+elementu)?\s+zewnetrzn[a-z]*)(?=$|[^a-z0-9])/u;
+const SOURCE_FIXTURE_VERSION_FRAMING_PATTERN =
+  /(?:^|[^a-z0-9])(?:fixture[-_ ]*version|source\s+version|wersj[a-z]*\s+(?:fixtur[a-z]*|zrodl[a-z]*))(?=$|[^a-z0-9])/u;
+const SOURCE_CONTEXTS_FRAMING_PATTERN =
+  /(?:^|[^a-z0-9])(?:(?:source|provider)[-_ ]*contexts?|kontekst[a-z]*\s+(?:zrodl[a-z]*|dostawc[a-z]*))(?=$|[^a-z0-9])/u;
 
 interface BuildMandatoryNarrativeBlocksInput {
   readonly context: GroundedOptionContext;
@@ -185,6 +215,12 @@ function validateProviderQuantitativeClaims(
   );
   remainder = consumeClaims(
     remainder,
+    CURRENCY_CLAIM_PATTERN,
+    (claim) => literals.strings.has(claim),
+    'Provider currency claims must belong exactly to a cited KNOWN fact.',
+  );
+  remainder = consumeClaims(
+    remainder,
     ISO_INSTANT_CLAIM_PATTERN,
     (claim) => literals.strings.has(claim),
     'Provider date-time claims must belong to a cited KNOWN fact.',
@@ -209,40 +245,157 @@ function validateProviderQuantitativeClaims(
   );
 }
 
-function containsCodeOwnedSourceValue(text: string, context: GroundedOptionContext): boolean {
+function hasSourceValueOccurrence(normalizedText: string, normalizedValue: string): boolean {
+  let index = normalizedText.indexOf(normalizedValue);
+  while (index >= 0) {
+    const before = index === 0 ? '' : normalizedText[index - 1]!;
+    const afterIndex = index + normalizedValue.length;
+    const after = afterIndex === normalizedText.length ? '' : normalizedText[afterIndex]!;
+    const beginsWithWord = /^[a-z0-9]/u.test(normalizedValue);
+    const endsWithWord = /[a-z0-9]$/u.test(normalizedValue);
+    const hasLeftBoundary = !beginsWithWord || before === '' || !/[a-z0-9]/u.test(before);
+    const hasRightBoundary = !endsWithWord || after === '' || !/[a-z0-9]/u.test(after);
+    if (hasLeftBoundary && hasRightBoundary) return true;
+    index = normalizedText.indexOf(normalizedValue, index + 1);
+  }
+  return false;
+}
+
+function isExactCitedKnownLiteral(
+  sourceValue: string,
+  literals: SupportedProviderLiterals,
+): boolean {
+  const normalizedSourceValue = normalizeProviderClaimText(sourceValue.trim());
+  return [...literals.strings, ...literals.numbers, ...literals.moneyDisplays].some(
+    (literal) => normalizeProviderClaimText(literal.trim()) === normalizedSourceValue,
+  );
+}
+
+function containsCodeOwnedSourceValue(
+  text: string,
+  context: GroundedOptionContext,
+  literals: SupportedProviderLiterals,
+): boolean {
   const normalizedText = normalizeProviderClaimText(text);
   return context.sourceSnapshots.some((source) =>
     [
-      source.id,
-      source.sourceKey,
-      source.provider,
-      source.externalItemId,
-      source.fetchedAt,
-      source.sourceUrl,
-      source.freshnessType,
-      source.fixtureVersion,
-      source.contexts,
-    ].some((value) => {
+      [source.id, false, SOURCE_ID_FRAMING_PATTERN],
+      [source.sourceKey, false, SOURCE_KEY_FRAMING_PATTERN],
+      [source.provider, false, SOURCE_PROVIDER_FRAMING_PATTERN],
+      [source.externalItemId, false, EXTERNAL_ITEM_ID_FRAMING_PATTERN],
+      [source.fetchedAt, false, SOURCE_FETCHED_AT_FRAMING_PATTERN],
+      [source.sourceUrl, true, null],
+      [source.freshnessType, true, null],
+      [source.fixtureVersion, false, SOURCE_FIXTURE_VERSION_FRAMING_PATTERN],
+      [source.contexts, false, SOURCE_CONTEXTS_FRAMING_PATTERN],
+    ].some(([value, alwaysRestricted, framingPattern]) => {
+      if (typeof value !== 'string') return false;
       const normalized = normalizeProviderClaimText(value.trim());
-      return normalized.length > 0 && normalizedText.includes(normalized);
+      if (normalized.length === 0 || !hasSourceValueOccurrence(normalizedText, normalized)) {
+        return false;
+      }
+      return (
+        alwaysRestricted === true ||
+        (framingPattern instanceof RegExp && framingPattern.test(normalizedText)) ||
+        UNSAFE_SOURCE_VALUE_PATTERN.test(value) ||
+        !isExactCitedKnownLiteral(value, literals)
+      );
     }),
   );
 }
 
-function containsCodeOwnedClaim(text: string, context: GroundedOptionContext): boolean {
-  const normalized = normalizeProviderClaimText(text);
-  if (
-    PROVIDER_CODE_OWNED_CLAIM_PATTERNS.some((pattern) => pattern.test(normalized)) ||
-    containsCodeOwnedSourceValue(text, context)
-  ) {
-    return true;
+function isNonKnownFactKey(value: string): value is NonKnownFactKey {
+  return Object.hasOwn(NON_KNOWN_SUBJECT_PATTERNS, value);
+}
+
+function nonKnownSubjectKeys(normalizedClause: string): ReadonlySet<NonKnownFactKey> {
+  const withoutLocalTransport = normalizedClause.replace(
+    LOCAL_TRANSPORT_SUBJECT_FRAGMENT_PATTERN,
+    ' ',
+  );
+  return new Set(
+    NON_KNOWN_FACT_LABELS.map(([key]) => key).filter((key) =>
+      NON_KNOWN_SUBJECT_PATTERNS[key].test(
+        key === 'option.budget.category.TRANSPORT' ? withoutLocalTransport : normalizedClause,
+      ),
+    ),
+  );
+}
+
+function citedEstimatedBudgetFactKeys(
+  factReferences: readonly string[],
+  generationView: NarrativeGenerationView,
+): ReadonlySet<NonKnownFactKey> {
+  const byId = new Map(generationView.facts.map((fact) => [fact.factId, fact]));
+  const estimated = new Set<NonKnownFactKey>();
+  for (const factId of factReferences) {
+    const fact = byId.get(factId);
+    if (fact === undefined || !isNonKnownFactKey(fact.key) || !isJsonObject(fact.value)) continue;
+    const isEstimated =
+      fact.key === 'option.budget.summary'
+        ? fact.value.estimatedAmountMinor !== '0'
+        : fact.value.classification === 'ESTIMATED';
+    if (isEstimated) estimated.add(fact.key);
   }
-  return context.facts
-    .filter((fact) => fact.status !== 'KNOWN')
-    .some((fact) => {
-      const pattern = NON_KNOWN_PROVIDER_TERM_PATTERNS[fact.key as NonKnownFactKey];
-      return pattern?.test(normalized) ?? true;
+  return estimated;
+}
+
+function containsNonKnownCompletionClaim(
+  normalizedText: string,
+  context: GroundedOptionContext,
+  factReferences: readonly string[],
+  generationView: NarrativeGenerationView,
+): boolean {
+  // Availability does not exist in any provider-visible fact, so it is never a supported claim.
+  if (NON_KNOWN_AVAILABILITY_ASSERTION_PATTERN.test(normalizedText)) return true;
+
+  const nonKnownKeys = new Set<NonKnownFactKey>();
+  for (const fact of context.facts.filter(({ status }) => status !== 'KNOWN')) {
+    if (!isNonKnownFactKey(fact.key)) return true;
+    nonKnownKeys.add(fact.key);
+  }
+  const citedEstimatedKeys = citedEstimatedBudgetFactKeys(factReferences, generationView);
+
+  return normalizedText
+    .split(CLAIM_CLAUSE_SEPARATOR_PATTERN)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length > 0)
+    .some((clause) => {
+      const hasMonetaryAssertion = NON_KNOWN_MONETARY_ASSERTION_PATTERN.test(clause);
+      const hasValueStatusAssertion = NON_KNOWN_VALUE_STATUS_ASSERTION_PATTERN.test(clause);
+      if (!hasMonetaryAssertion && !hasValueStatusAssertion) return false;
+
+      const mentionedKeys = nonKnownSubjectKeys(clause);
+      if (mentionedKeys.size === 0) {
+        if (hasMonetaryAssertion && nonKnownKeys.size > 0) return true;
+        return (
+          hasMonetaryAssertion &&
+          CONFIRMATION_ASSERTION_PATTERN.test(clause) &&
+          citedEstimatedKeys.size > 0
+        );
+      }
+      if ([...mentionedKeys].some((key) => nonKnownKeys.has(key))) return true;
+      return (
+        hasMonetaryAssertion &&
+        CONFIRMATION_ASSERTION_PATTERN.test(clause) &&
+        [...mentionedKeys].some((key) => citedEstimatedKeys.has(key))
+      );
     });
+}
+
+function containsCodeOwnedClaim(
+  text: string,
+  context: GroundedOptionContext,
+  literals: SupportedProviderLiterals,
+  factReferences: readonly string[],
+  generationView: NarrativeGenerationView,
+): boolean {
+  const normalized = normalizeProviderClaimText(text);
+  return (
+    PROVIDER_CODE_OWNED_CLAIM_PATTERNS.some((pattern) => pattern.test(normalized)) ||
+    containsCodeOwnedSourceValue(text, context, literals) ||
+    containsNonKnownCompletionClaim(normalized, context, factReferences, generationView)
+  );
 }
 
 function requireProvenanceFact(
@@ -377,18 +530,18 @@ function validateProviderBlocks(
   }
   const allowedFactIds = new Set(generationView.facts.map((fact) => fact.factId));
   for (const block of blocks) {
-    if (containsCodeOwnedClaim(block.text, context)) {
+    if (block.factReferences.some((factId) => !allowedFactIds.has(factId))) {
+      invalidFinalization('Provider prose references a fact outside the generation-only view.');
+    }
+    const literals = supportedLiteralsForReferences(block.factReferences, generationView);
+    if (
+      containsCodeOwnedClaim(block.text, context, literals, block.factReferences, generationView)
+    ) {
       invalidFinalization(
         'Provider prose must not own source freshness/demonstration or UNKNOWN/MISSING handling.',
       );
     }
-    if (block.factReferences.some((factId) => !allowedFactIds.has(factId))) {
-      invalidFinalization('Provider prose references a fact outside the generation-only view.');
-    }
-    validateProviderQuantitativeClaims(
-      block.text,
-      supportedLiteralsForReferences(block.factReferences, generationView),
-    );
+    validateProviderQuantitativeClaims(block.text, literals);
   }
 }
 

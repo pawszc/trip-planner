@@ -420,7 +420,17 @@ describe('Anthropic Messages adapter', () => {
       }
     }
 
-    expect(error?.code).toBe('INVALID_STRUCTURED_OUTPUT');
+    expect(error).toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      executionEvidence: {
+        providerCallAttempted: true,
+        validationFailureStage: 'RESPONSE_JSON_PARSE',
+        providerResponseStatus: 'COMPLETED',
+        responseModel: 'claude-sonnet-5',
+        usage,
+        attempts: 1,
+      },
+    });
     expect(JSON.stringify(error?.toSafeJSON())).not.toContain(invalidJson);
   });
 
@@ -438,7 +448,42 @@ describe('Anthropic Messages adapter', () => {
       new AnthropicMessagesAdapter(config(), factory).call(
         createLiveSmokeRequest(AiProvider.ANTHROPIC),
       ),
-    ).rejects.toMatchObject({ code: 'INVALID_STRUCTURED_OUTPUT' });
+    ).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      executionEvidence: {
+        providerCallAttempted: true,
+        validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+        providerResponseStatus: 'COMPLETED',
+        responseModel: 'claude-sonnet-5',
+        usage,
+        attempts: 1,
+      },
+    });
+  });
+
+  it('carries a controlled narrative-finalization stage with complete response evidence', async () => {
+    const request: StructuredAiRequest<LiveSmokeOutput> = {
+      ...createLiveSmokeRequest(AiProvider.ANTHROPIC),
+      validateOutput: () => ({
+        success: false,
+        validationFailureStage: 'NARRATIVE_FINALIZATION',
+      }),
+    };
+
+    await expect(
+      new AnthropicMessagesAdapter(config(), successFactory()).call(request),
+    ).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      executionEvidence: {
+        providerCallAttempted: true,
+        validationFailureStage: 'NARRATIVE_FINALIZATION',
+        providerResponseStatus: 'COMPLETED',
+        responseModel: 'claude-sonnet-5',
+        providerRequestId: 'anthropic-request-id',
+        usage,
+        attempts: 1,
+      },
+    });
   });
 
   it('keeps configuredModel separate from the provider responseModel', async () => {

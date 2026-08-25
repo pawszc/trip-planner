@@ -35,17 +35,33 @@ and size-bounded projection of the full context. It contains only narratable `KN
 safe rank/role metadata. Provenance facts, `UNKNOWN`/`MISSING` facts, source URLs, provider
 identity, external IDs and source keys are excluded.
 
+The projection is a closed allowlist by exact fact key and exact value shape. Every supported
+selection, destination, transport, accommodation, budget and score field is copied explicitly;
+unknown keys, duplicate facts and additional nested fields fail closed. Source snapshots and
+provenance have no structural path into provider input. Arbitrary source-owned strings are not
+searched through independently grounded domain values, object keys, fact IDs or fingerprints, so
+an accidental textual collision does not reject an otherwise valid projection.
+
 The provider-visible GENERATE schema is `{ blocks }` with at most six blocks. Local code:
 
 1. validates every provider block and reference against the generation view;
-2. rejects provider-owned freshness/demo or unavailable-value prose through a closed EN/PL
-   reserved-language catalog;
+2. rejects provider-owned freshness/demo prose and unavailable-value completion through a closed
+   EN/PL, fact-reference-aware assertion contract; broad domain nouns alone do not reserve a
+   separately `KNOWN` transport, accommodation or destination fact;
 3. requires every money, date/time and remaining numeric token to belong exactly to a cited
    `KNOWN` fact, excluding raw minor-unit strings from provider prose;
 4. injects the exact grounded-context fingerprint;
 5. appends an exact source disclosure when fixture/demo/cache metadata requires it;
 6. appends one exact `UNKNOWN`/`MISSING` limitation block when required;
 7. validates the provider prefix plus deterministic tail with a final maximum of eight blocks.
+
+Post-response evidence distinguishes the strict provider transport, exact binding and local
+policy phases. Malformed raw `{blocks}` is `TRANSPORT_SCHEMA_VALIDATION`; an exact request,
+generation-view, context, reference or injected-fingerprint mismatch is `CONTEXT_BINDING`; and a
+structurally valid provider response rejected by deterministic narrative policy is
+`NARRATIVE_FINALIZATION`. The expanded allowlisted stage contract is versioned as
+`post-response-failure-accounting-v4`. Report v3 and live-execution v3 retain their draft version
+identifiers because their intended pre-merge schemas are updated consistently.
 
 The same finalization verifier is part of the request-local output schema, deterministic
 precheck and runtime/E2E path. The production entry point requires an exact generation view;
@@ -85,6 +101,10 @@ and P03 remains `PUBLISH`.
 - Model outputs contain fewer opaque and mutually redundant fields.
 - Mandatory disclosures are deterministic, exactly referenced and testable without a provider.
 - Generation input cannot expose source-owned or non-`KNOWN` values that code owns.
+- Independently grounded short IDs, transport modes and destination codes are not tainted merely
+  because the same bytes also occur in source metadata.
+- Privacy-safe failure evidence preserves the difference between provider transport, exact
+  binding and deterministic narrative finalization without carrying rejected content.
 - A custom adapter result is revalidated against the already-bound local schema at the gateway;
   provider transport validation remains a separate earlier phase in each adapter.
 - Historical v1 artifacts remain available; current serialized/provider-visible changes have

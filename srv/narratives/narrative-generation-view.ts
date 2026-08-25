@@ -1,3 +1,4 @@
+import { z, type ZodType } from 'zod';
 import {
   canonicalizeJson,
   createInputFingerprint,
@@ -5,7 +6,11 @@ import {
   type JsonValue,
 } from '../ai/contracts.ts';
 import { DomainError } from '../domain/domain-error.ts';
-import type { GroundedOptionContext } from './grounded-option-context.ts';
+import {
+  GROUNDED_BUDGET_CATEGORIES,
+  type GroundedBudgetCategory,
+  type GroundedOptionContext,
+} from './grounded-option-types.ts';
 import {
   buildNarrativeModelView,
   type NarrativeModelFact,
@@ -16,30 +21,98 @@ export const NARRATIVE_GENERATION_VIEW_VERSION = 'narrative-generation-view-v1';
 export const NARRATIVE_GENERATION_VIEW_MAX_BYTES = 48 * 1024;
 
 const PROVENANCE_FACT_KEY_PREFIX = 'provenance.';
-const SOURCE_OWNED_STRING_FIELDS = [
-  'id',
-  'sourceKey',
-  'provider',
-  'externalItemId',
-  'fetchedAt',
-  'sourceUrl',
-  'freshnessType',
-  'fixtureVersion',
-  'contexts',
-] as const;
-const SOURCE_OWNED_FIELD_NAMES = new Set([
-  'contexts',
-  'demonstrationdata',
-  'externalitemid',
-  'fetchedat',
-  'fixtureversion',
-  'freshnesstype',
-  'provider',
-  'sourcekey',
-  'sourcesnapshotid',
-  'sourcesnapshotids',
-  'sourceurl',
-]);
+const BUDGET_CATEGORY_FACT_KEY_PREFIX = 'option.budget.category.';
+
+const nonEmptyStringSchema = z.string().min(1);
+const nonNegativeIntegerSchema = z.number().int().nonnegative();
+
+const fixedFactValueSchemas = {
+  'option.selection': z
+    .object({
+      rank: nonNegativeIntegerSchema,
+      role: z.enum(['BEST_OVERALL', 'MOST_CONVENIENT', 'BEST_VALUE']),
+    })
+    .strict(),
+  'option.destination': z
+    .object({
+      code: nonEmptyStringSchema,
+      city: nonEmptyStringSchema,
+      countryCode: nonEmptyStringSchema,
+    })
+    .strict(),
+  'option.transport': z
+    .object({
+      mode: z.enum(['FLIGHT', 'TRAIN', 'BUS']),
+      outboundDepartureAt: nonEmptyStringSchema,
+      outboundArrivalAt: nonEmptyStringSchema,
+      returnDepartureAt: nonEmptyStringSchema,
+      returnArrivalAt: nonEmptyStringSchema,
+      outboundTravelMinutes: nonNegativeIntegerSchema,
+      returnTravelMinutes: nonNegativeIntegerSchema,
+      maximumConnections: nonNegativeIntegerSchema,
+      effectiveTimeAtDestinationMinutes: nonNegativeIntegerSchema,
+    })
+    .strict(),
+  'option.accommodation': z
+    .object({
+      name: nonEmptyStringSchema,
+      checkInDate: nonEmptyStringSchema,
+      checkOutDate: nonEmptyStringSchema,
+      nights: nonNegativeIntegerSchema,
+      centralityScore: nonEmptyStringSchema,
+    })
+    .strict(),
+  'option.budget.summary': z
+    .object({
+      currency: nonEmptyStringSchema,
+      currencyContractVersion: nonEmptyStringSchema,
+      moneyDisplayVersion: nonEmptyStringSchema,
+      budgetLimitMinor: nonEmptyStringSchema,
+      budgetLimitDisplay: nonEmptyStringSchema,
+      confirmedAmountMinor: nonEmptyStringSchema,
+      confirmedAmountDisplay: nonEmptyStringSchema,
+      estimatedAmountMinor: nonEmptyStringSchema,
+      estimatedAmountDisplay: nonEmptyStringSchema,
+      unknownCategoryCount: z.literal(0),
+      totalAmountMinor: nonEmptyStringSchema,
+      totalAmountDisplay: nonEmptyStringSchema,
+      costPerPersonMinor: nonEmptyStringSchema,
+      costPerPersonDisplay: nonEmptyStringSchema,
+      remainingBudgetMinor: nonEmptyStringSchema,
+      remainingBudgetDisplay: nonEmptyStringSchema,
+    })
+    .strict(),
+  'option.score': z
+    .object({
+      total: nonEmptyStringSchema,
+      budgetFit: nonEmptyStringSchema,
+      travelTime: nonEmptyStringSchema,
+      effectiveTime: nonEmptyStringSchema,
+      accommodationLocation: nonEmptyStringSchema,
+      dataCompleteness: nonEmptyStringSchema,
+      priceConfidence: nonEmptyStringSchema,
+      preferenceFit: nonEmptyStringSchema,
+    })
+    .strict(),
+} as const satisfies Readonly<Record<string, ZodType>>;
+
+const budgetCategoryFactValueSchema = z
+  .object({
+    category: z.enum(GROUNDED_BUDGET_CATEGORIES),
+    amountMinor: nonEmptyStringSchema,
+    amountDisplay: nonEmptyStringSchema,
+    confirmedAmountMinor: nonEmptyStringSchema,
+    confirmedAmountDisplay: nonEmptyStringSchema,
+    estimatedAmountMinor: nonEmptyStringSchema,
+    estimatedAmountDisplay: nonEmptyStringSchema,
+    currencyContractVersion: nonEmptyStringSchema,
+    moneyDisplayVersion: nonEmptyStringSchema,
+    currency: nonEmptyStringSchema,
+    classification: z.enum(['CONFIRMED', 'ESTIMATED']),
+    priceType: z.enum(['LIVE_PRICE', 'FIXED_PRICE', 'ESTIMATE']),
+    sourceSnapshotId: nonEmptyStringSchema.nullable(),
+  })
+  .strict();
 
 export type NarrativeGenerationFact = JsonObject & {
   readonly factId: string;
@@ -64,33 +137,75 @@ function invalidGenerationView(message: string): never {
   throw new DomainError('INVALID_NARRATIVE_GENERATION_VIEW', message);
 }
 
-function isJsonArray(value: JsonValue): value is readonly JsonValue[] {
-  return Array.isArray(value);
+function parseFactValue(fact: NarrativeModelFact, schema: ZodType): JsonObject {
+  const parsed = schema.safeParse(fact.value);
+  if (!parsed.success) {
+    invalidGenerationView(`Generation fact ${fact.key} has an unsupported value shape.`);
+  }
+  return parsed.data as JsonObject;
 }
 
-function removeSourceOwnedFields(value: JsonValue): JsonValue {
-  if (value === null || typeof value !== 'object') return value;
-  if (isJsonArray(value)) return value.map((item) => removeSourceOwnedFields(item));
+function isFixedFactKey(key: string): key is keyof typeof fixedFactValueSchemas {
+  return Object.hasOwn(fixedFactValueSchemas, key);
+}
 
-  const result: Record<string, JsonValue> = {};
-  for (const key of Object.keys(value).sort((left, right) => left.localeCompare(right, 'en'))) {
-    if (SOURCE_OWNED_FIELD_NAMES.has(key.toLowerCase())) continue;
-    const nested = value[key];
-    if (nested === undefined) {
-      invalidGenerationView(`Generation fact field ${key} is not JSON-serializable.`);
-    }
-    result[key] = removeSourceOwnedFields(nested);
+function parseBudgetCategoryFactKey(key: string): GroundedBudgetCategory | null {
+  if (!key.startsWith(BUDGET_CATEGORY_FACT_KEY_PREFIX)) return null;
+  const category = key.slice(BUDGET_CATEGORY_FACT_KEY_PREFIX.length);
+  return GROUNDED_BUDGET_CATEGORIES.find((candidate) => candidate === category) ?? null;
+}
+
+function projectBudgetCategoryValue(
+  fact: NarrativeModelFact,
+  expectedCategory: GroundedBudgetCategory,
+): JsonObject {
+  const parsed = budgetCategoryFactValueSchema.safeParse(fact.value);
+  if (!parsed.success) {
+    invalidGenerationView(`Generation fact ${fact.key} has an unsupported value shape.`);
   }
-  return result;
+  const value = parsed.data;
+  if (value.category !== expectedCategory) {
+    invalidGenerationView(`Generation fact ${fact.key} has a mismatched budget category.`);
+  }
+  return {
+    category: value.category,
+    amountMinor: value.amountMinor,
+    amountDisplay: value.amountDisplay,
+    confirmedAmountMinor: value.confirmedAmountMinor,
+    confirmedAmountDisplay: value.confirmedAmountDisplay,
+    estimatedAmountMinor: value.estimatedAmountMinor,
+    estimatedAmountDisplay: value.estimatedAmountDisplay,
+    currencyContractVersion: value.currencyContractVersion,
+    moneyDisplayVersion: value.moneyDisplayVersion,
+    currency: value.currency,
+    classification: value.classification,
+    priceType: value.priceType,
+  };
+}
+
+function projectFactValue(fact: NarrativeModelFact): JsonObject {
+  if (isFixedFactKey(fact.key)) {
+    return parseFactValue(fact, fixedFactValueSchemas[fact.key]);
+  }
+  const category = parseBudgetCategoryFactKey(fact.key);
+  if (category !== null) return projectBudgetCategoryValue(fact, category);
+  invalidGenerationView(`Generation fact key ${fact.key} is outside the closed provider catalog.`);
 }
 
 function projectKnownFact(fact: NarrativeModelFact): NarrativeGenerationFact | null {
-  if (fact.status !== 'KNOWN' || fact.key.startsWith(PROVENANCE_FACT_KEY_PREFIX)) return null;
+  if (fact.key.startsWith(PROVENANCE_FACT_KEY_PREFIX)) return null;
+  const supported = isFixedFactKey(fact.key) || parseBudgetCategoryFactKey(fact.key) !== null;
+  if (!supported) {
+    invalidGenerationView(
+      `Generation fact key ${fact.key} is outside the closed provider catalog.`,
+    );
+  }
+  if (fact.status !== 'KNOWN') return null;
   return {
     factId: fact.factId,
     key: fact.key,
     status: 'KNOWN',
-    value: removeSourceOwnedFields(fact.value),
+    value: projectFactValue(fact),
   };
 }
 
@@ -110,37 +225,6 @@ function assertSize(value: JsonValue): void {
   }
 }
 
-function collectSourceOwnedStrings(context: GroundedOptionContext): ReadonlySet<string> {
-  const excluded = new Set<string>();
-  for (const source of context.sourceSnapshots) {
-    for (const field of SOURCE_OWNED_STRING_FIELDS) {
-      const value = source[field];
-      if (value.length > 0) excluded.add(value);
-    }
-  }
-  return excluded;
-}
-
-/**
- * Compares decoded JSON strings instead of serialized bytes, so quotes, backslashes and line breaks
- * cannot bypass the guard through JSON escaping. Object names are strings too: a source-owned
- * identifier must not be projected as a dynamic nested key.
- */
-function containsSourceOwnedString(value: JsonValue, excluded: readonly string[]): boolean {
-  if (typeof value === 'string') {
-    return excluded.some((excludedValue) => value.includes(excludedValue));
-  }
-  if (value === null || typeof value === 'boolean' || typeof value === 'number') return false;
-  if (isJsonArray(value)) {
-    return value.some((item) => containsSourceOwnedString(item, excluded));
-  }
-  return Object.entries(value).some(
-    ([key, nested]) =>
-      excluded.some((excludedValue) => key.includes(excludedValue)) ||
-      containsSourceOwnedString(nested, excluded),
-  );
-}
-
 /**
  * Builds the only GENERATE-provider projection. The full model view remains available locally and
  * to JUDGE, while provenance and non-KNOWN facts stay exclusively in deterministic code.
@@ -156,7 +240,14 @@ export function buildNarrativeGenerationView(
     );
   }
 
+  const seenFactKeys = new Set<string>();
   const facts = modelView.facts.flatMap((fact) => {
+    if (!fact.key.startsWith(PROVENANCE_FACT_KEY_PREFIX)) {
+      if (seenFactKeys.has(fact.key)) {
+        invalidGenerationView(`Generation fact key ${fact.key} is duplicated.`);
+      }
+      seenFactKeys.add(fact.key);
+    }
     const projected = projectKnownFact(fact);
     return projected === null ? [] : [projected];
   });
@@ -182,8 +273,5 @@ export function buildNarrativeGenerationView(
   } as NarrativeGenerationView;
   assertSize(result);
 
-  if (containsSourceOwnedString(result, [...collectSourceOwnedStrings(context)])) {
-    invalidGenerationView('The generation view contains a value excluded from provider input.');
-  }
   return deepFreeze(result);
 }

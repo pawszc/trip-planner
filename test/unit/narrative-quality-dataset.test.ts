@@ -22,6 +22,7 @@ import {
   resolveSyntheticNarrativeQualityFixture as resolveSyntheticNarrativeQualityFixtureV1,
 } from '../../srv/evals/synthetic-fixtures.ts';
 import { SYNTHETIC_EVAL_FIXTURE_VERSION } from '../../srv/evals/synthetic-fixtures-v2.ts';
+import { buildNarrativeGenerationView } from '../../srv/narratives/narrative-generation-view.ts';
 import { buildNarrativeModelView } from '../../srv/narratives/narrative-model-view.ts';
 import { calculateEffectiveTimeAtDestinationMinutes } from '../../srv/ranking/effective-time.ts';
 import {
@@ -244,7 +245,7 @@ describe('narrative-quality-v2 dataset contract', () => {
     ).toBe(true);
   });
 
-  it('regenerates identical v2 context fingerprints, fact IDs, and fixture lineage', () => {
+  it('regenerates identical v2 context/generation fingerprints, fact IDs, and fixture lineage', () => {
     const first = resolveNarrativeQualityDataset(
       frozenNarrativeQualityDataset(),
       syntheticGroundedFixtureResolver,
@@ -254,26 +255,41 @@ describe('narrative-quality-v2 dataset contract', () => {
       syntheticGroundedFixtureResolver,
     );
     const evidence = (resolved: typeof first) =>
-      resolved.endToEndCases.map(({ authored, groundedContext }) => ({
-        contextId: authored.contextId,
-        contextFingerprint: groundedContext.fingerprint,
-        modelViewFingerprint: buildNarrativeModelView(groundedContext).fingerprint,
-        factIdsFingerprint: createInputFingerprint(
-          groundedContext.facts.map(({ factId }) => factId),
-        ),
-        fixtureVersions: groundedContext.sourceSnapshots.map(
-          ({ fixtureVersion }) => fixtureVersion,
-        ),
-      }));
+      resolved.endToEndCases.map(({ authored, groundedContext }) => {
+        const modelView = buildNarrativeModelView(groundedContext);
+        const generationView = buildNarrativeGenerationView(groundedContext, modelView);
+        return {
+          contextId: authored.contextId,
+          contextFingerprint: groundedContext.fingerprint,
+          modelViewFingerprint: modelView.fingerprint,
+          factIdsFingerprint: createInputFingerprint(
+            groundedContext.facts.map(({ factId }) => factId),
+          ),
+          generationViewFingerprint: generationView.fingerprint,
+          generationInputFingerprint: createInputFingerprint(generationView),
+          fixtureVersions: groundedContext.sourceSnapshots.map(
+            ({ fixtureVersion }) => fixtureVersion,
+          ),
+        };
+      });
 
     expect(evidence(first)).toEqual(evidence(second));
     expect(
       evidence(first).map(
-        ({ contextId, contextFingerprint, modelViewFingerprint, factIdsFingerprint }) => ({
+        ({
           contextId,
           contextFingerprint,
           modelViewFingerprint,
           factIdsFingerprint,
+          generationViewFingerprint,
+          generationInputFingerprint,
+        }) => ({
+          contextId,
+          contextFingerprint,
+          modelViewFingerprint,
+          factIdsFingerprint,
+          generationViewFingerprint,
+          generationInputFingerprint,
         }),
       ),
     ).toEqual([
@@ -282,24 +298,40 @@ describe('narrative-quality-v2 dataset contract', () => {
         contextFingerprint: 'e130ff7fadb39d63ef347b2b9938f8ad23b220b29fd24c3094eb842cfdc67cf9',
         modelViewFingerprint: '833a51db000960a4f3d390c1b9a25fd203161df35b63d7723c404c6794b455d4',
         factIdsFingerprint: 'ce6557316b82bf6bb5521fee0983e022f2d45ca4a58c06209290458bd4494a62',
+        generationViewFingerprint:
+          '273671a6e72da55e3ce8c67731df9ca2fa19d080c6149a14a2212f548368ccbf',
+        generationInputFingerprint:
+          '549dba3394d1b21b5befbba9dacd00a30d4aec27a73ddb00ffd6a54bef589cc7',
       },
       {
         contextId: 'VIENNA_EUR_COMPLETE',
         contextFingerprint: '3c3e04ea8991a5074eae82a849ba283fb5f146f2728372b8fb6351a0f0702da5',
         modelViewFingerprint: '1e815d4715d1a97cee23d941771145a14748c32d6cddef1c6f6281444c506fc3',
         factIdsFingerprint: '7b5ea358eaff37918636c91fc6bf60058e9dc62ffd4ed786f8d35ab475b4519d',
+        generationViewFingerprint:
+          '61479e5ef244045235b19b86b095bc6658f779e707e81cd53fc241e66dfdf833',
+        generationInputFingerprint:
+          '67aadd5e8431a8855395d57123af12b21e58b06e1c2b8ed90d0200eee126856a',
       },
       {
         contextId: 'BUDAPEST_UNKNOWN_MISSING',
         contextFingerprint: '75c1e10ba92ab2719ad452690b95c1b2e6324c862e623424f571c82c344b2bd4',
         modelViewFingerprint: '111e3116b644f3fb8d5dc102de40eae4e80172044e4926f3b5636a8acd0a2f69',
         factIdsFingerprint: '4375e46fc8fa26249d457ce2d1f5d000832c8f18e6769e16f9243938b8e71b91',
+        generationViewFingerprint:
+          '70050c0d925e48aea83bff1acd4dc946d3026698d32d27789f67cebc987c8f42',
+        generationInputFingerprint:
+          '7b487c9ebd08a45f8c10a20bf9df68c591188a29a7fd28d938025039099814ee',
       },
       {
         contextId: 'BERLIN_ADVERSARIAL_SOURCE',
         contextFingerprint: '14f0b2ae52ec2155b2da1365177ed8d55ad30ca2e3d948c1899e2aff53276356',
         modelViewFingerprint: 'cb24d5308b7be45042ef044612dddb49d8f1771221fc3905d00cc747d4304cbf',
         factIdsFingerprint: '8322fe5df6eb591170226eb4ab1c38d6cb5ad06d00a35ca82025d091030b714c',
+        generationViewFingerprint:
+          '1ece0c42b2a1e99b7e67c8759a103c1514c8d19f9b777b6b923d432862b04160',
+        generationInputFingerprint:
+          '1a4a38dfcf37eaa87cbf6354b312065e7dd78ebeb0d4b5556bdb85b6029e9644',
       },
     ]);
     expect(

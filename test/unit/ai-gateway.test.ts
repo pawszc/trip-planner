@@ -646,6 +646,64 @@ describe('task-aware AI gateway', () => {
     });
   });
 
+  it('preserves a privacy-safe request-local finalization stage from a custom adapter result', async () => {
+    const recorder = new MemoryRecorder();
+    const anthropic = new FakeAdapter(AiProvider.ANTHROPIC);
+    const sentinels = [
+      'RAW_NARRATIVE_TEXT_SENTINEL',
+      'RAW_PROVIDER_PAYLOAD_SENTINEL',
+      'RAW_PROMPT_SENTINEL',
+      'RAW_CONTEXT_SENTINEL',
+      'https://private.example.test/source',
+      'SOURCE_EXTERNAL_ID_SENTINEL',
+      'person.private@example.test',
+      'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+    ];
+    const callerRequest: StructuredAiRequest<{ decision: 'ok' }> = {
+      ...request(AiTaskType.GENERATE),
+      instructions: sentinels[2]!,
+      input: {
+        narrative: sentinels[0]!,
+        providerPayload: sentinels[1]!,
+        context: sentinels[3]!,
+        sourceUrl: sentinels[4]!,
+        sourceExternalId: sentinels[5]!,
+        pii: sentinels[6]!,
+        secret: sentinels[7]!,
+      },
+      validateBoundOutput: () => ({
+        success: false,
+        validationFailureStage: 'NARRATIVE_FINALIZATION',
+      }),
+    };
+    const subject = gateway(enabledConfig(), [anthropic], recorder);
+    let error: AiError | undefined;
+
+    try {
+      await subject.call(callerRequest);
+    } catch (caught) {
+      if (caught instanceof AiError) error = caught;
+    }
+
+    expect(error).toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      executionEvidence: {
+        providerCallAttempted: true,
+        validationFailureStage: 'NARRATIVE_FINALIZATION',
+        providerResponseStatus: 'COMPLETED',
+        responseModel: 'claude-sonnet-5-snapshot',
+        attempts: 1,
+      },
+    });
+    expect(recorder.events.map(({ status }) => status)).toEqual(['STARTED', 'FAILED']);
+    expect(recorder.events[1]).toMatchObject({
+      validationFailureStage: 'NARRATIVE_FINALIZATION',
+      providerCallAttempted: true,
+    });
+    const serialized = JSON.stringify({ error: error?.toSafeJSON(), events: recorder.events });
+    for (const sentinel of sentinels) expect(serialized).not.toContain(sentinel);
+  });
+
   it('records metadata without instructions, grounded input or parsed output', async () => {
     const recorder = new MemoryRecorder();
     const openai = new FakeAdapter(AiProvider.OPENAI);

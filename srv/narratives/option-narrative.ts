@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { AiTaskType, canonicalizeJson, type StructuredAiRequest } from '../ai/contracts.ts';
+import {
+  AiTaskType,
+  canonicalizeJson,
+  type JsonValue,
+  type StructuredAiRequest,
+} from '../ai/contracts.ts';
 import { AiError } from '../ai/errors.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import type { GroundedOptionContext } from './grounded-option-context.ts';
@@ -145,6 +150,36 @@ export function parseOptionNarrativeOutput(
   return result.data;
 }
 
+function hasExactNarrativeRequestBinding(
+  context: GroundedOptionContext,
+  modelView: NarrativeModelView,
+  generationView: NarrativeGenerationView,
+  requestInput: JsonValue,
+): boolean {
+  try {
+    const expectedModelView = buildNarrativeModelView(context);
+    const expectedGenerationView = buildNarrativeGenerationView(context, expectedModelView);
+    return (
+      canonicalizeJson(modelView) === canonicalizeJson(expectedModelView) &&
+      canonicalizeJson(generationView) === canonicalizeJson(expectedGenerationView) &&
+      canonicalizeJson(requestInput) === canonicalizeJson(expectedGenerationView)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasExactNarrativeOutputBinding(
+  context: GroundedOptionContext,
+  output: OptionNarrativeOutput,
+): boolean {
+  if (output.contextFingerprint !== context.fingerprint) return false;
+  const contextFactIds = new Set(context.facts.map(({ factId }) => factId));
+  return output.blocks.every((block) =>
+    block.factReferences.every((factId) => contextFactIds.has(factId)),
+  );
+}
+
 export function createOptionNarrativeRequest(
   context: GroundedOptionContext,
   modelView: NarrativeModelView = buildNarrativeModelView(context),
@@ -182,10 +217,13 @@ export function createOptionNarrativeRequest(
     input: generationView,
     outputSchema: finalizedOutputSchema,
     providerOutputSchema: optionNarrativeProviderOutputSchema,
-    validateOutput: (output) => {
+    validateOutput: (output, requestInput) => {
       const providerOutput = optionNarrativeProviderOutputSchema.safeParse(output);
       if (!providerOutput.success) {
         return { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };
+      }
+      if (!hasExactNarrativeRequestBinding(context, modelView, generationView, requestInput)) {
+        return { success: false, validationFailureStage: 'CONTEXT_BINDING' };
       }
       try {
         const finalized = finalizeNarrativeOutput({
@@ -197,10 +235,36 @@ export function createOptionNarrativeRequest(
         const local = finalizedOutputSchema.safeParse(finalized);
         return local.success
           ? { success: true, output: local.data }
-          : { success: false, validationFailureStage: 'CONTEXT_BINDING' };
+          : { success: false, validationFailureStage: 'NARRATIVE_FINALIZATION' };
       } catch {
+        return { success: false, validationFailureStage: 'NARRATIVE_FINALIZATION' };
+      }
+    },
+    validateBoundOutput: (output, requestInput) => {
+      const structural = optionNarrativeOutputSchema.safeParse(output);
+      if (!structural.success) {
+        return { success: false, validationFailureStage: 'NARRATIVE_FINALIZATION' };
+      }
+      if (
+        !hasExactNarrativeRequestBinding(context, modelView, generationView, requestInput) ||
+        !hasExactNarrativeOutputBinding(context, structural.data)
+      ) {
         return { success: false, validationFailureStage: 'CONTEXT_BINDING' };
       }
+      if (
+        !validateFinalizedNarrative({
+          context,
+          modelView,
+          generationView,
+          output: structural.data,
+        })
+      ) {
+        return { success: false, validationFailureStage: 'NARRATIVE_FINALIZATION' };
+      }
+      const local = finalizedOutputSchema.safeParse(structural.data);
+      return local.success
+        ? { success: true, output: local.data }
+        : { success: false, validationFailureStage: 'NARRATIVE_FINALIZATION' };
     },
     planningRunId: context.planningRun.id,
     rankedOptionId: context.rankedOption.id,

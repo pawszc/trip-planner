@@ -10,10 +10,11 @@ import {
   type StructuredAiRequest,
 } from '../ai/contracts.ts';
 import { AI_ERROR_CODE_VALUES, AiError, type AiErrorCode } from '../ai/errors.ts';
-import type {
-  AiProviderIncompleteReason,
-  AiProviderResponseStatus,
-  AiValidationFailureStage,
+import {
+  AI_VALIDATION_FAILURE_STAGE_VALUES,
+  type AiProviderIncompleteReason,
+  type AiProviderResponseStatus,
+  type AiValidationFailureStage,
 } from '../ai/failure-execution-evidence.ts';
 import type { GroundedOptionContext } from '../narratives/grounded-option-context.ts';
 import {
@@ -154,17 +155,19 @@ interface ValidatedExecution<TOutput> {
 
 interface AccountedInvalidJudgeExecution {
   readonly kind: 'ACCOUNTED_INVALID_STRUCTURED_OUTPUT';
-  readonly validationFailureStage: Exclude<AiValidationFailureStage, 'SCHEMA_CONSTRUCTION'>;
+  readonly validationFailureStage: ContinuableInvalidJudgeStage;
 }
 
 type NarrativeLiveEvalExecution<TOutput> =
   ValidatedExecution<TOutput> | AccountedInvalidJudgeExecution;
 
 const RESPONSE_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/u;
+const SAFE_VALIDATION_FAILURE_STAGES = new Set<string>(AI_VALIDATION_FAILURE_STAGE_VALUES);
 const POST_RESPONSE_VALIDATION_STAGES = new Set<AiValidationFailureStage>([
   'RESPONSE_JSON_PARSE',
   'TRANSPORT_SCHEMA_VALIDATION',
   'CONTEXT_BINDING',
+  'NARRATIVE_FINALIZATION',
   'DIMENSION_BINDING',
   'FINDING_BINDING',
 ]);
@@ -184,6 +187,12 @@ const SAFE_EVAL_FAILURE_CODE_VALUES = new Set<string>([
 
 function uniqueSorted<T extends string>(values: readonly T[]): readonly T[] {
   return [...new Set(values)].sort();
+}
+
+function safeValidationFailureStage(value: unknown): AiValidationFailureStage | undefined {
+  return typeof value === 'string' && SAFE_VALIDATION_FAILURE_STAGES.has(value)
+    ? (value as AiValidationFailureStage)
+    : undefined;
 }
 
 function normalizeUsage(usage: AiUsage): BillableTokenUsage {
@@ -489,11 +498,21 @@ function settleFailureAccounting(
 }
 
 type PostResponseValidationFailureStage = Exclude<AiValidationFailureStage, 'SCHEMA_CONSTRUCTION'>;
+type ContinuableInvalidJudgeStage = Exclude<
+  PostResponseValidationFailureStage,
+  'NARRATIVE_FINALIZATION'
+>;
 
 function isPostResponseValidationFailureStage(
   stage: AiValidationFailureStage | undefined,
 ): stage is PostResponseValidationFailureStage {
   return stage !== undefined && POST_RESPONSE_VALIDATION_STAGES.has(stage);
+}
+
+function isContinuableInvalidJudgeStage(
+  stage: AiValidationFailureStage | undefined,
+): stage is ContinuableInvalidJudgeStage {
+  return isPostResponseValidationFailureStage(stage) && stage !== 'NARRATIVE_FINALIZATION';
 }
 
 function hasDurableFailedAuditLink(error: AiError): boolean {
@@ -507,7 +526,7 @@ function continuableInvalidJudgeStage(
   descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
   error: unknown,
   accounting: FailureAccounting,
-): PostResponseValidationFailureStage | undefined {
+): ContinuableInvalidJudgeStage | undefined {
   if (
     descriptor.request.taskType !== AiTaskType.JUDGE ||
     !(error instanceof AiError) ||
@@ -536,7 +555,7 @@ function continuableInvalidJudgeStage(
     !Number.isSafeInteger(evidence.latencyMs) ||
     (evidence.latencyMs ?? -1) < 0 ||
     evidence.refusalCategory !== undefined ||
-    !isPostResponseValidationFailureStage(evidence.validationFailureStage) ||
+    !isContinuableInvalidJudgeStage(evidence.validationFailureStage) ||
     !accounting.attemptAccountingComplete ||
     accounting.currentEstimatedCostUsdMicros === undefined
   ) {
@@ -547,6 +566,7 @@ function continuableInvalidJudgeStage(
 
 export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiveEvalFailure {
   if (error instanceof NarrativeLiveEvalExecutionError) {
+    const validationFailureStage = safeValidationFailureStage(error.validationFailureStage);
     return {
       status: 'FAILED',
       code: error.code,
@@ -573,9 +593,7 @@ export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiv
       ...(error.providerResponseId === undefined
         ? {}
         : { providerResponseId: error.providerResponseId }),
-      ...(error.validationFailureStage === undefined
-        ? {}
-        : { validationFailureStage: error.validationFailureStage }),
+      ...(validationFailureStage === undefined ? {} : { validationFailureStage }),
       ...(error.attempts === undefined ? {} : { attempts: error.attempts }),
       ...(error.usage === undefined ? {} : { usage: error.usage }),
       ...(error.latencyMs === undefined ? {} : { latencyMs: error.latencyMs }),

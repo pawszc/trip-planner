@@ -19,6 +19,7 @@ describe('normalized AI errors', () => {
       'RESPONSE_JSON_PARSE',
       'TRANSPORT_SCHEMA_VALIDATION',
       'CONTEXT_BINDING',
+      'NARRATIVE_FINALIZATION',
       'DIMENSION_BINDING',
       'FINDING_BINDING',
     ]);
@@ -158,6 +159,53 @@ describe('normalized AI errors', () => {
 
     expect(error.executionEvidence).toEqual(evidence);
     for (const sentinel of rawSentinels) expect(serialized).not.toContain(sentinel);
+    expect(serialized).not.toContain('cause');
+    expect(serialized).not.toContain('stack');
+  });
+
+  it('serializes narrative-finalization evidence without rejected content or source data', () => {
+    const rejectedSentinels = [
+      'RAW_NARRATIVE_TEXT_SENTINEL',
+      'RAW_PROVIDER_PAYLOAD_SENTINEL',
+      'RAW_PROMPT_SENTINEL',
+      'RAW_CONTEXT_SENTINEL',
+      'https://private.example.test/source',
+      'SOURCE_EXTERNAL_ID_SENTINEL',
+      'person.private@example.test',
+      'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+    ];
+    const error = new AiError(
+      'INVALID_STRUCTURED_OUTPUT',
+      'Narrative finalization failed controlled local validation.',
+      {
+        provider: AiProvider.ANTHROPIC,
+        model: 'claude-sonnet-5',
+        executionEvidence: {
+          provider: AiProvider.ANTHROPIC,
+          configuredModel: 'claude-sonnet-5',
+          providerCallAttempted: true,
+          validationFailureStage: 'NARRATIVE_FINALIZATION',
+          responseModel: 'claude-sonnet-5-snapshot',
+          providerResponseStatus: 'COMPLETED',
+          providerRequestId: 'req_safe_finalization',
+          usage: {
+            inputTokens: 10,
+            outputTokens: 5,
+            totalTokens: 15,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            reasoningTokens: 0,
+          },
+          attempts: 1,
+          latencyMs: 20,
+        },
+        cause: new Error(rejectedSentinels.join(' ')),
+      },
+    );
+    const serialized = JSON.stringify(error.toSafeJSON());
+
+    expect(error.executionEvidence?.validationFailureStage).toBe('NARRATIVE_FINALIZATION');
+    for (const sentinel of rejectedSentinels) expect(serialized).not.toContain(sentinel);
     expect(serialized).not.toContain('cause');
     expect(serialized).not.toContain('stack');
   });

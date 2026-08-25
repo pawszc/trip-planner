@@ -20,6 +20,9 @@ widzi `narrative-generation-view-v1` z samymi dozwolonymi faktami `KNOWN` i zwra
 quality/narrative fingerprints i wyprowadza wszystkie osiem dimension statuses. Gateway
 rozróżnia walidację raw provider transportu w adapterze od ponownej walidacji już lokalnie
 związanego outputu, więc żaden z dwóch kształtów nie może ominąć właściwego schematu.
+Generation view jest ścisłą projekcją exact fact keys/value shapes; source metadata nie ma do
+niego ścieżki, a przypadkowa zgodność source string z dozwolonym fact value, fact ID lub
+fingerprintem nie jest traktowana jak data leak.
 
 ## Moduły
 
@@ -112,7 +115,7 @@ credentiali, wersjonowanej ceny każdego dokładnego configured modelu i planu m
 się we wszystkich limitach. Unknown price lub przekroczenie rezerwacji blokuje call przed
 providerem. Runner ma dokładnie 46 logical calls i wymaga `AI_MAX_RETRIES=0`. Niezmieniona
 polityka `zero-retry-with-terminal-failure-accounting-v2` nadal oznacza zero retry, a jawne
-kontrakty `narrative-quality-live-execution-v3` i `post-response-failure-accounting-v3`
+kontrakty `narrative-quality-live-execution-v3` i `post-response-failure-accounting-v4`
 rozdzielają fatalne awarie od kompletnie rozliczonego post-response invalid `JUDGE`. Przy
 evidence niepełnym runner zatrzymuje się bez częściowego raportu i bez wymyślania usage,
 attempts lub kosztu. Checked-in katalog cen zawiera oficjalne
@@ -123,7 +126,7 @@ runtime Luna/low/2048 ma ceiling 1,171,326 USD micros (346,331 `GENERATE`, 824,9
 i 1,828,674 micros headroomu, a Terra/2048 kosztuje 8,595,433 micros i pozostaje wyłącznie
 comparison scenario ponad capem. Po wersjonowanej zmianie transport schema i kontraktów
 wykonania oba mają workload fingerprint
-`9c0550fb56ef2c23ece3b0be6b4c2f1b0d767426ccbf25e3a5260cf7ffe0cca1`;
+`fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947`;
 nie istnieje automatyczny fallback między nimi. Po przejściu wszystkich guardów produkcyjnych
 każdy baseline dostaje odizolowany SQLite store pod
 `.tools/narrative-live-eval/`; zawiera on wyłącznie allow-listed `AiRuns`, bez promptu,
@@ -132,8 +135,9 @@ kontekstu, narracji, raw payloadu lub sekretu.
 `narrative-quality-model-profile-v2` nadal wiąże exact JUDGE profile
 `OPENAI/gpt-5.6-luna/low/2048`; GENERATE pozostaje `ANTHROPIC/claude-sonnet-5/low/1600`.
 Provider-visible GENERATE schema v2 ma tylko blocks, JUDGE schema v3 ma tylko findings,
-report/manifest mają v3, live plan/execution mają v2/v3, a failure accounting v3, price
-catalog v1 i model profile v2 pozostają bez zmian. Live `PREFLIGHT_PASSED` allowlistuje
+report/manifest mają v3, live plan/execution mają v2/v3, a failure accounting v4 dodaje
+zamknięty `NARRATIVE_FINALIZATION`; price catalog v1 i model profile v2 pozostają bez zmian.
+Live `PREFLIGHT_PASSED` allowlistuje
 workload fingerprint, datę weryfikacji cen, exact profile, wersje planu/execution/accounting/
 token/cost/retry, calls/attempts/cost i limits. Safe failure allowlistuje dostępne safe IDs,
 provider/configuredModel/responseModel/latency/status/reason/usage/attempts oraz
@@ -178,7 +182,11 @@ Klient OpenAI najpierw zachowuje z terminalnej odpowiedzi wyłącznie zamknięte
 `incomplete_details.reason`, bezpieczne request/response IDs, response model, usage, attempts
 i kontrolowany response error code. Dopiero dla `COMPLETED` bez odmowy odczytuje przejściowy
 `output_text` w pamięci, wykonuje `JSON.parse`, statyczną walidację transportową oraz jawne
-`CONTEXT_BINDING`, `DIMENSION_BINDING` i `FINDING_BINDING`. Adapter klasyfikuje:
+`CONTEXT_BINDING`, `NARRATIVE_FINALIZATION`, `DIMENSION_BINDING` i `FINDING_BINDING`.
+Malformed raw provider `{blocks}` ma `TRANSPORT_SCHEMA_VALIDATION`; mismatch exact request,
+generation view, context, references lub injected fingerprint ma `CONTEXT_BINDING`; poprawny
+transport odrzucony przez deterministic narrative policy ma `NARRATIVE_FINALIZATION`. Adapter
+klasyfikuje:
 
 - `COMPLETED` z poprawnym JSON-em i wszystkimi lokalnymi bindingami → sukces;
 - `INCOMPLETE / MAX_OUTPUT_TOKENS` → non-retryable `INCOMPLETE_MODEL_OUTPUT`;
@@ -382,13 +390,17 @@ Nieznana, pusta, nieaktualna albo pochodząca z innego kontekstu referencja odrz
 output. `GENERATE` otrzymuje `narrative-generation-view-v1`, nie pełny model view: pozostają
 wyłącznie narratable fakty `KNOWN`, exact fact IDs i safe rank/role. Provenance,
 `UNKNOWN`/`MISSING`, raw source URL/external ID, provider/source identity, source keys,
-contexts, HTML i kontrolne/provider-shaped wartości są wykluczone.
+contexts, HTML i kontrolne/provider-shaped wartości są wykluczone. Każdy wspierany fact key ma
+zamknięty projector exact value shape; unknown keys, duplicate facts i extra nested fields są
+odrzucane. Projekcja nie skanuje arbitrary source-value substrings.
 
 Provider zwraca wyłącznie `{blocks}` i nie może ustawiać fingerprintu ani mandatory prose.
 Lokalny finalizer wstrzykuje exact context fingerprint, następnie dokłada stable source
 freshness/demo disclosure i jeden zbiorczy `UNKNOWN`/`MISSING` limitation block, jeśli są
 wymagane. Exact code-owned references, kolejność, unikalność i finalny limit ośmiu bloków są
 walidowane przed precheckiem, JUDGE i persistence. Provider prose nie jest przepisywane.
+Assertion-aware guard blokuje uzupełnienie ceny/kwoty/statusu non-`KNOWN`, ale nie blokuje
+samego opisu osobnego cytowanego faktu `KNOWN` o transporcie lub noclegu.
 
 Po lokalnej finalizacji deterministyczny precheck weryfikuje exact provider-prefix/tail i
 blokuje syntaktyczne/formatowe zagrożenia. Semantyczna niezgodność kwoty i nowe obliczenie

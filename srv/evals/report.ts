@@ -170,6 +170,7 @@ const operationSchema = z
       (operation.structuredOutputValid ||
         operation.validationFailureStage === null ||
         operation.validationFailureStage === 'SCHEMA_CONSTRUCTION' ||
+        operation.validationFailureStage === 'NARRATIVE_FINALIZATION' ||
         !operation.exactAuditLinkageValid ||
         operation.refused ||
         operation.taskType !== AiTaskType.JUDGE)

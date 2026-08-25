@@ -50,10 +50,16 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   bezpiecznych `factId` oraz zachowanie pełnego lokalnego/JUDGE-safe kontraktu;
 - deterministic `narrative-generation-view-v1`: tylko fakty `KNOWN`, brak provenance,
   `UNKNOWN`/`MISSING`, source URLs/keys/provider/external IDs, exact canonical
-  fingerprint/size/immutability i pełnoserializacyjne privacy sentinels;
+  fingerprint/size/immutability i pełnoserializacyjne privacy sentinels; strict projector
+  mapuje każdy wspierany fact key/value shape, odrzuca dodatkowe pola oraz nie skanuje
+  niezależnych values, object keys, fact IDs ani fingerprintów pod kątem przypadkowych source
+  substrings; regresje obejmują `1`, `TRAIN`, `PRG`, `X`, `XY`, `XYZ` i kolizje SHA-256;
 - provider GENERATE `{blocks}` only, limit 6, code-owned context fingerprint, exact fixture,
   cached, combined i no-op disclosures, zbiorczy `UNKNOWN`/`MISSING` block, stable order,
-  final limit 8 oraz fail-closed ambiguity/tamper/restricted-reference tests;
+  final limit 8 oraz fail-closed ambiguity/tamper/restricted-reference tests; fact-aware
+  finalizer dopuszcza cytowany `KNOWN` transport/hotel/destination przy osobnym non-`KNOWN`
+  koszcie, lecz odrzuca koszt, `free`/`included`, potwierdzenie ceny/dostępności, wymyśloną
+  liczbę/walutę, provider-owned disclosure oraz excluded fact ID;
 - `narrative-quality-context-v2`, exact constraint snapshot, candidate/model/grounded
   fingerprints oraz kompletne version bindings;
 - strict `JUDGE` input/output: pełny strukturalny rubric v2 z exact version/fingerprint,
@@ -91,7 +97,10 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
 - structured outputs, metadata przed parserami i pełną klasyfikację terminalnych Responses
   API: completed/incomplete/failed/cancelled/queued/in-progress, max output, content filter,
-  refusal, malformed JSON, transport schema oraz jawne context/dimension/finding binding;
+  refusal, malformed JSON, transport schema oraz jawne context/narrative-finalization/
+  dimension/finding binding; osobny test odróżnia malformed raw transport jako
+  `TRANSPORT_SCHEMA_VALIDATION`, exact request/context mismatch jako `CONTEXT_BINDING` i
+  deterministic policy rejection jako `NARRATIVE_FINALIZATION`;
 - zamknięty `AiFailureExecutionEvidence`, jawne `providerCallAttempted` i
   `validationFailureStage`, zachowanie evidence przez durable `aiRunId`, brak raw contentu w
   serializacji/persistence/stdout oraz settlement failed attempt wyłącznie z kompletnego usage;
@@ -240,7 +249,7 @@ snapshot cen z 2026-08-21 oraz integer-only cost engine dają dla zaakceptowaneg
 `OPENAI / gpt-5.6-luna / low / 2048` ceiling 1,171,326 USD micros: 346,331 dla
 `GENERATE` i 824,995 dla `JUDGE`. Zapas do capu USD 3.00 wynosi 1,828,674 USD micros,
 a workload fingerprint to
-`9c0550fb56ef2c23ece3b0be6b4c2f1b0d767426ccbf25e3a5260cf7ffe0cca1`.
+`fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947`.
 `gpt-5.6-terra / low / 2048` pozostaje wyłącznie scenariuszem porównawczym i z ceiling
 8,595,433 USD micros jest blokowany przez niezmieniony cap. Nie jest to ścieżka fallbacku.
 Preflight nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI.

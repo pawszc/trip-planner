@@ -283,8 +283,11 @@ gatewayem i `AiRun`; kod nie wykonuje nieudowodnionego backfillu.
 `grounded-option-narrative-prompt-v3` używa wyłącznie profilu `GENERATE` i exact
 `narrative-generation-view-v1`, wyprowadzonego z lokalnego `narrative-model-view-v1`.
 Provider schema v2 zawiera tylko maksymalnie sześć bloków i nie pozwala zwrócić fingerprintu
-ani mandatory disclosures. Lokalny binder odrzuca pusty, nieznany, restricted lub obcy fact
-ID, wstrzykuje exact context fingerprint i dokłada code-owned provenance oraz
+ani mandatory disclosures. Generation view jest zamkniętą projekcją exact fact keys i value
+shapes: dodatkowe/nieznane pola failują, source metadata nie ma ścieżki do provider inputu, a
+niezależny fact value, object key, fact ID lub fingerprint nie jest skanowany pod kątem
+przypadkowej zgodności z source string. Lokalny binder odrzuca pusty, nieznany, restricted lub
+obcy fact ID, wstrzykuje exact context fingerprint i dokłada code-owned provenance oraz
 `UNKNOWN`/`MISSING` risk blocks do limitu ośmiu. Niczego nie filtruje częściowo ani nie
 przepisuje provider prose. Referencja zapewnia traceability, ale bez `JUDGE` nie jest jeszcze
 semantycznym dowodem zgodności tekstu z faktem.
@@ -308,7 +311,10 @@ własny canonical SHA-256 i limit rozmiaru; pełny model/context pozostaje lokal
 quality boundary JUDGE.
 
 Po `GENERATE` lokalny finalizer wiąże provider blocks z exact generation view, wstrzykuje
-grounded fingerprint i dokłada exact mandatory disclosures. Następnie deterministyczny
+grounded fingerprint i dokłada exact mandatory disclosures. Non-`KNOWN` koszt rezerwuje dla
+kodu wyłącznie nieznaną wartość/status, nie cały obiekt domenowy: cytowany `KNOWN` transport,
+hotel lub destination pozostaje narratable, dopóki tekst nie przypisuje kosztu, kwoty,
+`free`/`included`, potwierdzenia ceny albo dostępności. Następnie deterministyczny
 precheck sprawdza finalization oraz blokuje URL-e, Markdown/HTML,
 script/event handlers, kontrolne lub bidi znaki, wartości wykluczone przez projection i
 mechanicznie rozpoznawalny niedozwolony reformat pieniędzy. Odrzucenie na tym etapie
@@ -352,6 +358,14 @@ rozliczony invalid jako
 `FAIL`, ale produkt i accepted manifest pozostają fail-closed. Ten offline fix wykonuje zero
 provider calls, nie autoryzuje kolejnego baseline i pozostawia Fazę 3B3 w `REVIEW` do osobnej
 zgody oraz przejścia wszystkich bramek.
+
+Post-response taxonomy jawnie rozdziela malformed raw provider transport
+(`TRANSPORT_SCHEMA_VALIDATION`), exact request/generation/context/local-injection mismatch
+(`CONTEXT_BINDING`) oraz provider-valid output odrzucony przez deterministic narrative policy
+(`NARRATIVE_FINALIZATION`). Allowlistowana/persistowana zmiana stage contractu bumpuje wyłącznie
+`post-response-failure-accounting-v3` do `post-response-failure-accounting-v4`; draft report v3
+i live-execution v3 zachowują identyfikatory, ponieważ ich zamierzone kontrakty v3 są aktualizowane
+spójnie przed merge.
 
 ## Stos technologiczny
 

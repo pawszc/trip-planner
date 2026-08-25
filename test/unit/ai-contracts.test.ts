@@ -9,6 +9,7 @@ import {
 
 function request(
   validateOutput: StructuredAiRequest<{ ok: true }>['validateOutput'],
+  validateBoundOutput?: StructuredAiRequest<{ ok: true }>['validateBoundOutput'],
 ): StructuredAiRequest<{ ok: true }> {
   return {
     taskType: AiTaskType.JUDGE,
@@ -19,6 +20,7 @@ function request(
     input: {},
     outputSchema: z.object({ ok: z.literal(true) }).strict(),
     ...(validateOutput === undefined ? {} : { validateOutput }),
+    ...(validateBoundOutput === undefined ? {} : { validateBoundOutput }),
   };
 }
 
@@ -86,6 +88,24 @@ describe('structured AI output validation composition', () => {
     expect(validateStructuredAiOutput(contextFailure, { ok: true })).toEqual({
       success: false,
       validationFailureStage: 'CONTEXT_BINDING',
+    });
+  });
+
+  it('preserves a request-local bound-output classification at the gateway backstop', () => {
+    let observedInput: unknown;
+    const finalizationFailure = request(undefined, (_output, requestInput) => {
+      observedInput = requestInput;
+      return { success: false, validationFailureStage: 'NARRATIVE_FINALIZATION' };
+    });
+
+    expect(validateBoundStructuredAiOutput(finalizationFailure, { ok: true })).toEqual({
+      success: false,
+      validationFailureStage: 'NARRATIVE_FINALIZATION',
+    });
+    expect(observedInput).toEqual(finalizationFailure.input);
+    expect(validateStructuredAiOutput(finalizationFailure, { ok: true })).toEqual({
+      success: true,
+      output: { ok: true },
     });
   });
 });

@@ -52,7 +52,7 @@ import {
 
 export const NARRATIVE_LIVE_EVAL_PLAN_VERSION = 'narrative-quality-live-plan-v2';
 export const NARRATIVE_LIVE_EVAL_EXECUTION_CONTRACT_VERSION = 'narrative-quality-live-execution-v3';
-export const NARRATIVE_LIVE_EVAL_FAILURE_ACCOUNTING_VERSION = 'post-response-failure-accounting-v3';
+export const NARRATIVE_LIVE_EVAL_FAILURE_ACCOUNTING_VERSION = 'post-response-failure-accounting-v4';
 export const NARRATIVE_LIVE_EVAL_TOKEN_CEILING_VERSION =
   'utf8-wire-bytes-plus-4096-protocol-tokens-v1';
 export const NARRATIVE_LIVE_EVAL_COST_CEILING_VERSION = 'full-ceiling-each-token-class-v1';

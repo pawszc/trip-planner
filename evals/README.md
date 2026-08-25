@@ -42,7 +42,7 @@ network-free kalkulacją tego samego planu oraz kosztu. Runtime scenario
 micros. `SCENARIO_COMPARISON_TERRA` używa tego samego workloadu i ceiling 2048, ale kosztuje
 8,595,433 micros i pozostaje wyłącznie comparison scenario ponad capem, bez semantyki
 fallbacku. Workload fingerprint obu exact workloadów to
-`9c0550fb56ef2c23ece3b0be6b4c2f1b0d767426ccbf25e3a5260cf7ffe0cca1`.
+`fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947`.
 
 Pierwszy osobno autoryzowany run z 2026-08-23 na source
 `7af918ded8ee7b30d3fdabd92d705c2dd34e7c49` zatrzymał się fail-closed na 18/46 (`R06`,
@@ -73,9 +73,14 @@ danych i bez rerunu, smoke, diagnostycznego requestu, retry, resume, continuatio
 Retry policy `zero-retry-with-terminal-failure-accounting-v2` zachowuje zero retry. JUDGE
 schema v3 ma statyczny provider transport `{findings}` bez fingerprintów i tablicy statuses.
 Exact fingerprints i osiem wymiarów są wstrzykiwane lub wyprowadzane lokalnie, a finding
-cross-fields pozostają związane z exact context. Execution v3 i failure accounting v3
+cross-fields pozostają związane z exact context. Execution v3 i failure accounting v4
 pozwalają kontynuować wyłącznie kompletnie rozliczony post-response invalid `JUDGE` z exact
 durable `FAILED` linkage. Primary, repeat i E2E mają osobne validity gates.
+Raw provider transport niespełniający strict schema ma `TRANSPORT_SCHEMA_VALIDATION`; mismatch
+exact request/generation view/context albo locally injected binding ma `CONTEXT_BINDING`; poprawny
+transport odrzucony przez deterministic narrative finalization/policy ma
+`NARRATIVE_FINALIZATION`. Te allowlistowane stages nie przenoszą narracji, provider outputu,
+promptu, kontekstu, URL-a, source value, PII ani sekretu.
 `narrative-quality-eval-report-v3` dodaje do każdego wiersza E2E wyłącznie sortowane, unikalne,
 zamknięte `actualFailedDimensions` i `actualReasonCodes`: poprawny `PUBLISH` oraz niepoprawny
 structured output mają puste listy, poprawny `REJECT` zachowuje exact lokalnie zwalidowane

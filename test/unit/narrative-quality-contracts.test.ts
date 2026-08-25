@@ -5,10 +5,12 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalizeJson,
   createInputFingerprint,
+  type JsonObject,
   type JsonValue,
 } from '../../srv/ai/contracts.ts';
 import {
   buildGroundedOptionContext,
+  type GroundedFact,
   type GroundedOptionContext,
   type GroundedOptionContextInput,
 } from '../../srv/narratives/grounded-option-context.ts';
@@ -39,7 +41,10 @@ import {
   type NarrativeJudgeOutput,
 } from '../../srv/narratives/narrative-judge.ts';
 import { NARRATIVE_FINALIZATION_VERSION } from '../../srv/narratives/narrative-finalization.ts';
-import { NARRATIVE_GENERATION_VIEW_VERSION } from '../../srv/narratives/narrative-generation-view.ts';
+import {
+  NARRATIVE_GENERATION_VIEW_VERSION,
+  buildNarrativeGenerationView,
+} from '../../srv/narratives/narrative-generation-view.ts';
 import {
   NARRATIVE_MODEL_VIEW_MAX_BYTES,
   NARRATIVE_MODEL_VIEW_VERSION,
@@ -210,6 +215,255 @@ describe('narrative quality contract version binding', () => {
       modelProfileVersion: 'narrative-quality-model-profile-v2',
       priceCatalogVersion: 'narrative-quality-price-catalog-v1',
     });
+  });
+});
+
+describe('narrative-generation-view-v1 structural projection', () => {
+  it('projects the exact closed value shape for every supported generation fact key', () => {
+    const expectedValueKeys = {
+      'option.selection': ['rank', 'role'],
+      'option.destination': ['city', 'code', 'countryCode'],
+      'option.transport': [
+        'effectiveTimeAtDestinationMinutes',
+        'maximumConnections',
+        'mode',
+        'outboundArrivalAt',
+        'outboundDepartureAt',
+        'outboundTravelMinutes',
+        'returnArrivalAt',
+        'returnDepartureAt',
+        'returnTravelMinutes',
+      ],
+      'option.accommodation': ['centralityScore', 'checkInDate', 'checkOutDate', 'name', 'nights'],
+      'option.budget.summary': [
+        'budgetLimitDisplay',
+        'budgetLimitMinor',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'costPerPersonDisplay',
+        'costPerPersonMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'remainingBudgetDisplay',
+        'remainingBudgetMinor',
+        'totalAmountDisplay',
+        'totalAmountMinor',
+        'unknownCategoryCount',
+      ],
+      'option.budget.category.TRANSPORT': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.ACCOMMODATION': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.LOCAL_TRANSPORT': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.FOOD': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.ATTRACTIONS': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.ADDITIONAL_FEES': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.BUFFER': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.score': [
+        'accommodationLocation',
+        'budgetFit',
+        'dataCompleteness',
+        'effectiveTime',
+        'preferenceFit',
+        'priceConfidence',
+        'total',
+        'travelTime',
+      ],
+    } as const;
+    const view = buildNarrativeGenerationView(context());
+
+    expect(view.facts.map(({ key }) => key).sort()).toEqual(Object.keys(expectedValueKeys).sort());
+    for (const fact of view.facts) {
+      const expected = expectedValueKeys[fact.key as keyof typeof expectedValueKeys];
+      expect(expected).toBeDefined();
+      expect(fact.value).not.toBeNull();
+      expect(Array.isArray(fact.value)).toBe(false);
+      expect(typeof fact.value).toBe('object');
+      expect(Object.keys(fact.value as JsonObject).sort()).toEqual([...expected].sort());
+    }
+  });
+
+  it('A: allows external ID 1 alongside the independently grounded numeric rank 1', () => {
+    const input = contextInput();
+    input.sourceSnapshots[0]!.externalItemId = '1';
+    const view = buildNarrativeGenerationView(buildGroundedOptionContext(input));
+
+    expect(view.rankedOption.rank).toBe(1);
+    expect(view.facts.find(({ key }) => key === 'option.selection')?.value).toMatchObject({
+      rank: 1,
+    });
+  });
+
+  it('B: allows source provider TRAIN alongside the independently grounded transport mode', () => {
+    const input = contextInput();
+    input.sourceSnapshots[0]!.provider = 'TRAIN';
+    const view = buildNarrativeGenerationView(buildGroundedOptionContext(input));
+
+    expect(view.facts.find(({ key }) => key === 'option.transport')?.value).toMatchObject({
+      mode: 'TRAIN',
+    });
+  });
+
+  it('C: allows external ID PRG alongside the independently grounded destination code', () => {
+    const input = contextInput();
+    input.sourceSnapshots[0]!.externalItemId = 'PRG';
+    const view = buildNarrativeGenerationView(buildGroundedOptionContext(input));
+
+    expect(view.facts.find(({ key }) => key === 'option.destination')?.value).toMatchObject({
+      code: 'PRG',
+    });
+  });
+
+  it.each(['X', 'XY', 'XYZ'])(
+    'D: allows short source ID %s alongside an independently grounded exact city literal',
+    (identifier) => {
+      const input = contextInput();
+      input.sourceSnapshots[0]!.externalItemId = identifier;
+      input.rankedOption.destinationCity = identifier;
+      const view = buildNarrativeGenerationView(buildGroundedOptionContext(input));
+
+      expect(view.facts.find(({ key }) => key === 'option.destination')?.value).toMatchObject({
+        city: identifier,
+      });
+    },
+  );
+
+  it('E: ignores short source substrings that occur inside a fingerprint or fact ID', () => {
+    const grounded = structuredClone(context());
+    const destination = factByKey(grounded, 'option.destination');
+    const source = grounded.sourceSnapshots[0] as {
+      externalItemId: string;
+      provider: string;
+    };
+    source.externalItemId = grounded.fingerprint.slice(0, 1);
+    source.provider = destination.factId.slice(5, 8);
+
+    const view = buildNarrativeGenerationView(grounded);
+
+    expect(view.groundedContextFingerprint).toBe(grounded.fingerprint);
+    expect(view.facts.find(({ key }) => key === destination.key)?.factId).toBe(destination.factId);
+  });
+
+  it('fails closed for a KNOWN fact key outside the closed provider catalog', () => {
+    const grounded = structuredClone(context());
+    (grounded.facts as GroundedFact[]).push({
+      factId: `fact_${'f'.repeat(64)}`,
+      key: 'option.unsupported-provider-fact',
+      status: 'KNOWN',
+      value: { highConfidenceSentinel: 'MUST_NOT_REACH_GENERATE' },
+      sourceSnapshotIds: [],
+      internalDerivation: null,
+    });
+
+    expect(() => buildNarrativeGenerationView(grounded)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_NARRATIVE_GENERATION_VIEW' }),
+    );
+  });
+
+  it('fails closed when a supported fact gains an extra source-only field', () => {
+    const grounded = structuredClone(context());
+    const destination = factByKey(grounded, 'option.destination');
+    if (destination.value === null || typeof destination.value !== 'object') {
+      throw new Error('Destination fixture value is not an object.');
+    }
+    (destination.value as Record<string, JsonValue>).sourceSnapshotId =
+      'HIGH_CONFIDENCE_SOURCE_SENTINEL';
+
+    expect(() => buildNarrativeGenerationView(grounded)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_NARRATIVE_GENERATION_VIEW' }),
+    );
   });
 });
 

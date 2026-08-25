@@ -23,6 +23,10 @@ powrotnego `2026-10-13T17:00:00.000Z`; ten sam helper zasila candidate engine i 
 `GENERATE` nie otrzymuje już pełnego model view. `narrative-generation-view-v1` zawiera tylko
 dozwolone fakty `KNOWN`, nie zawiera provenance ani wartości `UNKNOWN`/`MISSING`, raw source
 identity, URL-i lub external IDs i ma własny canonical fingerprint oraz limit rozmiaru.
+Każdy obsługiwany fact key i value shape ma jawny, ścisły projector. Nieznany klucz, duplikat
+lub dodatkowe pole failuje zamknięcie; source snapshots i provenance nie mają strukturalnej
+ścieżki do outputu. Kod nie przeszukuje fact IDs, fingerprintów, object keys ani niezależnie
+ugruntowanych wartości domenowych pod kątem przypadkowego substringu z source metadata.
 Provider zwraca wyłącznie maksymalnie sześć bloków. Kod wstrzykuje exact context fingerprint,
 dokłada w stałej kolejności najwyżej dwa bloki `RISK` (source freshness/demo, potem
 `UNKNOWN`/`MISSING`) i waliduje finalny limit ośmiu bloków przed precheckiem, `JUDGE` i
@@ -51,19 +55,34 @@ accepted manifestu i nie zmienia statusu fazy na `DONE`.
 | Finalization            | brak                                                               | `narrative-finalization-v1`                                        | deterministic disclosures                                  |
 | E2E property catalog    | `narrative-e2e-required-properties-v1`                             | `narrative-e2e-required-properties-v2`                             | v2 contexts i deterministic cache negation                 |
 | Live plan/execution     | `live-plan-v1` / `live-execution-v2`                               | `live-plan-v2` / `live-execution-v3`                               | nowe request/response wire contracts                       |
-| Failure accounting      | `post-response-failure-accounting-v3`                              | bez zmiany                                                         | safe accounting semantics bez zmian                        |
+| Failure accounting      | `post-response-failure-accounting-v3`                              | `post-response-failure-accounting-v4`                              | osobny `NARRATIVE_FINALIZATION` stage                      |
 | Report/manifest         | `eval-report-v2` / `baseline-manifest-v2`                          | `eval-report-v3` / `baseline-manifest-v3`                          | E2E semantic evidence                                      |
 | Model profile           | `model-profile-v2`                                                 | bez zmiany                                                         | modele, effort i token caps bez zmian                      |
-| Workload fingerprint    | `2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b` | `9c0550fb56ef2c23ece3b0be6b4c2f1b0d767426ccbf25e3a5260cf7ffe0cca1` | v2 provider contracts i inputs                             |
+| Workload fingerprint    | `2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b` | `fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947` | v2 contracts, inputs i failure accounting v4               |
 | Price/preflight binding | `price-catalog-v1` + `live-plan-v1` / `live-execution-v2`          | `price-catalog-v1` + `live-plan-v2` / `live-execution-v3`          | ceny bez zmian; preflight wiąże exact nowy workload        |
 
 Credential-free preflight v2/v3 zachowuje plan 46 calls (4 GENERATE, 42 JUDGE), maksymalnie
 46 attempts, zero retry i cap USD 3.00. Workload fingerprint to
-`9c0550fb56ef2c23ece3b0be6b4c2f1b0d767426ccbf25e3a5260cf7ffe0cca1`. Luna ceiling
+`fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947`. Luna ceiling
 wynosi 1,171,326 USD micros (346,331 GENERATE + 824,995 JUDGE), headroom 1,828,674;
 wszystkie trzy cap booleans są `true`. Terra comparison ma ceiling 8,595,433 micros,
 `withinCostCap=false` i `withinAllCaps=false`; pozostaje zablokowanym porównaniem, nie
 fallbackiem.
+
+Strict projection zmienia walidację, ale nie canonical serialization poprawnych v1 facts, więc
+ponownie wyliczone E2E bindings pozostają:
+
+| Case | Context                                                            | Generation view                                                    | GENERATE input                                                     | Maximum JUDGE input                                                |
+| ---- | ------------------------------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| E01  | `e130ff7fadb39d63ef347b2b9938f8ad23b220b29fd24c3094eb842cfdc67cf9` | `273671a6e72da55e3ce8c67731df9ca2fa19d080c6149a14a2212f548368ccbf` | `549dba3394d1b21b5befbba9dacd00a30d4aec27a73ddb00ffd6a54bef589cc7` | `14549a9180add9a4a016b482e23560042fb9abc4783dc8ab6eab198cb910b9b2` |
+| E02  | `3c3e04ea8991a5074eae82a849ba283fb5f146f2728372b8fb6351a0f0702da5` | `61479e5ef244045235b19b86b095bc6658f779e707e81cd53fc241e66dfdf833` | `67aadd5e8431a8855395d57123af12b21e58b06e1c2b8ed90d0200eee126856a` | `89207b2a8efa88111b7e4e40d8454774bf95306a5cb7244aedbddf1ea6e7b69b` |
+| E03  | `75c1e10ba92ab2719ad452690b95c1b2e6324c862e623424f571c82c344b2bd4` | `70050c0d925e48aea83bff1acd4dc946d3026698d32d27789f67cebc987c8f42` | `7b487c9ebd08a45f8c10a20bf9df68c591188a29a7fd28d938025039099814ee` | `81c939d217976114f94c1839191c3844d0e4f3b5e1ed01dfef8c01fb8a6d115c` |
+| E04  | `14f0b2ae52ec2155b2da1365177ed8d55ad30ca2e3d948c1899e2aff53276356` | `1ece0c42b2a1e99b7e67c8759a103c1514c8d19f9b777b6b923d432862b04160` | `1a4a38dfcf37eaa87cbf6354b312065e7dd78ebeb0d4b5556bdb85b6029e9644` | `199337aba42461962b9bc5c03e8351b7fc3e805770d814a50803ca54661307b6` |
+
+Credential-free contract replay nadal daje dataset fingerprint
+`aa6f414e857a7e4f1c83aebc99c1c729b6b55aaeb978ff6e9b8d4a92d96c80a7` i report
+fingerprint `69954f13ef8c25fe005951daa749644a1fbf9cabff50ffe7f959656b6c575b30`;
+report v3 nie wiąże live failure-accounting version.
 
 The contract and its versioned synthetic golden dataset, schema, and rubric were merged to
 `main` before implementation started. Three separately authorized final live baselines were each
@@ -103,8 +122,10 @@ contract change, not a test fix.
 - [x] Contract v2 versions dataset/fixture, GENERATE and JUDGE prompt/schema, rubric, quality
       context, publication/precheck/finalization, required-property catalog, live plan/execution,
       report and future manifest semantics. The exact models, `narrative-quality-model-profile-v2`,
-      effort, 46-call count, zero-retry policy, price catalog, failure-accounting v3 and hard caps
-      remain unchanged. This offline change creates no accepted manifest.
+      effort, 46-call count, zero-retry policy, price catalog and hard caps remain unchanged.
+      Failure accounting advances from v3 to v4 because the persisted/allowlisted validation-stage
+      contract now distinguishes `NARRATIVE_FINALIZATION`. This offline change creates no accepted
+      manifest.
 - [x] Privacy-safe preflight evidence includes exact profiles, workload fingerprint, pricing
       metadata, plan and ceiling versions, planned calls/attempts/cost and limits. Failure
       evidence may additionally carry only available provider/model/latency allowlisted fields.
@@ -116,6 +137,10 @@ contract change, not a test fix.
       response metadata, JSON parsing, transport validation, and three explicit local bindings.
       A completely accounted post-response invalid JUDGE output can produce a failing synthetic
       report only with exact durable `FAILED` audit linkage; the product remains fail-closed.
+- [x] Review fix accounting keeps malformed raw provider transport as
+      `TRANSPORT_SCHEMA_VALIDATION`, exact request/context/generation binding as
+      `CONTEXT_BINDING`, and deterministic provider-valid narrative policy rejection as
+      `NARRATIVE_FINALIZATION`. All three stages are closed, privacy-safe metadata only.
 - [ ] A further synthetic live baseline would require new explicit human authorization. The
       three failed runs do not authorize a rerun, smoke test or diagnostic provider request.
 - [ ] `DONE` still requires a passing approved baseline, completed review, merge, and

@@ -98,7 +98,7 @@ function fakeGenerateOutput(
       },
     ],
   };
-  const validation = descriptor.request.validateOutput?.(providerOutput);
+  const validation = descriptor.request.validateOutput?.(providerOutput, descriptor.request.input);
   if (validation === undefined || !validation.success) {
     throw new Error('The offline GENERATE fixture failed the production request validator.');
   }
@@ -158,7 +158,7 @@ function fakeJudgeOutput(
       };
     }),
   };
-  const validation = descriptor.request.validateOutput?.(providerOutput);
+  const validation = descriptor.request.validateOutput?.(providerOutput, descriptor.request.input);
   if (validation === undefined || !validation.success) {
     throw new Error('The offline JUDGE fixture failed the production request validator.');
   }
@@ -893,9 +893,10 @@ describe('narrative live-eval execution without provider calls', () => {
   it('fails closed before JUDGE when GENERATE adds an uncited calculation', async () => {
     const config = loadAiConfig(enabledEnvironment);
     let locallyRejected = false;
+    let failure: unknown;
 
-    await expect(
-      runNarrativeQualityLiveEvaluation({
+    try {
+      await runNarrativeQualityLiveEvaluation({
         env: enabledEnvironment,
         config,
         priceSnapshot: configuredPriceSnapshot(config),
@@ -908,23 +909,49 @@ describe('narrative live-eval execution without provider calls', () => {
               const view = descriptor.request.input as NarrativeGenerationView;
               const budget = view.facts.find(({ key }) => key === 'option.budget.summary');
               if (budget === undefined) throw new Error('E01 has no provider-visible budget fact.');
-              const validation = descriptor.request.validateOutput?.({
-                blocks: [
-                  {
-                    kind: 'SUMMARY',
-                    text: 'Synthetic calculation: 2,403.00 PLN × 2 = 4,806.00 PLN.',
-                    factReferences: [budget.factId],
-                  },
-                ],
-              });
+              const validation = descriptor.request.validateOutput?.(
+                {
+                  blocks: [
+                    {
+                      kind: 'SUMMARY',
+                      text: 'Synthetic calculation: 2,403.00 PLN × 2 = 4,806.00 PLN.',
+                      factReferences: [budget.factId],
+                    },
+                  ],
+                },
+                descriptor.request.input,
+              );
               expect(validation).toEqual({
                 success: false,
-                validationFailureStage: 'CONTEXT_BINDING',
+                validationFailureStage: 'NARRATIVE_FINALIZATION',
               });
               locallyRejected = true;
               throw new AiError(
                 'INVALID_STRUCTURED_OUTPUT',
                 'Controlled local GENERATE rejection.',
+                {
+                  provider: descriptor.profile.provider,
+                  model: descriptor.profile.model,
+                  executionEvidence: {
+                    provider: descriptor.profile.provider,
+                    configuredModel: descriptor.profile.model,
+                    providerCallAttempted: true,
+                    validationFailureStage: 'NARRATIVE_FINALIZATION',
+                    responseModel: `${descriptor.profile.model}-response-v1`,
+                    providerResponseStatus: 'COMPLETED',
+                    providerRequestId: 'req_generate_finalization',
+                    usage: {
+                      inputTokens: 100,
+                      outputTokens: 20,
+                      totalTokens: 120,
+                      cacheReadTokens: 0,
+                      cacheWriteTokens: 0,
+                      reasoningTokens: 0,
+                    },
+                    attempts: 1,
+                    latencyMs: 5,
+                  },
+                },
               );
             } else {
               output = fakeGenerateOutput(
@@ -934,9 +961,26 @@ describe('narrative live-eval execution without provider calls', () => {
             return { result: fakeResult(descriptor, output), auditSucceeded: true as const };
           },
         }),
-      }),
-    ).rejects.toBeInstanceOf(NarrativeLiveEvalExecutionError);
+      });
+    } catch (error) {
+      failure = error;
+    }
+
     expect(locallyRejected).toBe(true);
+    expect(failure).toBeInstanceOf(NarrativeLiveEvalExecutionError);
+    const safeFailure = toSafeNarrativeLiveEvalFailure(failure);
+    expect(safeFailure).toMatchObject({
+      status: 'FAILED',
+      reportProduced: false,
+      providerCallAttempted: true,
+      attemptAccountingComplete: true,
+      caseId: 'E01',
+      taskType: 'GENERATE',
+      validationFailureStage: 'NARRATIVE_FINALIZATION',
+      attempts: 1,
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    });
+    expect(JSON.stringify(safeFailure)).not.toContain('Synthetic calculation');
   });
 
   it('stops after the first thrown provider failure and exposes no partial report', async () => {
@@ -1125,8 +1169,8 @@ describe('narrative live-eval CLI boundary', () => {
       costCeilingVersion: 'full-ceiling-each-token-class-v1',
       retryPolicyVersion: 'zero-retry-with-terminal-failure-accounting-v2',
       executionContractVersion: 'narrative-quality-live-execution-v3',
-      failureAccountingVersion: 'post-response-failure-accounting-v3',
-      workloadFingerprint: '9c0550fb56ef2c23ece3b0be6b4c2f1b0d767426ccbf25e3a5260cf7ffe0cca1',
+      failureAccountingVersion: 'post-response-failure-accounting-v4',
+      workloadFingerprint: 'fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947',
       plannedLogicalCalls: 46,
       plannedMaximumAttempts: 46,
       plannedMaximumCostUsdMicros: expect.any(Number),
