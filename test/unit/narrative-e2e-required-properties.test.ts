@@ -15,7 +15,7 @@ import {
 import {
   buildSyntheticNarrativeConstraintSnapshot,
   resolveSyntheticNarrativeQualityFixture,
-} from '../../srv/evals/synthetic-fixtures.ts';
+} from '../../srv/evals/synthetic-fixtures-v2.ts';
 import { buildNarrativeModelView } from '../../srv/narratives/narrative-model-view.ts';
 import type { OptionNarrativeOutput } from '../../srv/narratives/option-narrative.ts';
 
@@ -54,10 +54,10 @@ function evaluate(caseId: string, propertyId: NarrativeE2eRequiredPropertyId, na
   })[0]!;
 }
 
-describe('executable narrative E2E required-property catalog v1', () => {
+describe('executable narrative E2E required-property catalog v2', () => {
   it('is a closed catalog containing every property frozen in E01-E04', () => {
     expect(NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION).toBe(
-      'narrative-e2e-required-properties-v1',
+      'narrative-e2e-required-properties-v2',
     );
     expect([
       ...new Set(dataset.endToEndCases.flatMap(({ requiredProperties }) => requiredProperties)),
@@ -146,6 +146,16 @@ describe('executable narrative E2E required-property catalog v1', () => {
     const quality = qualityCase('E02');
     expect(
       evaluate('E02', 'cached-not-live', candidate(quality, 'Cached synthetic data, not live.')),
+    ).toMatchObject({ passed: true });
+    expect(
+      evaluate(
+        'E02',
+        'cached-not-live',
+        candidate(
+          quality,
+          'Source disclosure: this option uses cached data and does not represent current live availability.',
+        ),
+      ),
     ).toMatchObject({ passed: true });
     expect(
       evaluate(

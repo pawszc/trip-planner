@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { createInputFingerprint } from '../../srv/ai/contracts.js';
 import {
   OPTION_NARRATIVE_PROMPT_VERSION,
   OPTION_NARRATIVE_SCHEMA_VERSION,
+  type OptionNarrativeOutput,
 } from '../../srv/narratives/option-narrative.js';
 import { NARRATIVE_MODEL_VIEW_VERSION } from '../../srv/narratives/narrative-model-view.js';
+import { NARRATIVE_FINALIZATION_VERSION } from '../../srv/narratives/narrative-finalization.js';
+import { NARRATIVE_GENERATION_VIEW_VERSION } from '../../srv/narratives/narrative-generation-view.js';
 import { NARRATIVE_QUALITY_RUBRIC_FINGERPRINT } from '../../srv/narratives/narrative-quality-rubric.js';
 import {
   NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
@@ -38,15 +42,27 @@ const generateAiRunId = '10000000-0000-4000-8000-000000000003';
 const judgeAiRunId = '10000000-0000-4000-8000-000000000004';
 const contextFingerprint = '1'.repeat(64);
 const modelViewFingerprint = '2'.repeat(64);
-const narrativeFingerprint = '3'.repeat(64);
+const factId = `fact_${'a'.repeat(64)}`;
+const narrativeOutput: OptionNarrativeOutput = {
+  contextFingerprint,
+  blocks: [
+    {
+      kind: 'SUMMARY',
+      text: 'Exact locally validated candidate.',
+      factReferences: [factId],
+    },
+  ],
+};
+const narrativeFingerprint = createInputFingerprint(narrativeOutput);
 const qualityContextFingerprint = '4'.repeat(64);
 const generateInputFingerprint = '5'.repeat(64);
 const judgeInputFingerprint = '6'.repeat(64);
-const factId = `fact_${'a'.repeat(64)}`;
 
 const versions = {
   groundedContextVersion: 'grounded-option-context-v1',
   modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
+  generationViewVersion: NARRATIVE_GENERATION_VIEW_VERSION,
+  finalizationVersion: NARRATIVE_FINALIZATION_VERSION,
   qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
   constraintSnapshotVersion: NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
   generatePromptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
@@ -78,11 +94,12 @@ function audit(
   };
 }
 
-function dimensions(failed?: (typeof NARRATIVE_REVIEW_DIMENSION_VALUES)[number]) {
+function dimensions(...failed: (typeof NARRATIVE_REVIEW_DIMENSION_VALUES)[number][]) {
+  const failedDimensions = new Set(failed);
   return Object.fromEntries(
     NARRATIVE_REVIEW_DIMENSION_VALUES.map((dimension) => [
       dimension,
-      dimension === failed ? 'FAIL' : 'PASS',
+      failedDimensions.has(dimension) ? 'FAIL' : 'PASS',
     ]),
   ) as NarrativeReviewDimensionResults;
 }
@@ -107,9 +124,16 @@ function common() {
   } as const;
 }
 
-function narrativeBundle(): NarrativePersistenceBundle {
+function narrativeBundle(
+  output: OptionNarrativeOutput = narrativeOutput,
+): NarrativePersistenceBundle {
   const narrativeRunId = '30000000-0000-4000-8000-000000000001';
   const blockId = '30000000-0000-4000-8000-000000000002';
+  const block = output.blocks[0];
+  const blockFactId = block?.factReferences[0];
+  if (block === undefined || output.blocks.length !== 1 || blockFactId === undefined) {
+    throw new Error('Narrative persistence fixture requires one block with one reference.');
+  }
   return {
     expectedAiRun: {
       ID: generateAiRunId,
@@ -120,6 +144,7 @@ function narrativeBundle(): NarrativePersistenceBundle {
       schemaVersion: OPTION_NARRATIVE_SCHEMA_VERSION,
       inputFingerprint: generateInputFingerprint,
     },
+    narrativeFingerprint: createInputFingerprint(output),
     narrativeRun: {
       ID: narrativeRunId,
       planningRun_ID: planningRunId,
@@ -140,8 +165,8 @@ function narrativeBundle(): NarrativePersistenceBundle {
         planningRun_ID: planningRunId,
         rankedOption_ID: rankedOptionId,
         sequence: 1,
-        kind: 'SUMMARY',
-        text: 'Exact locally validated candidate.',
+        kind: block.kind,
+        text: block.text,
       },
     ],
     factReferences: [
@@ -152,7 +177,7 @@ function narrativeBundle(): NarrativePersistenceBundle {
         planningRun_ID: planningRunId,
         rankedOption_ID: rankedOptionId,
         sequence: 1,
-        factId,
+        factId: blockFactId,
       },
     ],
   };
@@ -190,11 +215,11 @@ describe('narrative review persistence bundles', () => {
       rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
       findings: [
         {
+          dimension: 'SAFETY_INSTRUCTION_INTEGRITY',
           reasonCode: 'UNTRUSTED_CONTENT_EXPOSED',
           severity: 'CRITICAL',
-          blockSequences: [2, 1],
+          blockSequences: [1, 2],
           factIds: [factId],
-          rationale: 'raw judge rationale must be dropped',
         },
       ],
       candidate: 'private candidate text',
@@ -222,6 +247,7 @@ describe('narrative review persistence bundles', () => {
       failedDimensionCount: 0,
     });
     expect(bundle.findings[0]).toMatchObject({
+      dimension: 'SAFETY_INSTRUCTION_INTEGRITY',
       blockSequences: '1,2',
       factIds: factId,
       blockSequenceCount: 2,
@@ -241,6 +267,7 @@ describe('narrative review persistence bundles', () => {
       dimensions: dimensions('FACTUAL_ENTAILMENT'),
       findings: [
         {
+          dimension: 'FACTUAL_ENTAILMENT',
           reasonCode: 'UNSUPPORTED_CLAIM',
           severity: 'MAJOR',
           blockSequences: [1],
@@ -261,6 +288,101 @@ describe('narrative review persistence bundles', () => {
       majorFindingCount: 1,
     });
     expect(bundle.findings[0]?.factIds).toBeNull();
+  });
+
+  it('retains one explicit dimension per multi-dimension reason finding', () => {
+    const bundle = buildNarrativeReviewRejectionBundle({
+      ...common(),
+      judgeAudit: audit('JUDGE'),
+      stage: 'JUDGE',
+      failureCode: 'SEMANTIC_REJECTED',
+      dimensions: dimensions('FACTUAL_ENTAILMENT', 'MONEY_DATE_TIME_FIDELITY'),
+      findings: [
+        {
+          dimension: 'FACTUAL_ENTAILMENT',
+          reasonCode: 'DATE_TIME_MISMATCH',
+          severity: 'CRITICAL',
+          blockSequences: [1],
+          factIds: [factId],
+        },
+        {
+          dimension: 'MONEY_DATE_TIME_FIDELITY',
+          reasonCode: 'DATE_TIME_MISMATCH',
+          severity: 'CRITICAL',
+          blockSequences: [1],
+          factIds: [factId],
+        },
+      ],
+    });
+
+    expect(bundle.reviewRun).toMatchObject({
+      factualEntailmentResult: 'FAIL',
+      moneyDateTimeFidelityResult: 'FAIL',
+      failedDimensionCount: 2,
+      findingCount: 2,
+    });
+    expect(bundle.findings.map(({ dimension, reasonCode }) => ({ dimension, reasonCode }))).toEqual(
+      [
+        { dimension: 'FACTUAL_ENTAILMENT', reasonCode: 'DATE_TIME_MISMATCH' },
+        { dimension: 'MONEY_DATE_TIME_FIDELITY', reasonCode: 'DATE_TIME_MISMATCH' },
+      ],
+    );
+  });
+
+  it('rejects any persisted JUDGE map that is not exactly derived from strict findings', () => {
+    const finding = {
+      dimension: 'FACTUAL_ENTAILMENT' as const,
+      reasonCode: 'UNSUPPORTED_CLAIM' as const,
+      severity: 'MAJOR' as const,
+      blockSequences: [1],
+      factIds: [] as string[],
+    };
+    const findingWithRationale = {
+      ...finding,
+      rationale: 'must not cross the strict boundary',
+    };
+    const base = {
+      ...common(),
+      judgeAudit: audit('JUDGE'),
+      stage: 'JUDGE' as const,
+      failureCode: 'SEMANTIC_REJECTED' as const,
+    };
+
+    expect(() =>
+      buildNarrativeReviewRejectionBundle({
+        ...base,
+        dimensions: dimensions(),
+        findings: [finding],
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_REVIEW_PERSISTENCE' }));
+    expect(() =>
+      buildNarrativeReviewRejectionBundle({
+        ...base,
+        dimensions: dimensions('FACTUAL_ENTAILMENT'),
+        findings: [],
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_REVIEW_PERSISTENCE' }));
+    expect(() =>
+      buildNarrativeReviewRejectionBundle({
+        ...base,
+        dimensions: dimensions('REFERENCE_RELEVANCE'),
+        findings: [{ ...finding, dimension: 'REFERENCE_RELEVANCE' }],
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_REVIEW_PERSISTENCE' }));
+    expect(() =>
+      buildNarrativeReviewRejectionBundle({
+        ...base,
+        dimensions: dimensions('FACTUAL_ENTAILMENT'),
+        findings: [{ ...finding, blockSequences: [2, 1] }],
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_REVIEW_PERSISTENCE' }));
+    expect(() =>
+      buildNarrativeReviewRejectionBundle({
+        ...base,
+        dimensions: dimensions('FACTUAL_ENTAILMENT'),
+        findings: [findingWithRationale],
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_REVIEW_PERSISTENCE' }));
   });
 
   it('records a technical GENERATE failure without candidate fingerprints', () => {
@@ -329,6 +451,31 @@ describe('narrative review persistence bundles', () => {
     });
   });
 
+  it("rejects publishing candidate B under candidate A's judged narrative fingerprint", () => {
+    const candidateB: OptionNarrativeOutput = {
+      ...narrativeOutput,
+      blocks: [
+        {
+          ...narrativeOutput.blocks[0]!,
+          text: 'Different locally validated candidate B.',
+        },
+      ],
+    };
+    const candidateBWithForgedFingerprint = {
+      ...narrativeBundle(candidateB),
+      narrativeFingerprint,
+    };
+
+    expect(() =>
+      buildNarrativeReviewPublicationBundle({
+        ...common(),
+        judgeAudit: audit('JUDGE'),
+        dimensions: dimensions(),
+        narrativeBundle: candidateBWithForgedFingerprint,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_REVIEW_PERSISTENCE' }));
+  });
+
   it('rejects invalid publication/rejection state combinations before persistence', () => {
     expect(() =>
       buildNarrativeReviewPublicationBundle({
@@ -354,6 +501,7 @@ describe('narrative review persistence bundles', () => {
         dimensions: dimensions('FACTUAL_ENTAILMENT'),
         findings: [
           {
+            dimension: 'FACTUAL_ENTAILMENT',
             reasonCode: 'UNSUPPORTED_CLAIM',
             severity: 'CRITICAL',
             blockSequences: [1],

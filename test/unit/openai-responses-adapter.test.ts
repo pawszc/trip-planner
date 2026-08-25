@@ -31,7 +31,7 @@ import {
   resolveNarrativeQualityDataset,
 } from '../../srv/evals/dataset.js';
 import { prepareNarrativeQualityLiveEvalPlan } from '../../srv/evals/live-plan.js';
-import { resolveSyntheticNarrativeQualityFixture } from '../../srv/evals/synthetic-fixtures.js';
+import { resolveSyntheticNarrativeQualityFixture } from '../../srv/evals/synthetic-fixtures-v2.js';
 
 const validOutput: LiveSmokeOutput = {
   ok: true,
@@ -510,7 +510,7 @@ describe('official OpenAI SDK transport', () => {
     let fetchCalls = 0;
     const adapter = new OpenAiResponsesAdapter(
       config({ AI_MAX_RETRIES: '0' }),
-      sdkFactoryFor(completedP01Payload(JSON.stringify(output)), () => {
+      sdkFactoryFor(completedP01Payload(JSON.stringify({ findings: [] })), () => {
         fetchCalls += 1;
       }),
     );
@@ -528,14 +528,9 @@ describe('official OpenAI SDK transport', () => {
 
   it('classifies exact P01 post-response parser and binding failures with complete evidence', async () => {
     const descriptor = exactP01Descriptor();
-    const allPass = exactP01AllPassOutput();
-    const failedFactual = {
-      ...allPass,
-      dimensions: allPass.dimensions.map((result) =>
-        result.dimension === 'FACTUAL_ENTAILMENT' ? { ...result, status: 'FAIL' as const } : result,
-      ),
-    };
+    const allPass = { findings: [] };
     const validFinding = {
+      dimension: 'FACTUAL_ENTAILMENT' as const,
       reasonCode: 'UNSUPPORTED_CLAIM' as const,
       severity: 'MAJOR' as const,
       blockSequences: [1],
@@ -560,37 +555,33 @@ describe('official OpenAI SDK transport', () => {
       {
         name: 'quality fingerprint',
         outputText: JSON.stringify({ ...allPass, qualityContextFingerprint: 'f'.repeat(64) }),
-        stage: 'CONTEXT_BINDING',
+        stage: 'TRANSPORT_SCHEMA_VALIDATION',
       },
       {
         name: 'narrative fingerprint',
         outputText: JSON.stringify({ ...allPass, narrativeFingerprint: 'e'.repeat(64) }),
-        stage: 'CONTEXT_BINDING',
+        stage: 'TRANSPORT_SCHEMA_VALIDATION',
       },
       {
         name: 'missing dimension',
-        outputText: JSON.stringify({ ...allPass, dimensions: allPass.dimensions.slice(0, 7) }),
-        stage: 'DIMENSION_BINDING',
+        outputText: JSON.stringify({ ...allPass, dimensions: [] }),
+        stage: 'TRANSPORT_SCHEMA_VALIDATION',
       },
       {
         name: 'duplicate dimension',
+        outputText: JSON.stringify({ ...allPass, dimensionStatuses: [] }),
+        stage: 'TRANSPORT_SCHEMA_VALIDATION',
+      },
+      {
+        name: 'reason-to-dimension',
         outputText: JSON.stringify({
-          ...allPass,
-          dimensions: allPass.dimensions.map((result, index) =>
-            index === 7 ? { ...result, dimension: 'FACTUAL_ENTAILMENT' } : result,
-          ),
+          findings: [{ ...validFinding, dimension: 'REFERENCE_RELEVANCE' }],
         }),
         stage: 'DIMENSION_BINDING',
       },
       {
-        name: 'reason-to-dimension',
-        outputText: JSON.stringify({ ...allPass, findings: [validFinding] }),
-        stage: 'FINDING_BINDING',
-      },
-      {
         name: 'reason severity',
         outputText: JSON.stringify({
-          ...failedFactual,
           findings: [{ ...validFinding, severity: 'CRITICAL' }],
         }),
         stage: 'FINDING_BINDING',
@@ -598,7 +589,6 @@ describe('official OpenAI SDK transport', () => {
       {
         name: 'context fact ID',
         outputText: JSON.stringify({
-          ...failedFactual,
           findings: [{ ...validFinding, factIds: [`fact_${'f'.repeat(64)}`] }],
         }),
         stage: 'FINDING_BINDING',
@@ -606,7 +596,6 @@ describe('official OpenAI SDK transport', () => {
       {
         name: 'context block sequence',
         outputText: JSON.stringify({
-          ...failedFactual,
           findings: [{ ...validFinding, blockSequences: [2] }],
         }),
         stage: 'FINDING_BINDING',
@@ -614,7 +603,6 @@ describe('official OpenAI SDK transport', () => {
       {
         name: 'unknown reason enum',
         outputText: JSON.stringify({
-          ...failedFactual,
           findings: [{ ...validFinding, reasonCode: 'FREE_FORM_REASON' }],
         }),
         stage: 'TRANSPORT_SCHEMA_VALIDATION',
@@ -622,7 +610,6 @@ describe('official OpenAI SDK transport', () => {
       {
         name: 'unknown severity enum',
         outputText: JSON.stringify({
-          ...failedFactual,
           findings: [{ ...validFinding, severity: 'WARNING' }],
         }),
         stage: 'TRANSPORT_SCHEMA_VALIDATION',
@@ -630,7 +617,6 @@ describe('official OpenAI SDK transport', () => {
       {
         name: 'invalid fact ID shape',
         outputText: JSON.stringify({
-          ...failedFactual,
           findings: [{ ...validFinding, factIds: ['fact_invalid'] }],
         }),
         stage: 'TRANSPORT_SCHEMA_VALIDATION',

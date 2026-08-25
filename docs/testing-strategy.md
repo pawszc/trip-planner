@@ -47,14 +47,19 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   brakujących, pustych, obcych, nieaktualnych, powtórzonych lub częściowo błędnych referencji;
 - deterministic `narrative-model-view-v1`, usunięcie raw URL/external ID, HTML, znaków
   control/bidi i secret-shaped values, opaque provenance keys wyprowadzane wyłącznie z
-  bezpiecznych `factId`, pełnoserializacyjne sentinel regression dla wejść `GENERATE` i
-  `JUDGE` oraz zachowanie dozwolonych faktów i canonical fingerprint/size/immutability;
-- `narrative-quality-context-v1`, exact constraint snapshot, candidate/model/grounded
+  bezpiecznych `factId` oraz zachowanie pełnego lokalnego/JUDGE-safe kontraktu;
+- deterministic `narrative-generation-view-v1`: tylko fakty `KNOWN`, brak provenance,
+  `UNKNOWN`/`MISSING`, source URLs/keys/provider/external IDs, exact canonical
+  fingerprint/size/immutability i pełnoserializacyjne privacy sentinels;
+- provider GENERATE `{blocks}` only, limit 6, code-owned context fingerprint, exact fixture,
+  cached, combined i no-op disclosures, zbiorczy `UNKNOWN`/`MISSING` block, stable order,
+  final limit 8 oraz fail-closed ambiguity/tamper/restricted-reference tests;
+- `narrative-quality-context-v2`, exact constraint snapshot, candidate/model/grounded
   fingerprints oraz kompletne version bindings;
-- strict `JUDGE` input/output: pełny strukturalny rubric contract z exact version i
-  fingerprintem, dokładnie osiem wymiarów, definicje `PASS`/`FAIL`, pełne mapowanie reason
-  → dimensions/severity, istniejące block/fact references, spójność findings z wymiarami i
-  odrzucenie niepełnej/zmienionej rubryki, unknown fields lub mismatched fingerprints;
+- strict `JUDGE` input/output: pełny strukturalny rubric v2 z exact version/fingerprint,
+  provider `{findings}` only bez fingerprintów/status array, zamknięte reason/dimension/
+  severity, existing block/fact references, duplicate-finding rejection, code-owned exact
+  fingerprints oraz osiem statuses wyprowadzanych z findings;
 - safety precheck dla URL/Markdown/HTML/script/event handlers/control/bidi, inline,
   full/collapsed/image reference-style links, definitions z title/whitespace, autolinks,
   excluded values i money format oraz bezpieczne przypadki, których nie wolno overblockować;
@@ -79,7 +84,8 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   brak candidate/raw content w internal review metadata;
 - exact P01 offline proof przez oficjalny OpenAI SDK, prawdziwy request/context/schema i
   kontrolowany fake fetch z sentinelem liczby wywołań;
-- canonical diff starego provider-visible P01 schema i statycznego transport schema v2;
+- provider schema audit dowodzący, że JUDGE v3 zawiera tylko closed findings, oraz osobny
+  local binding audit dla fingerprints i derived statuses;
 - atomowy mapper `NarrativeRuns`/`OptionNarratives`/`NarrativeFactReferences` z walidacją
   dokładnego audytu AI oraz historycznym scalar `NarrativeRuns.aiRunId`;
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
@@ -189,7 +195,7 @@ requestu.
 
 ## Offline narrative-quality contract replay
 
-Frozen `narrative-quality-v1` zawiera dokładnie 32 synthetic semantic cases — 12
+Aktualny `narrative-quality-v2` (przy zachowanym, niezmienionym v1) zawiera dokładnie 32 synthetic semantic cases — 12
 `PUBLISH`, 20 `REJECT`, w tym 18 critical — oraz cztery synthetic end-to-end contexts.
 Loader waliduje schema, stable IDs/fact keys, labels, reason codes, dimensions, membership i
 literalny canonical fingerprint. `npm run eval:schema:check` najpierw porównuje canonical
@@ -205,10 +211,10 @@ w raporcie; all-`PASS` `JUDGE` nie może zamaskować property failure. Nazwa
 persistence, atomowość i linkage dowodzi osobny test produkcyjnych writerów na CAP/SQLite.
 
 Golden stage jest także kontraktem granicy: tylko format/safety cases R09 i R20 są
-`PRECHECK`; wrong/new money, calculation i `UNKNOWN` fill (R07/R08/R10) dochodzą do
-`JUDGE`. Test regresyjny ma chronić tę granicę, szczególnie sentinel R07/R10. Ewentualna
-szersza interpretacja exact-money precheck jest punktem review, nie pretekstem do zmiany
-frozen labels.
+`PRECHECK`; wrong/new money, calculation i semantic authored `UNKNOWN` fill
+(R07/R08/R10) dochodzą do `JUDGE`. Produktowy GENERATE nie otrzymuje non-`KNOWN` facts i
+ma code-owned limitation block, ale semantic dataset nadal mierzy JUDGE na historycznie
+zaakceptowanych stage labels. Test regresyjny chroni oba rozdzielone kontrakty.
 
 ## Manualny smoke i finalny live baseline AI
 
@@ -227,16 +233,16 @@ Finalny live baseline jest osobną ścieżką od smoke. Wymaga
 `AI_LIVE_EVAL_ENABLED=true`, istniejącego gateway opt-in, credentiali, znanych
 wersjonowanych cen i osobnej zgody na dokładny plan. Preflight oraz sequential reservation
 guard egzekwują maksymalnie 48 logical calls, 56 attempts i USD 3.00 przed każdym call.
-Plan v1 ma dokładnie 46 calls i wymaga `AI_MAX_RETRIES=0`. Osobny
+Plan v2 ma dokładnie 46 calls i wymaga `AI_MAX_RETRIES=0`. Osobny
 `npm run eval:live:preflight` działa bez opt-inów i credentiali, nie konstruuje executora,
 adaptera, gatewaya ani bazy oraz używa tej samej czystej logiki planu i kosztu. Oficjalny
 snapshot cen z 2026-08-21 oraz integer-only cost engine dają dla zaakceptowanego runtime
-`OPENAI / gpt-5.6-luna / low / 2048` ceiling 1,185,201 USD micros: 401,101 dla
-`GENERATE` i 784,100 dla `JUDGE`. Zapas do capu USD 3.00 wynosi 1,814,799 USD micros,
+`OPENAI / gpt-5.6-luna / low / 2048` ceiling 1,171,326 USD micros: 346,331 dla
+`GENERATE` i 824,995 dla `JUDGE`. Zapas do capu USD 3.00 wynosi 1,828,674 USD micros,
 a workload fingerprint to
-`2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b`.
+`9c0550fb56ef2c23ece3b0be6b4c2f1b0d767426ccbf25e3a5260cf7ffe0cca1`.
 `gpt-5.6-terra / low / 2048` pozostaje wyłącznie scenariuszem porównawczym i z ceiling
-8,241,209 USD micros jest blokowany przez niezmieniony cap. Nie jest to ścieżka fallbacku.
+8,595,433 USD micros jest blokowany przez niezmieniony cap. Nie jest to ścieżka fallbacku.
 Preflight nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI.
 
 Trzy osobno autoryzowane one-shot runy zatrzymały się fail-closed bez rerunu. Run z

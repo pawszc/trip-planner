@@ -1,6 +1,6 @@
 # Przepływ AI
 
-## Stan Fazy 3B3 (`REVIEW — THREE LIVE BASELINES STOPPED SAFELY / PARSE-EVIDENCE FIX IN REVIEW`)
+## Stan Fazy 3B3 (`REVIEW — CONTRACT-V2 HARDENED OFFLINE / NO NEW LIVE BASELINE`)
 
 Faza 3B3 rozszerza pierwszy jawny use case produktu, bound action
 `RankedOptions.generateNarrative()`, o fail-closed bramkę jakości. Akcja opisuje pojedynczą
@@ -82,33 +82,41 @@ durable `FAILED` linkage, a report i wszystkie validity gates pozostają fail-cl
 3. Każdy fakt otrzymuje deterministyczny `factId` związany z wersją i dokładnym
    fingerprintem kontekstu. Kod tworzy też display pieniędzy przez zamknięty dwucyfrowy
    kontrakt PLN/EUR; model nie dzieli ani nie formatuje kwot.
-4. Kod tworzy `narrative-model-view-v1`. Zachowuje fakty potrzebne modelowi, provenance
-   status, display, fact IDs i lineage, ale usuwa raw URL-e, external IDs, HTML, znaki
-   kontrolne oraz zbędne provider-shaped wartości. Klucze provenance zmienia na
-   deterministyczne, wersjonowane opaque keys wyprowadzane tylko z bezpiecznego `factId`,
-   bez użycia `sourceKey`, provider identity, URL, external ID lub source contexts. Model
-   view wiąże fingerprint pełnego kontekstu z własnym canonical fingerprintem.
+4. Kod tworzy pełny lokalny `narrative-model-view-v1`, a z niego osobny
+   `narrative-generation-view-v1`. Provider `GENERATE` widzi wyłącznie safe rank/role i fakty
+   `KNOWN`, które wolno opisywać. Nie widzi provenance, `UNKNOWN`/`MISSING`, raw URL-i,
+   provider/source identity, external IDs ani source keys. Projekcja jest kanoniczna,
+   fingerprinted, size-bounded i walidowana względem exact grounded context.
 5. Gateway wybiera wyłącznie profil `GENERATE`, zapisuje durable `STARTED`, wykonuje call
-   bez transakcji produktu i zapisuje terminalny audit. Strict Zod wymaga dokładnego
-   grounded fingerprintu i niepustych `factReferences`; lokalna walidacja odrzuca cały
-   niezgodny output.
-6. Deterministyczny precheck blokuje formatowe i syntaktyczne przypadki bezpieczeństwa,
+   bez transakcji produktu i zapisuje terminalny audit. Provider transport zawiera tylko
+   `blocks` (maksymalnie sześć), bez fingerprintu i mandatory disclosures. Lokalny binder
+   odrzuca restricted references/prose. Money, date/time i pozostałe tokeny liczbowe muszą
+   pochodzić dokładnie z cytowanego faktu `KNOWN`; raw minor units nie są narratable values.
+   Zamknięty katalog EN/PL rezerwuje dla kodu source freshness oraz non-`KNOWN` category
+   language. Binder wstrzykuje exact context fingerprint i dokłada w stałej kolejności
+   najwyżej dwa code-owned bloki `RISK`: provenance/freshness, potem `UNKNOWN`/`MISSING`.
+   Finalny kontrakt ma maksymalnie osiem bloków i jest walidowany jeszcze raz bez
+   przepisywania provider prose.
+6. Deterministyczny precheck weryfikuje również exact provider-prefix/deterministic-tail
+   finalization i blokuje formatowe i syntaktyczne przypadki bezpieczeństwa,
    zanim powstanie płatny `JUDGE`: URL/Markdown (w tym reference-style definitions,
    full/collapsed/image references i autolinks), HTML/script/event handlers, control/bidi,
-   wykluczone wartości i mechanicznie wykrywalny niedozwolony reformat pieniędzy. Precheck
-   reject wykonuje zero `JUDGE` calls i zapisuje wyłącznie safe review metadata.
-7. Semantyczna niezgodność kwoty, nowe obliczenie i uzupełnienie `UNKNOWN` nie są
-   rozstrzygane heurystyką prechecku. Frozen dataset przypisuje je do `JUDGE`, więc trafiają
-   wraz z kandydatem, exact constraints, fingerprints i wersjami do
-   `narrative-quality-context-v1`.
+   wykluczone wartości, uncited/reformatted money/date/time/number claims i provider-owned
+   disclosures. Production/E2E entry point wymaga exact `generationView`; brak tego dowodu
+   jest fail-closed. Frozen authored JUDGE-stage cases używają jawnie nazwanej, eval-only
+   ścieżki content-safety bez udawania finalizacji GENERATE. Precheck reject wykonuje zero
+   `JUDGE` calls i zapisuje wyłącznie safe review metadata.
+7. Provider nie może uzupełnić `UNKNOWN`/`MISSING`: tych faktów nie ma w generation view,
+   ich zamknięte kategorie są lokalnie zastrzeżone, a exact limitation block tworzy kod.
+   Uncited liczba lub zmieniony display również kończy się przed `JUDGE`. Pełny zaakceptowany
+   kandydat, constraints, fingerprints i wersje trafiają do `narrative-quality-context-v2`.
 8. Gateway wykonuje dokładnie jeden profil `JUDGE` z własnym durable lifecycle. Strict
-   wejście zawiera pełny golden-compatible rubric contract, exact rubric version,
-   `rubricFingerprint`, `qualityContextFingerprint` i `narrativeFingerprint`. Validator
-   wymaga wszystkich ośmiu wymiarów dokładnie raz, zamkniętych reason codes/severity,
-   istniejących block/fact references i exact fingerprintów. Model nie definiuje własnej
-   rubryki i nie zwraca wiążącego overall verdict ani persistowalnego rationale.
-9. Kod wylicza decyzję: osiem `PASS` i zero findings daje `PUBLISH`; każdy `FAIL` albo
-   finding daje `REJECT`. Semantic reject utrwala bezpieczne review metadata w osobnej
+   wejście zawiera pełny golden-compatible rubric v2 i exact local binding. Provider zwraca
+   tylko zamknięte findings: dimension, reason code, severity, istniejące block sequences i
+   in-context fact IDs. Nie zwraca fingerprintów, tablicy statuses, verdictu ani rationale.
+   Kod wstrzykuje exact quality/narrative fingerprints i wyprowadza osiem statuses z findings.
+9. Kod wylicza decyzję: zero findings daje osiem `PASS` i `PUBLISH`; każdy finding daje
+   `FAIL` w nazwanym wymiarze i `REJECT`. Semantic reject utrwala bezpieczne review metadata w osobnej
    krótkiej transakcji, bez tekstu kandydata i bez rekordów produktu narracji.
 10. Dla `PUBLISH` writer wymaga exact terminalnych `SUCCEEDED` obu audytów, po czym jedna
     krótka transakcja atomowo zapisuje review, `NarrativeRuns`, `OptionNarratives` i
@@ -146,8 +154,9 @@ prób i 45,732 USD micros. Trzeci osobno autoryzowany one-shot baseline z source
 `abf0f4b258c5950381e597b0192580527d71953f` zatrzymał się na `P01 / JUDGE / 1/46` z
 `INVALID_STRUCTURED_OUTPUT`, jednym `FAILED` `AiRun` i niepełnym accountingiem; zero known
 attempts/cost było tylko settled subtotalem. W żadnym runie nie powstał report ani accepted
-manifest i nie było rerunu. Corrective offline Draft PR podnosi JUDGE schema v2, execution v2,
-failure accounting v3, report v2 i accepted manifest v2; dataset, prompt, rubryka, publication
-policy, profile Luna/low/2048, zero retry i caps pozostają zamrożone. Wykonuje zero provider
-calls za USD 0. AI pozostaje wyłączone, faza pozostaje w `REVIEW`, a kolejny baseline wymaga
-nowej zgody.
+manifest i nie było rerunu. Późniejszy contract-v2 hardening wprowadza dataset/fixture v2,
+generation view v1, code-owned finalization, JUDGE findings-only schema v3, rubric v2,
+quality-context v2, report/manifest v3 oraz live plan/execution v2/v3. Failure accounting v3,
+profile Luna/low/2048, GENERATE profile, zero retry i hard caps pozostają bez zmian. Ta zmiana
+wykonuje zero provider calls za USD 0 i nie tworzy accepted manifestu. AI pozostaje wyłączone,
+faza pozostaje w `REVIEW`, a kolejny baseline wymaga nowej zgody.

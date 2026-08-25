@@ -4,7 +4,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { AiGateway } from '../../srv/ai/ai-gateway.ts';
 import { loadAiConfig } from '../../srv/ai/config.ts';
 import { createPersistentAiGateway } from '../../srv/ai/create-persistent-ai-gateway.ts';
-import { AiProvider, AiTaskType, createInputFingerprint } from '../../srv/ai/contracts.ts';
+import {
+  AiProvider,
+  AiTaskType,
+  createInputFingerprint,
+  validateStructuredAiOutput,
+} from '../../srv/ai/contracts.ts';
 import type {
   AiCallResult,
   AiExecutionProfile,
@@ -18,7 +23,10 @@ import { CURRENCY_CONTRACT_VERSION } from '../../srv/domain/currency.ts';
 import { createMoney, isKnownMoney } from '../../srv/domain/money.ts';
 import type { PersistedTripRequest } from '../../srv/mapping/trip-request-mapper.ts';
 import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
-import { NARRATIVE_JUDGE_DIMENSIONS } from '../../srv/narratives/narrative-judge.ts';
+import {
+  OPTION_NARRATIVE_PROMPT_VERSION,
+  OPTION_NARRATIVE_SCHEMA_VERSION,
+} from '../../srv/narratives/option-narrative.ts';
 import {
   createLegacyPlanningFingerprintV0,
   createPlanningContext,
@@ -198,6 +206,21 @@ async function readAiRunIndependently(ID: string): Promise<PersistedAiRun | unde
   ) as Promise<PersistedAiRun | undefined>;
 }
 
+function bindOfflineProviderOutput<TOutput>(
+  request: StructuredAiRequest<TOutput>,
+  providerOutput: unknown,
+): TOutput {
+  const validation = validateStructuredAiOutput(request, providerOutput);
+  if (!validation.success) {
+    throw new AiError(
+      'INVALID_STRUCTURED_OUTPUT',
+      'Offline provider output failed controlled local validation.',
+      { details: { validationFailureStage: validation.validationFailureStage } },
+    );
+  }
+  return validation.output;
+}
+
 class OfflineNarrativeAdapter implements StructuredAiAdapter {
   readonly provider = AiProvider.ANTHROPIC;
   private readonly observation: NarrativeObservation;
@@ -236,15 +259,7 @@ class OfflineNarrativeAdapter implements StructuredAiAdapter {
       ) {
         throw new Error('Offline adapter received no quality context.');
       }
-      output = {
-        qualityContextFingerprint: input.fingerprint,
-        narrativeFingerprint: input.narrativeFingerprint,
-        dimensions: NARRATIVE_JUDGE_DIMENSIONS.map((dimension) => ({
-          dimension,
-          status: 'PASS',
-        })),
-        findings: [],
-      };
+      output = bindOfflineProviderOutput(request, { findings: [] });
     } else {
       const grounded = readRequestFacts(request);
       this.observation.requestFactIds = grounded.factIds;
@@ -252,7 +267,6 @@ class OfflineNarrativeAdapter implements StructuredAiAdapter {
       output =
         this.mode === 'INVALID_REFERENCE'
           ? {
-              contextFingerprint: grounded.fingerprint,
               blocks: [
                 {
                   kind: 'SUMMARY',
@@ -262,33 +276,20 @@ class OfflineNarrativeAdapter implements StructuredAiAdapter {
               ],
             }
           : {
-              contextFingerprint: grounded.fingerprint,
               blocks: [
                 {
                   kind: 'SUMMARY',
                   text: 'Praga jest opcją wybraną przez deterministyczny pipeline.',
                   factReferences: [grounded.factIds[0]],
                 },
-                {
-                  kind: 'RISK',
-                  text: 'Dane oferty są demonstracyjnym fixture, a nie bieżącą dostępnością.',
-                  factReferences: [grounded.factIds.at(-1)],
-                },
               ],
             };
-    }
-    const validation = request.outputSchema.safeParse(output);
-    if (!validation.success) {
-      throw new AiError(
-        'INVALID_STRUCTURED_OUTPUT',
-        'Offline provider output failed the request schema.',
-        { provider: this.provider, model: profile.model },
-      );
+      output = bindOfflineProviderOutput(request, output);
     }
 
     return {
       aiRunId: request.aiRunId!,
-      output: validation.data,
+      output: output as TOutput,
       provider: this.provider,
       configuredModel: profile.model,
       responseModel: 'claude-sonnet-5-offline-snapshot',
@@ -340,19 +341,10 @@ function createMismatchedAuditGateway(): { gateway: AiGateway; aiRunId: string }
         ) {
           throw new Error('Fake gateway received no quality context.');
         }
-        output = request.outputSchema.parse({
-          qualityContextFingerprint: input.fingerprint,
-          narrativeFingerprint: input.narrativeFingerprint,
-          dimensions: NARRATIVE_JUDGE_DIMENSIONS.map((dimension) => ({
-            dimension,
-            status: 'PASS',
-          })),
-          findings: [],
-        });
+        output = bindOfflineProviderOutput(request, { findings: [] });
       } else {
         const grounded = readRequestFacts(request);
-        output = request.outputSchema.parse({
-          contextFingerprint: grounded.fingerprint,
+        output = bindOfflineProviderOutput(request, {
           blocks: [
             {
               kind: 'SUMMARY',
@@ -408,18 +400,18 @@ function createInvalidPersistenceGateway(): AiGateway {
   return {
     async call<TOutput>(request: StructuredAiRequest<TOutput>): Promise<AiCallResult<TOutput>> {
       const grounded = readRequestFacts(request);
+      const output = bindOfflineProviderOutput(request, {
+        blocks: [
+          {
+            kind: 'SUMMARY',
+            text: 'Valid structured output with an invalid persistence identifier.',
+            factReferences: [grounded.factIds[0]],
+          },
+        ],
+      });
       return {
         aiRunId: 'not-a-valid-ai-run-uuid',
-        output: request.outputSchema.parse({
-          contextFingerprint: grounded.fingerprint,
-          blocks: [
-            {
-              kind: 'SUMMARY',
-              text: 'Valid structured output with an invalid persistence identifier.',
-              factReferences: [grounded.factIds[0]],
-            },
-          ],
-        }),
+        output,
         provider: AiProvider.ANTHROPIC,
         configuredModel: 'claude-sonnet-5',
         responseModel: 'claude-sonnet-5-fake-snapshot',
@@ -906,16 +898,31 @@ describe('grounded option narrative CAP use case', () => {
       aiRunId: observation.aiRunId,
       status: 'SUCCEEDED',
       contextVersion: 'grounded-option-context-v1',
-      promptVersion: 'grounded-option-narrative-prompt-v2',
-      schemaVersion: 'grounded-option-narrative-schema-v1',
+      promptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
+      schemaVersion: OPTION_NARRATIVE_SCHEMA_VERSION,
       blockCount: 2,
     });
     expect(narrativeRun.contextFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(blocks).toHaveLength(2);
     expect(blocks.every((block) => block.narrativeRun_ID === narrativeRun.ID)).toBe(true);
-    expect(references).toHaveLength(2);
+    expect(references.length).toBeGreaterThanOrEqual(2);
+    const providerBlockReferences = references.filter(
+      (reference) => reference.optionNarrative_ID === blocks[0]!.ID,
+    );
+    const deterministicBlockReferences = references.filter(
+      (reference) => reference.optionNarrative_ID === blocks[1]!.ID,
+    );
+    expect(providerBlockReferences).toHaveLength(1);
     expect(
-      references.every((reference) => observation.requestFactIds?.includes(reference.factId)),
+      providerBlockReferences.every((reference) =>
+        observation.requestFactIds?.includes(reference.factId),
+      ),
+    ).toBe(true);
+    expect(deterministicBlockReferences.length).toBeGreaterThan(0);
+    expect(
+      deterministicBlockReferences.every(
+        (reference) => !observation.requestFactIds?.includes(reference.factId),
+      ),
     ).toBe(true);
     expect(aiRun).toMatchObject({
       ID: narrativeRun.aiRunId,
@@ -964,7 +971,7 @@ describe('grounded option narrative CAP use case', () => {
       blockCount: blocks.length,
     });
     expect(blocks).toHaveLength(2);
-    expect(references).toHaveLength(2);
+    expect(references.length).toBeGreaterThanOrEqual(2);
     expect(
       references.every(
         (reference) =>

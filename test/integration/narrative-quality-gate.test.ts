@@ -8,6 +8,7 @@ import {
   AiProvider,
   AiTaskType,
   createInputFingerprint,
+  validateStructuredAiOutput,
   type AiCallResult,
   type AiExecutionProfile,
   type StructuredAiAdapter,
@@ -22,7 +23,8 @@ import type {
   AiRunSucceededUpdate,
 } from '../../srv/ai/persistence/ai-run-store.ts';
 import type { AiOperationalSignalSink, AiPreStartFailureSignal } from '../../srv/ai/telemetry.ts';
-import { NARRATIVE_JUDGE_DIMENSIONS } from '../../srv/narratives/narrative-judge.ts';
+import { NARRATIVE_FINALIZATION_VERSION } from '../../srv/narratives/narrative-finalization.ts';
+import { NARRATIVE_GENERATION_VIEW_VERSION } from '../../srv/narratives/narrative-generation-view.ts';
 import { NARRATIVE_MODEL_VIEW_VERSION } from '../../srv/narratives/narrative-model-view.ts';
 import { NARRATIVE_QUALITY_RUBRIC_FINGERPRINT } from '../../srv/narratives/narrative-quality-rubric.ts';
 import {
@@ -56,7 +58,8 @@ const test = cds.test('serve', 'all', '--from', 'db,srv', '--in-memory').in(proc
 const { GET, POST } = test;
 
 const PUBLISHED_SUMMARY = 'The option is described from the exact deterministic planning facts.';
-const PUBLISHED_RISK = 'The source snapshots are demonstration data, not current availability.';
+const PUBLISHED_RISK =
+  'Source disclosure: this option uses demonstrative fixture/test data and is not a current live offer.';
 const forceRollbackHeader = 'x-test-force-quality-gate-rollback';
 const RAW_STARTED_ERROR_SENTINEL = 'RAW_STARTED_ERROR_SENTINEL must never be emitted';
 
@@ -64,6 +67,7 @@ type Scenario =
   | 'PUBLISH'
   | 'PRECHECK_REJECT'
   | 'SEMANTIC_REJECT'
+  | 'MULTI_DIMENSION_SEMANTIC_REJECT'
   | 'INVALID_JUDGE_OUTPUT'
   | 'MODEL_REFUSAL'
   | 'AI_TIMEOUT'
@@ -86,7 +90,7 @@ interface PlannedOption {
   readonly rankedOptionId: string;
 }
 
-interface ModelViewInput {
+interface GenerationViewInput {
   readonly groundedContextFingerprint: string;
   readonly facts: readonly { readonly factId: string }[];
 }
@@ -103,7 +107,7 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null;
 }
 
-function requireModelView(input: unknown): ModelViewInput {
+function requireGenerationView(input: unknown): GenerationViewInput {
   if (
     !isRecord(input) ||
     typeof input.groundedContextFingerprint !== 'string' ||
@@ -111,9 +115,9 @@ function requireModelView(input: unknown): ModelViewInput {
     input.facts.length < 2 ||
     !input.facts.every((fact) => isRecord(fact) && typeof fact.factId === 'string')
   ) {
-    throw new Error('Offline GENERATE adapter received no valid narrative model view.');
+    throw new Error('Offline GENERATE adapter received no valid narrative generation view.');
   }
-  return input as unknown as ModelViewInput;
+  return input as unknown as GenerationViewInput;
 }
 
 function requireQualityContext(input: unknown): QualityContextInput {
@@ -131,6 +135,21 @@ function judgeFailure(scenario: Scenario): AiErrorCode | undefined {
   return ['MODEL_REFUSAL', 'AI_TIMEOUT', 'PROVIDER_UNAVAILABLE'].includes(scenario)
     ? (scenario as AiErrorCode)
     : undefined;
+}
+
+function bindOfflineProviderOutput<TOutput>(
+  request: StructuredAiRequest<TOutput>,
+  providerOutput: unknown,
+): TOutput {
+  const validation = validateStructuredAiOutput(request, providerOutput);
+  if (!validation.success) {
+    throw new AiError(
+      'INVALID_STRUCTURED_OUTPUT',
+      'Offline provider output failed controlled local validation.',
+      { details: { validationFailureStage: validation.validationFailureStage } },
+    );
+  }
+  return validation.output;
 }
 
 class OfflineQualityGateAdapter implements StructuredAiAdapter {
@@ -170,11 +189,9 @@ class OfflineQualityGateAdapter implements StructuredAiAdapter {
 
     let output: TOutput;
     if (request.taskType === AiTaskType.GENERATE) {
-      const modelView = requireModelView(request.input);
-      const firstFactId = modelView.facts[0]!.factId;
-      const lastFactId = modelView.facts.at(-1)!.factId;
-      output = request.outputSchema.parse({
-        contextFingerprint: modelView.groundedContextFingerprint,
+      const generationView = requireGenerationView(request.input);
+      const firstFactId = generationView.facts[0]!.factId;
+      output = bindOfflineProviderOutput(request, {
         blocks:
           this.scenario === 'PRECHECK_REJECT'
             ? [
@@ -190,45 +207,46 @@ class OfflineQualityGateAdapter implements StructuredAiAdapter {
                   text: PUBLISHED_SUMMARY,
                   factReferences: [firstFactId],
                 },
-                {
-                  kind: 'RISK',
-                  text: PUBLISHED_RISK,
-                  factReferences: [lastFactId],
-                },
               ],
       });
     } else {
-      const qualityContext = requireQualityContext(request.input);
-      const dimensions = NARRATIVE_JUDGE_DIMENSIONS.map((dimension) => ({
-        dimension,
-        status:
-          this.scenario === 'SEMANTIC_REJECT' && dimension === 'FACTUAL_ENTAILMENT'
-            ? 'FAIL'
-            : 'PASS',
-      }));
+      requireQualityContext(request.input);
       const candidate = {
-        qualityContextFingerprint: qualityContext.fingerprint,
-        narrativeFingerprint: qualityContext.narrativeFingerprint,
-        dimensions:
-          this.scenario === 'INVALID_JUDGE_OUTPUT'
-            ? dimensions.slice(0, NARRATIVE_JUDGE_DIMENSIONS.length - 1)
-            : dimensions,
         findings:
           this.scenario === 'SEMANTIC_REJECT'
             ? [
                 {
+                  dimension: 'FACTUAL_ENTAILMENT',
                   reasonCode: 'UNSUPPORTED_CLAIM',
                   severity: 'MAJOR',
                   blockSequences: [1],
                   factIds: [],
                 },
               ]
-            : [],
+            : this.scenario === 'MULTI_DIMENSION_SEMANTIC_REJECT'
+              ? [
+                  {
+                    dimension: 'FACTUAL_ENTAILMENT',
+                    reasonCode: 'DATE_TIME_MISMATCH',
+                    severity: 'CRITICAL',
+                    blockSequences: [1],
+                    factIds: [],
+                  },
+                  {
+                    dimension: 'MONEY_DATE_TIME_FIDELITY',
+                    reasonCode: 'DATE_TIME_MISMATCH',
+                    severity: 'CRITICAL',
+                    blockSequences: [1],
+                    factIds: [],
+                  },
+                ]
+              : [],
+        ...(this.scenario === 'INVALID_JUDGE_OUTPUT' ? { dimensions: [] } : {}),
       };
       output =
         this.scenario === 'INVALID_JUDGE_OUTPUT'
           ? (candidate as unknown as TOutput)
-          : request.outputSchema.parse(candidate);
+          : bindOfflineProviderOutput(request, candidate);
     }
 
     return {
@@ -357,6 +375,8 @@ function expectFullVersionEvidence(row: Readonly<Record<string, unknown>>): void
   expect(row).toMatchObject({
     contextVersion: 'grounded-option-context-v1',
     modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
+    generationViewVersion: NARRATIVE_GENERATION_VIEW_VERSION,
+    finalizationVersion: NARRATIVE_FINALIZATION_VERSION,
     qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
     constraintSnapshotVersion: NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
     safetyPrecheckVersion: NARRATIVE_SAFETY_PRECHECK_VERSION,
@@ -527,7 +547,7 @@ describe('Phase 3B3 narrative quality gate runtime', () => {
       generateSchemaVersion: narrative.schemaVersion,
     });
     expect(blocks.map((block) => block.text)).toEqual([PUBLISHED_SUMMARY, PUBLISHED_RISK]);
-    expect(references).toHaveLength(2);
+    expect(references.length).toBeGreaterThanOrEqual(2);
     expect(
       references.every(
         (reference) =>
@@ -578,6 +598,7 @@ describe('Phase 3B3 narrative quality gate runtime', () => {
     expect(findings).toMatchObject([
       {
         narrativeReviewRun_ID: reviews[0]!.ID,
+        dimension: 'SAFETY_INSTRUCTION_INTEGRITY',
         reasonCode: 'UNTRUSTED_CONTENT_EXPOSED',
         severity: 'CRITICAL',
         blockSequences: '1',
@@ -629,6 +650,7 @@ describe('Phase 3B3 narrative quality gate runtime', () => {
     expect(findings).toMatchObject([
       {
         narrativeReviewRun_ID: reviews[0]!.ID,
+        dimension: 'FACTUAL_ENTAILMENT',
         reasonCode: 'UNSUPPORTED_CLAIM',
         severity: 'MAJOR',
         blockSequences: '1',
@@ -636,6 +658,35 @@ describe('Phase 3B3 narrative quality gate runtime', () => {
       },
     ]);
     expect(JSON.stringify({ review: reviews[0], findings })).not.toContain(PUBLISHED_SUMMARY);
+    await expectNoNarrativeProduct();
+  });
+
+  it('persists separate explicit dimensions for one genuinely multi-dimension reason', async () => {
+    const { option } = await runScenario('MULTI_DIMENSION_SEMANTIC_REJECT');
+
+    await expect(POST(narrativeActionUrl(option.rankedOptionId), {})).rejects.toMatchObject({
+      status: 409,
+      response: { data: { error: { code: 'NARRATIVE_QUALITY_REJECTED' } } },
+    });
+
+    const reviews = await readAll('NarrativeReviewRuns');
+    const findings = await readAll('NarrativeReviewFindings');
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toMatchObject({
+      stage: 'JUDGE',
+      decision: 'REJECT',
+      failureCode: 'SEMANTIC_REJECTED',
+      factualEntailmentResult: 'FAIL',
+      moneyDateTimeFidelityResult: 'FAIL',
+      passedDimensionCount: 6,
+      failedDimensionCount: 2,
+      findingCount: 2,
+      criticalFindingCount: 2,
+    });
+    expect(findings.map(({ dimension, reasonCode }) => ({ dimension, reasonCode }))).toEqual([
+      { dimension: 'FACTUAL_ENTAILMENT', reasonCode: 'DATE_TIME_MISMATCH' },
+      { dimension: 'MONEY_DATE_TIME_FIDELITY', reasonCode: 'DATE_TIME_MISMATCH' },
+    ]);
     await expectNoNarrativeProduct();
   });
 
@@ -860,6 +911,7 @@ describe('Phase 3B3 narrative quality gate runtime', () => {
     await POST(narrativeActionUrl(option.rankedOptionId), {});
     const reviewsBefore = await readAll('NarrativeReviewRuns');
     const narrativesBefore = await readAll('NarrativeRuns');
+    const referencesBefore = await readAll('NarrativeFactReferences');
 
     await cds.db.run(
       cds.ql.UPDATE.entity('trip.planner.AiRuns')
@@ -872,7 +924,7 @@ describe('Phase 3B3 narrative quality gate runtime', () => {
     expect(await readAll('NarrativeReviewRuns')).toEqual(reviewsBefore);
     expect(await readAll('NarrativeRuns')).toEqual(narrativesBefore);
     expect(await readAll('OptionNarratives')).toHaveLength(2);
-    expect(await readAll('NarrativeFactReferences')).toHaveLength(2);
+    expect(await readAll('NarrativeFactReferences')).toEqual(referencesBefore);
   });
 
   it('does not expose review metadata, findings, or AI audits through public OData', async () => {

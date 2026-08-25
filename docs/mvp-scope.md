@@ -97,12 +97,15 @@ quality gate i evalami.
 - deterministyczny `narrative-model-view-v1`, który zachowuje wymagane fact IDs, display,
   status i lineage, ale usuwa raw source URLs, external IDs, HTML, control/bidi i zbędne
   provider-shaped values oraz zamienia model-facing provenance keys na opaque IDs;
-- osobny `narrative-quality-context-v1` z exact candidate, fingerprints, potwierdzonymi
+- generation-only `narrative-generation-view-v1` z wyłącznie dozwolonymi faktami `KNOWN`;
+  provider zwraca tylko bloki, a kod wstrzykuje fingerprint i mandatory disclosures;
+- osobny `narrative-quality-context-v2` z exact candidate, fingerprints, potwierdzonymi
   strukturalnymi constraints oraz wszystkimi wymaganymi wersjami kontraktów;
 - lokalny format/safety precheck przed `JUDGE`, bez semantycznego zgadywania money mismatch,
   calculations lub `UNKNOWN` fill przypisanych przez frozen dataset do `JUDGE`;
-- strict `JUDGE` z pełnym fingerprintowanym golden-compatible rubric contract, dokładnie
-  ośmioma wymiarami i zamkniętymi findings oraz code-owned all-pass publication policy;
+- strict `JUDGE` z pełnym fingerprintowanym golden-compatible rubric contract i provider
+  transportem zawierającym wyłącznie zamknięte findings; kod wstrzykuje fingerprinty,
+  wyprowadza dokładnie osiem statusów i stosuje all-pass publication policy;
 - fazowa granica short read → audited `GENERATE` → precheck → audited `JUDGE` → short write,
   bez aktywnej transakcji produktu podczas provider calls;
 - bezpieczne `NarrativeReviewRuns`/`NarrativeReviewFindings`: reject nie zapisuje candidate
@@ -110,7 +113,8 @@ quality gate i evalami.
   dwóch terminalnych `SUCCEEDED`;
 - brak review/fake UUID przed durable `STARTED` oraz osobny privacy-safe operational signal
   z `providerCallAttempted=false`;
-- synthetic dataset v1, runtime/frozen schema parity, deterministic contract replay bez
+- synthetic dataset v2 z zachowanymi historycznymi artefaktami v1, runtime/frozen schema
+  parity, deterministic contract replay bez
   pomiaru jakości modelu, niezależne executable E2E properties, metryki, privacy-safe report,
   baseline binding, integer-only price arithmetic i guarded live preflight;
 - in-memory bundle linkage nazwane jako takie oraz osobny realny persistence proof na

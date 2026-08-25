@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   AiTaskType,
+  validateBoundStructuredAiOutput,
   validateStructuredAiOutput,
   type StructuredAiRequest,
 } from '../../srv/ai/contracts.ts';
@@ -48,6 +49,30 @@ describe('structured AI output validation composition', () => {
       providerOutputSchema: z.object({ ok: z.boolean() }).strict(),
     };
     expect(validateStructuredAiOutput(permissiveTransport, { ok: false })).toEqual({
+      success: false,
+      validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+    });
+  });
+
+  it('separates provider transport binding from the gateway final-output backstop', () => {
+    const findingsOnlyTransport = {
+      ...request(() => ({ success: true, output: { ok: true } })),
+      providerOutputSchema: z.object({ findings: z.array(z.never()) }).strict(),
+    };
+
+    expect(validateStructuredAiOutput(findingsOnlyTransport, { findings: [] })).toEqual({
+      success: true,
+      output: { ok: true },
+    });
+    expect(validateStructuredAiOutput(findingsOnlyTransport, { ok: true })).toEqual({
+      success: false,
+      validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+    });
+    expect(validateBoundStructuredAiOutput(findingsOnlyTransport, { ok: true })).toEqual({
+      success: true,
+      output: { ok: true },
+    });
+    expect(validateBoundStructuredAiOutput(findingsOnlyTransport, { findings: [] })).toEqual({
       success: false,
       validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
     });

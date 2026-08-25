@@ -12,10 +12,18 @@ import { NARRATIVE_EVAL_CONTRACT_VERSIONS } from '../../srv/evals/report.js';
 import {
   buildSyntheticNarrativeConstraintSnapshot,
   resolveSyntheticNarrativeQualityFixture,
-} from '../../srv/evals/synthetic-fixtures.js';
+} from '../../srv/evals/synthetic-fixtures-v2.js';
 import { CapNarrativeReviewStore } from '../../srv/narratives/cap-narrative-review-store.js';
 import { CapNarrativeReviewWriter } from '../../srv/narratives/cap-narrative-review-writer.js';
 import type { GroundedOptionContext } from '../../srv/narratives/grounded-option-context.js';
+import {
+  NARRATIVE_FINALIZATION_VERSION,
+  finalizeNarrativeOutput,
+} from '../../srv/narratives/narrative-finalization.js';
+import {
+  buildNarrativeGenerationView,
+  NARRATIVE_GENERATION_VIEW_VERSION,
+} from '../../srv/narratives/narrative-generation-view.js';
 import {
   buildNarrativeModelView,
   NARRATIVE_MODEL_VIEW_VERSION,
@@ -69,6 +77,8 @@ const factId = `fact_${'1'.repeat(64)}`;
 const versions = {
   groundedContextVersion: 'grounded-option-context-v1',
   modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
+  generationViewVersion: NARRATIVE_GENERATION_VIEW_VERSION,
+  finalizationVersion: NARRATIVE_FINALIZATION_VERSION,
   qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
   constraintSnapshotVersion: NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
   generatePromptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
@@ -260,6 +270,7 @@ describe('CAP/SQLite narrative review persistence', () => {
       failureCode: 'PRECHECK_REJECTED',
       findings: [
         {
+          dimension: 'SAFETY_INSTRUCTION_INTEGRITY',
           reasonCode: 'UNTRUSTED_CONTENT_EXPOSED',
           severity: 'CRITICAL',
           blockSequences: [1],
@@ -288,6 +299,7 @@ describe('CAP/SQLite narrative review persistence', () => {
     });
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
+      dimension: 'SAFETY_INSTRUCTION_INTEGRITY',
       reasonCode: 'UNTRUSTED_CONTENT_EXPOSED',
       severity: 'CRITICAL',
       blockSequences: '1',
@@ -332,8 +344,8 @@ describe('CAP/SQLite narrative review persistence', () => {
       throw new Error('Frozen E01/P01 publication fixture is incomplete.');
     }
 
-    // The E2E contract authors no provider output. P01 is its exact frozen, schema-valid PUBLISH
-    // candidate over the same production-built PRAGUE_PLN_COMPLETE grounded context.
+    // The E2E contract authors no provider output. P01 supplies the frozen provider prefix over
+    // the same production-built context; code appends the exact mandatory finalization tail.
     const context = e2eCase.groundedContext;
     expect(frozenCandidateCase.authored.contextId).toBe(authoredE2e.contextId);
     expect(frozenCandidateCase.groundedContext.fingerprint).toBe(context.fingerprint);
@@ -364,16 +376,23 @@ describe('CAP/SQLite narrative review persistence', () => {
     });
 
     const modelView = buildNarrativeModelView(context);
-    const generateRequest = createOptionNarrativeRequest(context, modelView);
+    const generationView = buildNarrativeGenerationView(context, modelView);
+    const finalizedCandidate = finalizeNarrativeOutput({
+      context,
+      modelView,
+      generationView,
+      providerBlocks: frozenCandidateCase.candidate.blocks,
+    });
+    const generateRequest = createOptionNarrativeRequest(context, modelView, generationView);
     expect(generateRequest).toMatchObject({
       planningRunId: context.planningRun.id,
       rankedOptionId: context.rankedOption.id,
-      input: modelView,
+      input: generationView,
     });
     const qualityContext = buildNarrativeQualityContext({
       context,
       modelView,
-      narrativeOutput: frozenCandidateCase.candidate,
+      narrativeOutput: finalizedCandidate,
       constraints: buildSyntheticNarrativeConstraintSnapshot(authoredContext),
       versions: NARRATIVE_EVAL_CONTRACT_VERSIONS,
     });
@@ -401,7 +420,8 @@ describe('CAP/SQLite narrative review persistence', () => {
     const narrativeBundle = buildNarrativePersistenceBundle({
       context,
       modelView,
-      output: frozenCandidateCase.candidate,
+      generationView,
+      output: finalizedCandidate,
       aiRunId: generateAudit.ID,
       completedAt: '2026-08-15T10:00:02.000Z',
     });
@@ -465,6 +485,8 @@ describe('CAP/SQLite narrative review persistence', () => {
       narrativeFingerprint: qualityContext.narrativeFingerprint,
       qualityContextFingerprint: qualityContext.fingerprint,
       modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
+      generationViewVersion: NARRATIVE_GENERATION_VIEW_VERSION,
+      finalizationVersion: NARRATIVE_FINALIZATION_VERSION,
       qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
       rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
       rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
@@ -487,8 +509,8 @@ describe('CAP/SQLite narrative review persistence', () => {
         }),
       ]),
     );
-    expect(blocks).toHaveLength(frozenCandidateCase.candidate.blocks.length);
-    for (const [blockIndex, expectedBlock] of frozenCandidateCase.candidate.blocks.entries()) {
+    expect(blocks).toHaveLength(finalizedCandidate.blocks.length);
+    for (const [blockIndex, expectedBlock] of finalizedCandidate.blocks.entries()) {
       const sequence = blockIndex + 1;
       const persistedBlock = blocks.find((block) => block.sequence === sequence);
       expect(persistedBlock).toMatchObject({
@@ -515,10 +537,7 @@ describe('CAP/SQLite narrative review persistence', () => {
       }
     }
     expect(references).toHaveLength(
-      frozenCandidateCase.candidate.blocks.reduce(
-        (count, block) => count + block.factReferences.length,
-        0,
-      ),
+      finalizedCandidate.blocks.reduce((count, block) => count + block.factReferences.length, 0),
     );
     expect(reviews[0]).not.toHaveProperty('generateAiRun_ID');
     expect(reviews[0]).not.toHaveProperty('judgeAiRun_ID');
@@ -638,6 +657,8 @@ describe('CAP/SQLite narrative review persistence', () => {
       judgeAiRunId: null,
       modelViewVersion: null,
       modelViewFingerprint: null,
+      generationViewVersion: null,
+      finalizationVersion: null,
       narrativeFingerprint: null,
       qualityContextVersion: null,
       qualityContextFingerprint: null,
@@ -652,6 +673,8 @@ describe('CAP/SQLite narrative review persistence', () => {
     expect((await readAll('NarrativeReviewRuns'))[0]).toMatchObject({
       rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
       rubricFingerprint: null,
+      generationViewVersion: null,
+      finalizationVersion: null,
     });
   });
 

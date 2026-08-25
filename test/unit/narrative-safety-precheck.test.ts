@@ -9,10 +9,10 @@ import {
   loadNarrativeQualityDataset,
   resolveNarrativeQualityDataset,
 } from '../../srv/evals/dataset.ts';
-import { resolveSyntheticNarrativeQualityFixture } from '../../srv/evals/synthetic-fixtures.ts';
+import { resolveSyntheticNarrativeQualityFixture } from '../../srv/evals/synthetic-fixtures-v2.ts';
 import { buildNarrativeModelView } from '../../srv/narratives/narrative-model-view.ts';
 import {
-  runNarrativeSafetyPrecheck,
+  runAuthoredNarrativeSafetyPrecheck,
   type NarrativeSafetyPrecheckResult,
 } from '../../srv/narratives/narrative-safety-precheck.ts';
 import type { OptionNarrativeOutput } from '../../srv/narratives/option-narrative.ts';
@@ -53,7 +53,7 @@ function check(
   contextValue: GroundedOptionContext,
   narrativeOutput: OptionNarrativeOutput,
 ): NarrativeSafetyPrecheckResult {
-  return runNarrativeSafetyPrecheck({
+  return runAuthoredNarrativeSafetyPrecheck({
     context: contextValue,
     modelView: buildNarrativeModelView(contextValue),
     narrativeOutput,
@@ -72,7 +72,7 @@ describe('deterministic narrative safety precheck', () => {
     );
     const results = resolved.cases.map(({ authored, groundedContext, candidate }) => ({
       caseId: authored.id,
-      result: runNarrativeSafetyPrecheck({
+      result: runAuthoredNarrativeSafetyPrecheck({
         context: groundedContext,
         modelView: buildNarrativeModelView(groundedContext),
         narrativeOutput: candidate,
@@ -103,7 +103,10 @@ describe('deterministic narrative safety precheck', () => {
     ['reference link with horizontal whitespace', 'Sprawdź [ofertę]  [provider-reference].'],
     ['reference link with line whitespace', 'Sprawdź [ofertę]\n  [provider-reference].'],
     ['reference definition', '[provider-reference]: https://example.test/path'],
-    ['indented reference definition with title', '   [provider-reference]: /relative/path "Tytuł"'],
+    [
+      'indented reference definition with title',
+      'Opis.\n   [provider-reference]: /relative/path "Tytuł"',
+    ],
     [
       'reference definition with destination on the next line',
       '[provider-reference]:\n  /relative/path',
@@ -222,7 +225,7 @@ describe('deterministic narrative safety precheck', () => {
     const otherInput = input();
     otherInput.rankedOption.destinationCity = 'Wiedeń';
     const other = context(otherInput);
-    const result = runNarrativeSafetyPrecheck({
+    const result = runAuthoredNarrativeSafetyPrecheck({
       context: grounded,
       modelView: buildNarrativeModelView(other),
       narrativeOutput: output(grounded, 'Praga jest opcją.'),

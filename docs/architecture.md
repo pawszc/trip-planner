@@ -19,6 +19,13 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 - `persistence/` — kontrolowane mapowanie wyników domenowych na znormalizowane rekordy;
 - serwis CAP — transport OData, trwałość, transakcje i kontrolowane błędy.
 
+W contract v2 granica narracji ma dwa różne provider transports. GENERATE otrzymuje
+`narrative-generation-view-v1` z samymi faktami `KNOWN` i zwraca najwyżej sześć bloków;
+fingerprint oraz obowiązkowe provenance i `UNKNOWN`/`MISSING` disclosures tworzy kod.
+JUDGE zwraca wyłącznie zamknięte findings; exact fingerprints i wszystkie osiem statusów są
+lokalnie wiązane lub wyprowadzane. Finalny kandydat jest zweryfikowany przez ten sam
+production finalizer w runtime i E2E, a publication pozostaje fail-closed.
+
 ## Model briefu i workflow
 
 `TripRequest` przechowuje podstawowy brief oraz status jego potwierdzenia. Pola strukturalne `hardConstraints` i `softPreferences` używają jawnych typów CDS `HardConstraintProfile` i `SoftPreferenceProfile`. Hard constraints nie są swobodnym tekstem: budżet, okna czasowe, limity podróży i dozwolone środki transportu mają typowany kontrakt walidowany przez kod. Soft preferences przechowują wagi całkowite od 1 do 5, natomiast `pace` pozostaje osobnym polem briefu. Wartości domyślne profili pozwalają dotychczasowym klientom nadal tworzyć brief bez przesyłania nowych pól. CAP 10 publikuje te struktury w domyślnym kontrakcie OData jako jawne pola z prefiksami `hardConstraints_*` i `softPreferences_*`; osobny mapper serwisu składa je do zagnieżdżonych typów domenowych i materializuje z powrotem bez zmiany dotychczasowych pól API.
@@ -273,11 +280,13 @@ pozostają nieoznaczone. Exact v0 może być odczytany jedynie przez ograniczony
 `startPlanning`, lecz przy budowie grounded context nadal jest odrzucany fail-closed przed
 gatewayem i `AiRun`; kod nie wykonuje nieudowodnionego backfillu.
 
-`grounded-option-narrative-prompt-v2` używa wyłącznie profilu `GENERATE` i exact
-`narrative-model-view-v1`; historyczny v1 pozostaje związany z pełnym kontekstem 3B2. Strict output
-wymaga exact context fingerprint i niepustych `factReferences` każdego bloku. Lokalny
-validator odrzuca cały output z pustym, nieznanym, nieaktualnym lub obcym fact ID; niczego
-nie filtruje częściowo. Referencja zapewnia traceability, ale bez `JUDGE` nie jest jeszcze
+`grounded-option-narrative-prompt-v3` używa wyłącznie profilu `GENERATE` i exact
+`narrative-generation-view-v1`, wyprowadzonego z lokalnego `narrative-model-view-v1`.
+Provider schema v2 zawiera tylko maksymalnie sześć bloków i nie pozwala zwrócić fingerprintu
+ani mandatory disclosures. Lokalny binder odrzuca pusty, nieznany, restricted lub obcy fact
+ID, wstrzykuje exact context fingerprint i dokłada code-owned provenance oraz
+`UNKNOWN`/`MISSING` risk blocks do limitu ośmiu. Niczego nie filtruje częściowo ani nie
+przepisuje provider prose. Referencja zapewnia traceability, ale bez `JUDGE` nie jest jeszcze
 semantycznym dowodem zgodności tekstu z faktem.
 
 Po trwałym `SUCCEEDED` gatewaya writer jeszcze raz sprawdza istnienie audytu, terminalny
@@ -290,30 +299,31 @@ usuwa danych produktu.
 
 ### Narrative quality gate Fazy 3B3
 
-Po zbudowaniu pełnego `GroundedOptionContext` kod tworzy `narrative-model-view-v1`.
-Projection zachowuje referencjonowalne fakty, ich status, display values, `factId`, freshness,
-fixture/demo markers i deterministyczne lineage, ale nie wysyła raw `sourceUrl`,
-`externalItemId`, HTML, znaków kontrolnych ani zbędnych provider-shaped wartości. Provenance
-keys stają się opaque, wersjonowanymi hashami bezpiecznego `factId`, niezależnymi od raw
-source identity. Model view zawiera fingerprint pełnego kontekstu i własny canonical SHA-256;
-pełny kontekst pozostaje lokalny.
+Po zbudowaniu pełnego `GroundedOptionContext` kod tworzy lokalny `narrative-model-view-v1`,
+a dla GENERATE dodatkowo `narrative-generation-view-v1`. Generation view zachowuje wyłącznie
+referencjonowalne fakty `KNOWN`, display values, `factId` i safe rank/role. Nie zawiera
+provenance, `UNKNOWN`/`MISSING`, raw `sourceUrl`, provider/source identity, external IDs,
+source keys, contexts, HTML, znaków kontrolnych ani zbędnych provider-shaped wartości. Ma
+własny canonical SHA-256 i limit rozmiaru; pełny model/context pozostaje lokalny i trafia do
+quality boundary JUDGE.
 
-Po `GENERATE` ten sam strict parser 3B2 ponownie wiąże każdy blok z exact grounded
-fingerprintem i fact IDs. Następnie deterministyczny precheck blokuje URL-e, Markdown/HTML,
+Po `GENERATE` lokalny finalizer wiąże provider blocks z exact generation view, wstrzykuje
+grounded fingerprint i dokłada exact mandatory disclosures. Następnie deterministyczny
+precheck sprawdza finalization oraz blokuje URL-e, Markdown/HTML,
 script/event handlers, kontrolne lub bidi znaki, wartości wykluczone przez projection i
 mechanicznie rozpoznawalny niedozwolony reformat pieniędzy. Odrzucenie na tym etapie
 wykonuje zero `JUDGE` calls. Semantic amount mismatch, nowe obliczenie i wypełnienie
 `UNKNOWN` dochodzą do `JUDGE` zgodnie z frozen stage labels; szersza interpretacja reguły
 exact-money pozostaje jawnym punktem review.
 
-Kod buduje osobny `narrative-quality-context-v1`: dokładny zwalidowany kandydat i jego
+Kod buduje osobny `narrative-quality-context-v2`: dokładny zwalidowany kandydat i jego
 fingerprint, model view i grounded fingerprints, potwierdzone strukturalne constraints oraz
 wersje wszystkich kontraktów. Nie mutuje to `grounded-option-context-v1`. Profil `JUDGE`
 otrzymuje pełny golden-compatible rubric contract, exact version/fingerprint oraz quality i
-narrative fingerprints; zwraca dokładnie osiem wymiarów `PASS`/`FAIL` i findings z
-zamkniętego katalogu kodów, severity, block sequences i in-context fact IDs. Nie zwraca
-wiążącego overall verdict ani persistowalnego free-form rationale. Kod publikuje tylko przy
-ośmiu `PASS` i zerze findings.
+narrative context. Provider zwraca tylko findings z jawnym dimension, zamkniętym kodem,
+severity, block sequences i in-context fact IDs. Nie zwraca fingerprintów, osobnej tablicy
+statuses, overall verdict ani persistowalnego rationale. Kod wstrzykuje fingerprinty,
+wyprowadza statuses i publikuje tylko przy zerze findings.
 
 `NarrativeReviewRuns` i znormalizowane `NarrativeReviewFindings` przechowują wyłącznie
 kontrolowane metadata, fingerprints, wersje, wyniki wymiarów i scalar IDs audytów. Precheck
@@ -322,7 +332,7 @@ kandydata oraz zero rekordów produktu narracji. `PUBLISH` atomowo zapisuje revi
 tekst oceniony przez judge dopiero po terminalnych `SUCCEEDED` obu audytów. Nullable pola
 quality/review na legacy narracjach 3B2 nie mają defaultu ani backfillu.
 
-Synthetic dataset v1, runtime/frozen schema parity, deterministic contract replay, metryki i
+Synthetic dataset v2 (z retained v1), runtime/frozen schema parity, deterministic contract replay, metryki i
 privacy-safe report są deterministyczne i credential-free. Replay kopiuje expected labels do
 actual i jawnie nie mierzy jakości modelu. Live E2E wykonuje niezależne deterministic
 `requiredProperties`; jego bundle-linkage evidence jest nazwane in-memory, podczas gdy
@@ -332,11 +342,13 @@ jawnych opt-inów, a guard rezerwuje koszt przed każdym wywołaniem i egzekwuje
 logicznych calls, 56 attempts i USD 3.00. Czysty `npm run eval:live:preflight` współdzieli
 plan i cost estimator, ale nie importuje ścieżki wykonawczej i działa bez opt-inów,
 credentiali, bazy lub sieci. Pierwszym runtime scenario jest exact Luna/low/2048; canonical
-ceiling wynosi 1,185,201 USD micros, a kodowo wyliczony zapas do capu 1,814,799 micros. Exact
-Terra/2048 pozostaje wyłącznie comparison scenario ponad capem, nie fallbackiem. Trzy osobno
+ceiling wynosi 1,171,326 USD micros, a kodowo wyliczony zapas do capu 1,828,674 micros. Exact
+Terra/2048 ma ceiling 8,595,433 micros i pozostaje wyłącznie comparison scenario ponad capem,
+nie fallbackiem. Trzy osobno
 autoryzowane runy zatrzymały się fail-closed przed raportem jakości i nie były ponawiane.
-Transport JUDGE v2 zachowuje metadata przed parserami i rozdziela statyczny schema od exact
-lokalnych bindingów; syntetyczny runner może raportować kompletnie rozliczony invalid jako
+Transport JUDGE v3 zachowuje metadata przed parserami, zawiera wyłącznie findings i rozdziela
+statyczny schema od exact lokalnych bindingów; syntetyczny runner może raportować kompletnie
+rozliczony invalid jako
 `FAIL`, ale produkt i accepted manifest pozostają fail-closed. Ten offline fix wykonuje zero
 provider calls, nie autoryzuje kolejnego baseline i pozostawia Fazę 3B3 w `REVIEW` do osobnej
 zgody oraz przejścia wszystkich bramek.

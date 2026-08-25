@@ -10,6 +10,7 @@ import {
   evaluateSemanticGates,
   evaluateStabilityGates,
   type SemanticCaseOutcome,
+  type EndToEndCaseOutcome,
 } from '../../srv/evals/metrics.ts';
 import {
   frozenNarrativeQualityDataset,
@@ -41,6 +42,16 @@ function falseAccept(outcomes: SemanticCaseOutcome[], caseId: string): void {
     failedDimensions: [],
     reasonCodes: [],
     strictJudgeOutputValid: true,
+  };
+}
+
+function validRejectedEndToEndOutcome(caseId: string): EndToEndCaseOutcome {
+  return {
+    ...passingEndToEndOutcome(caseId),
+    actualDecision: 'REJECT',
+    actualFailedDimensions: ['FACTUAL_ENTAILMENT'],
+    actualReasonCodes: ['UNSUPPORTED_CLAIM'],
+    publicationBundleLinkageValidInMemory: false,
   };
 }
 
@@ -204,7 +215,7 @@ describe('narrative-quality stability, E2E, deltas and regression', () => {
   it('enforces all four synthetic E2E gates and the 3/4 publication boundary', () => {
     const dataset = frozenNarrativeQualityDataset();
     const outcomes = dataset.endToEndCases.map(({ id }) => passingEndToEndOutcome(id));
-    outcomes[3] = { ...outcomes[3]!, actualDecision: 'REJECT' };
+    outcomes[3] = validRejectedEndToEndOutcome(outcomes[3]!.caseId);
     const metrics = calculateEndToEndMetrics(dataset, outcomes);
 
     expect(metrics.locallyValidCandidates).toMatchObject({ numerator: 4, denominator: 4 });
@@ -212,7 +223,7 @@ describe('narrative-quality stability, E2E, deltas and regression', () => {
     expect(metrics.judgeStructuredOutputValidity).toMatchObject({ numerator: 4, denominator: 4 });
     expect(evaluateEndToEndGates(metrics)).toEqual({ passed: true, failures: [] });
 
-    outcomes[2] = { ...outcomes[2]!, actualDecision: 'REJECT' };
+    outcomes[2] = validRejectedEndToEndOutcome(outcomes[2]!.caseId);
     expect(evaluateEndToEndGates(calculateEndToEndMetrics(dataset, outcomes)).failures).toContain(
       'PUBLICATION_COUNT',
     );
@@ -232,6 +243,76 @@ describe('narrative-quality stability, E2E, deltas and regression', () => {
     const metrics = calculateEndToEndMetrics(dataset, outcomes);
     expect(metrics.judgeStructuredOutputValidity).toMatchObject({ numerator: 3, denominator: 4 });
     expect(evaluateEndToEndGates(metrics).failures).toContain('JUDGE_STRUCTURED_OUTPUT_VALIDITY');
+  });
+
+  it('accepts only the exact privacy-safe E2E evidence semantics for each terminal path', () => {
+    const dataset = frozenNarrativeQualityDataset();
+    const outcomes: EndToEndCaseOutcome[] = dataset.endToEndCases.map(({ id }) =>
+      passingEndToEndOutcome(id),
+    );
+    outcomes[1] = validRejectedEndToEndOutcome(outcomes[1]!.caseId);
+    outcomes[2] = {
+      ...outcomes[2]!,
+      actualDecision: 'REJECT',
+      actualFailedDimensions: [],
+      actualReasonCodes: [],
+      judgeStructuredOutputValid: false,
+      judgeAuditSucceeded: false,
+      publicationBundleLinkageValidInMemory: false,
+    };
+    outcomes[3] = {
+      ...outcomes[3]!,
+      judgeLogicalCalls: 0,
+      actualDecision: 'REJECT',
+      actualFailedDimensions: ['SAFETY_INSTRUCTION_INTEGRITY'],
+      actualReasonCodes: ['UNTRUSTED_CONTENT_EXPOSED'],
+      judgeStructuredOutputValid: null,
+      judgeAuditSucceeded: false,
+      publicationBundleLinkageValidInMemory: false,
+    };
+
+    expect(() => calculateEndToEndMetrics(dataset, outcomes)).not.toThrow();
+
+    const invalidVariants: EndToEndCaseOutcome[] = [
+      {
+        ...passingEndToEndOutcome('E01'),
+        actualFailedDimensions: ['FACTUAL_ENTAILMENT'],
+        actualReasonCodes: ['UNSUPPORTED_CLAIM'],
+      },
+      {
+        ...validRejectedEndToEndOutcome('E01'),
+        actualFailedDimensions: [],
+      },
+      {
+        ...outcomes[2]!,
+        actualReasonCodes: ['UNSUPPORTED_CLAIM'],
+      },
+      {
+        ...outcomes[3]!,
+        actualFailedDimensions: [],
+        actualReasonCodes: [],
+      },
+      {
+        ...validRejectedEndToEndOutcome('E01'),
+        actualFailedDimensions: ['REFERENCE_RELEVANCE', 'FACTUAL_ENTAILMENT'],
+      },
+      {
+        ...validRejectedEndToEndOutcome('E01'),
+        actualReasonCodes: ['UNSUPPORTED_CLAIM', 'UNSUPPORTED_CLAIM'],
+      },
+      {
+        ...validRejectedEndToEndOutcome('E01'),
+        publicationBundleLinkageValidInMemory: true,
+      },
+    ];
+    for (const invalid of invalidVariants) {
+      const candidate = outcomes.map((outcome) =>
+        outcome.caseId === invalid.caseId ? invalid : outcome,
+      );
+      expect(() => calculateEndToEndMetrics(dataset, candidate)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }),
+      );
+    }
   });
 
   it('fails E2E required properties, in-memory bundle linkage and mutation independently', () => {

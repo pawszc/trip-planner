@@ -91,7 +91,7 @@ describe('narrative-quality JSON Schema parity', () => {
     {
       label: 'literal version change',
       change: (schema: MutableSchema) => {
-        objectAt(schema, 'properties', 'datasetVersion').const = 'narrative-quality-v2';
+        objectAt(schema, 'properties', 'datasetVersion').const = 'narrative-quality-v3';
       },
     },
     {
