@@ -42,7 +42,7 @@ function parseJsonSchema(input: string): JsonObject {
 }
 
 export function loadCheckedInNarrativeQualitySchema(
-  schemaUrl: URL = new URL('../../evals/schemas/narrative-quality-v1.schema.json', import.meta.url),
+  schemaUrl: URL = new URL('../../evals/schemas/narrative-quality-v2.schema.json', import.meta.url),
 ): JsonObject {
   try {
     return parseJsonSchema(readFileSync(schemaUrl, 'utf8'));

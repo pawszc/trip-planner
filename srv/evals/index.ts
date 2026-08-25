@@ -8,4 +8,4 @@ export * from './offline-harness.ts';
 export * from './price-snapshot.ts';
 export * from './report.ts';
 export * from './required-properties.ts';
-export * from './synthetic-fixtures.ts';
+export * from './synthetic-fixtures-v2.ts';
