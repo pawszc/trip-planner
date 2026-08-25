@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { loadAiConfig, type AiConfig } from '../../srv/ai/config.ts';
 import {
   AiProvider,
@@ -10,7 +10,18 @@ import {
 } from '../../srv/ai/contracts.ts';
 import { AiError } from '../../srv/ai/errors.ts';
 import { AiGateway } from '../../srv/ai/ai-gateway.ts';
-import type { AiRunRecorder } from '../../srv/ai/telemetry.ts';
+import {
+  OpenAiResponsesAdapter,
+  createOpenAiSdkClient,
+} from '../../srv/ai/adapters/openai-responses-adapter.ts';
+import { PersistentAiRunRecorder } from '../../srv/ai/persistence/persistent-ai-run-recorder.ts';
+import type {
+  AiRunFailedUpdate,
+  AiRunStartedRecord,
+  AiRunStore,
+  AiRunSucceededUpdate,
+} from '../../srv/ai/persistence/ai-run-store.ts';
+import type { AiRunRecorder, AiRunTelemetryEvent } from '../../srv/ai/telemetry.ts';
 import { NARRATIVE_LIVE_BASELINE_OPERATION_PLAN } from '../../srv/evals/baseline.ts';
 import {
   NARRATIVE_JUDGE_DIMENSIONS,
@@ -208,6 +219,28 @@ class SuccessfulOfflineExecutor implements NarrativeLiveEvalExecutor {
         ? fakeGenerateOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>)
         : fakeJudgeOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
     return { result: fakeResult(descriptor, output), auditSucceeded: true as const };
+  }
+}
+
+class RecordingAiRunStore implements AiRunStore {
+  readonly started: AiRunStartedRecord[] = [];
+  readonly succeeded: { readonly ID: string; readonly update: AiRunSucceededUpdate }[] = [];
+  readonly failed: { readonly ID: string; readonly update: AiRunFailedUpdate }[] = [];
+
+  async insertStarted(record: AiRunStartedRecord): Promise<void> {
+    this.started.push(record);
+  }
+
+  async completeSucceeded(ID: string, update: AiRunSucceededUpdate): Promise<void> {
+    this.succeeded.push({ ID, update });
+  }
+
+  async completeFailed(ID: string, update: AiRunFailedUpdate): Promise<void> {
+    this.failed.push({ ID, update });
+  }
+
+  async deleteExpired(): Promise<number> {
+    return 0;
   }
 }
 
@@ -1163,6 +1196,134 @@ describe('narrative live-eval CLI boundary', () => {
     });
     const stdout = lines.join('\n');
     for (const sentinel of sentinels) expect(stdout).not.toContain(sentinel);
+  });
+
+  it('preserves complete zero-attempt accounting through adapter, gateway and an active reservation when client initialization fails before fetch', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    const rawMessage =
+      'RAW_PRE_FETCH_LIVE_RUNNER_SENTINEL sk-proj-pre-fetch-live private@example.test';
+    const lines: string[] = [];
+    const telemetryEvents: AiRunTelemetryEvent[] = [];
+    const store = new RecordingAiRunStore();
+    const persistentRecorder = new PersistentAiRunRecorder(store, 30);
+    const recorder: AiRunRecorder = {
+      async record(event) {
+        telemetryEvents.push(event);
+        await persistentRecorder.record(event);
+      },
+    };
+    let fetchCalls = 0;
+    let executorCalls = 0;
+    const adapter = new OpenAiResponsesAdapter(
+      config,
+      (options) => {
+        createOpenAiSdkClient({
+          ...options,
+          fetchImplementation: async () => {
+            fetchCalls += 1;
+            throw new Error('Controlled fetch must remain unreachable.');
+          },
+        });
+        throw new Error(rawMessage);
+      },
+      (() => {
+        const times = [100, 101];
+        return () => times.shift() ?? 101;
+      })(),
+    );
+    const gateway = new AiGateway(
+      config,
+      [adapter],
+      recorder,
+      () => '00000000-0000-4000-8000-000000000016',
+      () => new Date('2026-08-25T12:00:00.000Z'),
+    );
+    const consoleSpies = [
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    ];
+
+    try {
+      const exitCode = await runNarrativeQualityLiveEvalScript(
+        enabledEnvironment,
+        (line) => lines.push(line),
+        {
+          loadPriceSnapshot: () => configuredPriceSnapshot(config),
+          createExecutor: async () => ({
+            async call<TOutput>(descriptor: NarrativeLiveEvalCallDescriptor<TOutput>) {
+              executorCalls += 1;
+              return {
+                result: await gateway.call(descriptor.request),
+                auditSucceeded: true as const,
+              };
+            },
+          }),
+        },
+      );
+
+      expect(exitCode).toBe(1);
+      expect(executorCalls).toBe(1);
+      expect(fetchCalls).toBe(0);
+      expect(lines).toHaveLength(2);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ status: 'PREFLIGHT_PASSED' });
+      const safeFailure = JSON.parse(lines[1]!) as Record<string, unknown>;
+      expect(safeFailure).toMatchObject({
+        status: 'FAILED',
+        code: 'LIVE_EVAL_EXECUTION_FAILED',
+        underlyingCode: 'PROVIDER_ERROR',
+        reportProduced: false,
+        providerCallAttempted: false,
+        attemptAccountingComplete: true,
+        logicalCallSequence: 1,
+        completedLogicalCalls: 0,
+        provider: 'OPENAI',
+        configuredModel: 'gpt-5.6-luna',
+        attempts: 0,
+        knownCumulativeProviderAttempts: 0,
+        knownCumulativeEstimatedCostUsdMicros: 0,
+      });
+      for (const field of [
+        'usage',
+        'providerRequestId',
+        'providerResponseId',
+        'responseModel',
+        'providerResponseStatus',
+        'providerIncompleteReason',
+        'report',
+        'baselineManifest',
+      ]) {
+        expect(safeFailure).not.toHaveProperty(field);
+      }
+      expect(store.started).toHaveLength(1);
+      expect(store.succeeded).toHaveLength(0);
+      expect(store.failed).toHaveLength(1);
+      expect(store.failed[0]?.update).toMatchObject({
+        status: 'FAILED',
+        providerCallAttempted: false,
+        attempts: 0,
+        refusal: { refused: false },
+        errorCode: 'PROVIDER_ERROR',
+      });
+      for (const field of [
+        'usage',
+        'providerRequestId',
+        'providerResponseId',
+        'responseModel',
+        'providerResponseStatus',
+        'providerIncompleteReason',
+      ]) {
+        expect(store.failed[0]?.update).not.toHaveProperty(field);
+      }
+      expect(telemetryEvents).toHaveLength(2);
+      expect(JSON.stringify(telemetryEvents)).not.toContain(rawMessage);
+      expect(JSON.stringify(store)).not.toContain(rawMessage);
+      expect(lines.join('\n')).not.toContain(rawMessage);
+      for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of consoleSpies) spy.mockRestore();
+    }
   });
 
   it.each([

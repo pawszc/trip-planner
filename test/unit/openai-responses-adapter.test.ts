@@ -698,6 +698,50 @@ describe('official OpenAI SDK transport', () => {
     expect(fetchCalls).toBe(0);
   });
 
+  it('classifies synchronous client initialization failure before fetch with complete zero accounting', async () => {
+    const rawMessage =
+      'RAW_PRE_FETCH_INITIALIZATION_SENTINEL sk-proj-pre-fetch-secret private@example.test';
+    let fetchCalls = 0;
+    const adapter = new OpenAiResponsesAdapter(config({ AI_MAX_RETRIES: '0' }), (options) => {
+      createOpenAiSdkClient({
+        ...options,
+        fetchImplementation: async () => {
+          fetchCalls += 1;
+          throw new Error('Controlled fetch must remain unreachable.');
+        },
+      });
+      throw new Error(rawMessage);
+    });
+
+    let error: AiError | undefined;
+    try {
+      await callAdapter(adapter);
+    } catch (caught) {
+      if (caught instanceof AiError) error = caught;
+    }
+
+    expect(fetchCalls).toBe(0);
+    expect(error).toMatchObject({
+      code: 'PROVIDER_ERROR',
+      executionEvidence: {
+        provider: 'OPENAI',
+        configuredModel: 'gpt-profile-model',
+        providerCallAttempted: false,
+        attempts: 0,
+      },
+    });
+    expect(error?.executionEvidence).not.toHaveProperty('usage');
+    expect(error?.executionEvidence).not.toHaveProperty('providerRequestId');
+    expect(error?.executionEvidence).not.toHaveProperty('providerResponseId');
+    expect(error?.executionEvidence).not.toHaveProperty('responseModel');
+    expect(error?.executionEvidence).not.toHaveProperty('providerResponseStatus');
+    expect(error?.executionEvidence).not.toHaveProperty('providerIncompleteReason');
+    expect(JSON.stringify(error?.toSafeJSON())).not.toContain(rawMessage);
+    expect(String(error)).not.toContain(rawMessage);
+    expect(error?.stack).not.toContain(rawMessage);
+    expect(error?.cause).toBeUndefined();
+  });
+
   it('records a started SDK request without usage as incomplete safe accounting', async () => {
     const rawMessage = 'fetch failed: ECONNRESET RAW_PROVIDER_MESSAGE_SENTINEL';
     let fetchCalls = 0;

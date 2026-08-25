@@ -140,20 +140,23 @@ export const createOpenAiSdkClient: OpenAiClientFactory = (options) => {
       } catch {
         throw new OpenAiSchemaConstructionError();
       }
-      const pending = client.responses.create({
-        model: request.model,
-        instructions: request.instructions,
-        input: [{ role: 'user', content: request.input }],
-        text: { format },
-        max_output_tokens: request.maxOutputTokens,
-        reasoning: { effort: request.reasoningEffort },
-        store: request.store,
-        tools: [...request.tools],
-        tool_choice: request.toolChoice,
-      });
-      let responseWithMetadata: Awaited<ReturnType<typeof pending.withResponse>>;
+      const executeWithMetadata = async () => {
+        const pending = client.responses.create({
+          model: request.model,
+          instructions: request.instructions,
+          input: [{ role: 'user', content: request.input }],
+          text: { format },
+          max_output_tokens: request.maxOutputTokens,
+          reasoning: { effort: request.reasoningEffort },
+          store: request.store,
+          tools: [...request.tools],
+          tool_choice: request.toolChoice,
+        });
+        return pending.withResponse();
+      };
+      let responseWithMetadata: Awaited<ReturnType<typeof executeWithMetadata>>;
       try {
-        responseWithMetadata = await pending.withResponse();
+        responseWithMetadata = await executeWithMetadata();
       } catch (error) {
         throw new OpenAiRequestExecutionError(
           attempts,
@@ -483,11 +486,30 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
     const inputFingerprint = createInputFingerprint(request.input);
     const startedAt = this.now();
     try {
-      const client = this.clientFactory({
-        apiKey,
-        timeoutMs: this.config.timeoutMs,
-        maxRetries: this.config.maxRetries,
-      });
+      let client: OpenAiResponsesClient;
+      try {
+        client = this.clientFactory({
+          apiKey,
+          timeoutMs: this.config.timeoutMs,
+          maxRetries: this.config.maxRetries,
+        });
+      } catch (error) {
+        const latencyMs = Math.max(0, Math.round(this.now() - startedAt));
+        const normalized = normalizeProviderFailure({
+          provider: this.provider,
+          model: profile.model,
+          modelEnvironmentVariable: `AI_${request.taskType}_MODEL`,
+          metadata: openAiFailureMetadata(error),
+          cause: undefined,
+        });
+        throw new AiError(normalized.code, normalized.message, {
+          provider: this.provider,
+          model: profile.model,
+          retryable: normalized.retryable,
+          details: normalized.details,
+          executionEvidence: requestFailureEvidence(profile.model, latencyMs, 0),
+        });
+      }
       const response = await client.execute({
         model: profile.model,
         instructions: request.instructions,
