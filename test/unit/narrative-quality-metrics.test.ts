@@ -118,7 +118,13 @@ describe('narrative-quality semantic metrics', () => {
     const dataset = frozenNarrativeQualityDataset();
     const outcomes = perfectOutcomes();
     const index = outcomes.findIndex(({ caseId }) => caseId === 'R01');
-    outcomes[index] = { ...outcomes[index]!, strictJudgeOutputValid: false };
+    outcomes[index] = {
+      ...outcomes[index]!,
+      actualDecision: 'REJECT',
+      failedDimensions: [],
+      reasonCodes: [],
+      strictJudgeOutputValid: false,
+    };
     const metrics = calculateSemanticQualityMetrics(dataset, outcomes);
 
     expect(metrics.strictJudgeOutputValidity).toMatchObject({ numerator: 29, denominator: 30 });
@@ -158,6 +164,7 @@ describe('narrative-quality stability, E2E, deltas and regression', () => {
     const repeated = dataset.cases.filter(({ sentinel }) => sentinel).map(perfectSemanticOutcome);
     repeated[0] = rejectOutcome(repeated[0]!.caseId);
     const boundary = calculateStabilityMetrics(dataset, primary, repeated);
+    expect(boundary.repeatJudgeOutputValidity).toMatchObject({ numerator: 8, denominator: 8 });
     expect(boundary.exactDecisionAgreement).toMatchObject({ numerator: 7, denominator: 8 });
     expect(evaluateStabilityGates(boundary)).toEqual({ passed: true, failures: [] });
 
@@ -175,6 +182,25 @@ describe('narrative-quality stability, E2E, deltas and regression', () => {
     ).toContain('CRITICAL_FALSE_ACCEPT');
   });
 
+  it('never counts an invalid sentinel repeat as agreement and fails the repeat validity gate', () => {
+    const dataset = frozenNarrativeQualityDataset();
+    const primary = perfectOutcomes();
+    const repeated = dataset.cases.filter(({ sentinel }) => sentinel).map(perfectSemanticOutcome);
+    const invalidIndex = repeated.findIndex(({ caseId }) => caseId === 'R01');
+    repeated[invalidIndex] = {
+      ...repeated[invalidIndex]!,
+      actualDecision: 'REJECT',
+      failedDimensions: [],
+      reasonCodes: [],
+      strictJudgeOutputValid: false,
+    };
+
+    const metrics = calculateStabilityMetrics(dataset, primary, repeated);
+    expect(metrics.repeatJudgeOutputValidity).toMatchObject({ numerator: 7, denominator: 8 });
+    expect(metrics.exactDecisionAgreement).toMatchObject({ numerator: 7, denominator: 8 });
+    expect(evaluateStabilityGates(metrics).failures).toContain('REPEAT_JUDGE_OUTPUT_VALIDITY');
+  });
+
   it('enforces all four synthetic E2E gates and the 3/4 publication boundary', () => {
     const dataset = frozenNarrativeQualityDataset();
     const outcomes = dataset.endToEndCases.map(({ id }) => passingEndToEndOutcome(id));
@@ -183,12 +209,29 @@ describe('narrative-quality stability, E2E, deltas and regression', () => {
 
     expect(metrics.locallyValidCandidates).toMatchObject({ numerator: 4, denominator: 4 });
     expect(metrics.published).toMatchObject({ numerator: 3, denominator: 4 });
+    expect(metrics.judgeStructuredOutputValidity).toMatchObject({ numerator: 4, denominator: 4 });
     expect(evaluateEndToEndGates(metrics)).toEqual({ passed: true, failures: [] });
 
     outcomes[2] = { ...outcomes[2]!, actualDecision: 'REJECT' };
     expect(evaluateEndToEndGates(calculateEndToEndMetrics(dataset, outcomes)).failures).toContain(
       'PUBLICATION_COUNT',
     );
+  });
+
+  it('fails E2E validity when one completely accounted judge output is invalid', () => {
+    const dataset = frozenNarrativeQualityDataset();
+    const outcomes = dataset.endToEndCases.map(({ id }) => passingEndToEndOutcome(id));
+    outcomes[0] = {
+      ...outcomes[0]!,
+      actualDecision: 'REJECT',
+      judgeStructuredOutputValid: false,
+      judgeAuditSucceeded: false,
+      publicationBundleLinkageValidInMemory: false,
+    };
+
+    const metrics = calculateEndToEndMetrics(dataset, outcomes);
+    expect(metrics.judgeStructuredOutputValidity).toMatchObject({ numerator: 3, denominator: 4 });
+    expect(evaluateEndToEndGates(metrics).failures).toContain('JUDGE_STRUCTURED_OUTPUT_VALIDITY');
   });
 
   it('fails E2E required properties, in-memory bundle linkage and mutation independently', () => {

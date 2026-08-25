@@ -97,6 +97,12 @@ function completionColumns(update: AiRunSucceededUpdate | AiRunFailedUpdate) {
     ...(update.providerIncompleteReason === undefined
       ? {}
       : { providerIncompleteReason: update.providerIncompleteReason }),
+    ...(update.status !== 'FAILED' || update.providerCallAttempted === undefined
+      ? {}
+      : { providerCallAttempted: update.providerCallAttempted }),
+    ...(update.status !== 'FAILED' || update.validationFailureStage === undefined
+      ? {}
+      : { validationFailureStage: update.validationFailureStage }),
     ...(update.refusal.category === undefined ? {} : { refusalCategory: update.refusal.category }),
     ...(update.status === 'FAILED'
       ? { errorCode: update.errorCode, retryable: update.retryable }

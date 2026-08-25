@@ -102,29 +102,35 @@ Finalny live eval ma osobny fail-closed loader i nie jest włączany przez sam g
 Opt-in live eval nie wystarcza samodzielnie: preflight wymaga także `AI_ENABLED=true`,
 credentiali, wersjonowanej ceny każdego dokładnego configured modelu i planu mieszczącego
 się we wszystkich limitach. Unknown price lub przekroczenie rezerwacji blokuje call przed
-providerem. Runner ma dokładnie 46 logical calls i wymaga `AI_MAX_RETRIES=0`. Polityka
-`zero-retry-with-terminal-failure-accounting-v2` rozlicza terminalny failed attempt tylko z
-kompletnego, zamkniętego evidence jednej próby; przy evidence niepełnym zatrzymuje się bez
-częściowego raportu i bez wymyślania usage, attempts lub kosztu. Checked-in katalog cen zawiera oficjalne
+providerem. Runner ma dokładnie 46 logical calls i wymaga `AI_MAX_RETRIES=0`. Niezmieniona
+polityka `zero-retry-with-terminal-failure-accounting-v2` nadal oznacza zero retry, a jawne
+kontrakty `narrative-quality-live-execution-v2` i `post-response-failure-accounting-v3`
+rozdzielają fatalne awarie od kompletnie rozliczonego post-response invalid `JUDGE`. Przy
+evidence niepełnym runner zatrzymuje się bez częściowego raportu i bez wymyślania usage,
+attempts lub kosztu. Checked-in katalog cen zawiera oficjalne
 stawki API zweryfikowane 2026-08-21. Credential-free `npm run eval:live:preflight` używa
 dokładnie tego samego frozen planu i integer-only cost estimatora, ale nie czyta opt-inów ani
 credentiali i nie ma ścieżki do executora, adaptera, gatewaya lub audit store. Pokazuje, że
 runtime Luna/low/2048 ma ceiling 1,185,201 USD micros (401,101 `GENERATE`, 784,100 `JUDGE`)
 i 1,814,799 micros headroomu, a Terra/2048 kosztuje 8,241,209 micros i pozostaje wyłącznie
-comparison scenario ponad capem. Oba mają workload fingerprint
-`280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`;
+comparison scenario ponad capem. Po wersjonowanej zmianie transport schema i kontraktów
+wykonania oba mają workload fingerprint
+`2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b`;
 nie istnieje automatyczny fallback między nimi. Po przejściu wszystkich guardów produkcyjnych
 każdy baseline dostaje odizolowany SQLite store pod
 `.tools/narrative-live-eval/`; zawiera on wyłącznie allow-listed `AiRuns`, bez promptu,
 kontekstu, narracji, raw payloadu lub sekretu.
 
 `narrative-quality-model-profile-v2` zmienia tylko exact JUDGE profile na
-`OPENAI/gpt-5.6-luna/low/2048`. Wersje datasetu, promptów, schemas, rubryki, publication
-policy, safety prechecku i price catalogu pozostają bez zmian. Live `PREFLIGHT_PASSED`
-allowlistuje workload fingerprint, datę weryfikacji cen, exact profile, wersje planu/token/
-cost/retry, calls/attempts/cost i limits. Safe failure allowlistuje dostępne
-provider/configuredModel/responseModel/latency obok status/reason/usage/attempts, nigdy
-provider IDs, błędu, payloadu ani raw contentu.
+`OPENAI/gpt-5.6-luna/low/2048`. Dataset, prompt, rubryka, publication policy, safety precheck,
+price catalog i model profile pozostają bez zmian. Provider-visible JUDGE schema jest jawnie
+podniesiona do `narrative-quality-judge-schema-v2`; report ma v2, accepted manifest v2, a
+execution/failure accounting wersje podano wyżej. Live `PREFLIGHT_PASSED` allowlistuje
+workload fingerprint, datę weryfikacji cen, exact profile, wersje planu/execution/accounting/
+token/cost/retry, calls/attempts/cost i limits. Safe failure allowlistuje dostępne safe IDs,
+provider/configuredModel/responseModel/latency/status/reason/usage/attempts oraz
+`providerCallAttempted` i zamknięty `validationFailureStage`, nigdy błędu, payloadu ani raw
+contentu.
 
 Do końca Fazy 3B dostępne są deprecated aliases:
 
@@ -153,27 +159,32 @@ interface StructuredAiAdapter {
 
 Adapter nie ma właściwości modelu. Sprawdza provider i task profilu, bierze model, effort i
 limit z profilu, a timeout/retry/credential z głównej konfiguracji. OpenAI korzysta z
-Responses API, structured outputs, `store: false`, pustych tools i jawnego
-`reasoning.effort`. Anthropic korzysta z Messages API, `output_config.format`, jawnego
-effort, wyłączonego thinking i pustych tools. Oba wyniki przechodzą ponowną lokalną
-walidację Zod. Gateway dodatkowo waliduje `result.output` tym samym schematem po sprawdzeniu
-metadanych i przed durable `SUCCEEDED`, więc custom/test adapter nie może ominąć kontraktu
-typem TypeScript.
+Responses API przez `responses.create(...).withResponse()`, structured outputs, `store: false`,
+pustych tools i jawnego `reasoning.effort`. Anthropic korzysta z Messages API,
+`output_config.format`, jawnego effort, wyłączonego thinking i pustych tools. Provider-visible
+schema jest oddzielona od pełnego lokalnego kontraktu. Gateway dodatkowo uruchamia kontrolowany
+lokalny validator po sprawdzeniu metadanych i przed durable `SUCCEEDED`, więc custom/test
+adapter nie może ominąć kontraktu typem TypeScript.
 
-Klient OpenAI zachowuje z terminalnej odpowiedzi wyłącznie zamknięte metadata: status,
+Klient OpenAI najpierw zachowuje z terminalnej odpowiedzi wyłącznie zamknięte metadata: status,
 `incomplete_details.reason`, bezpieczne request/response IDs, response model, usage, attempts
-i kontrolowany response error code. Adapter klasyfikuje je jawnie:
+i kontrolowany response error code. Dopiero dla `COMPLETED` bez odmowy odczytuje przejściowy
+`output_text` w pamięci, wykonuje `JSON.parse`, statyczną walidację transportową oraz jawne
+`CONTEXT_BINDING`, `DIMENSION_BINDING` i `FINDING_BINDING`. Adapter klasyfikuje:
 
-- `COMPLETED` z poprawnym parsed outputem → sukces;
+- `COMPLETED` z poprawnym JSON-em i wszystkimi lokalnymi bindingami → sukces;
 - `INCOMPLETE / MAX_OUTPUT_TOKENS` → non-retryable `INCOMPLETE_MODEL_OUTPUT`;
 - `INCOMPLETE / CONTENT_FILTER` → `MODEL_REFUSAL` z kategorią `content_filter`;
-- `COMPLETED` bez parsed outputu → `EMPTY_MODEL_OUTPUT`;
+- `COMPLETED` bez output textu → `EMPTY_MODEL_OUTPUT`;
 - `FAILED`, `CANCELLED`, `QUEUED`, `IN_PROGRESS` albo status nieznany → fail-closed
   `PROVIDER_ERROR`.
 
-Nie ma continuation, auto-resume ani retry. `AiFailureExecutionEvidence` ma runtime-enforced
-allowlist i nie zawiera pola na prompt, input, output, raw JSON, provider body, raw message,
-stack lub dowolne `details`.
+Nie ma auto-resume, retry ani dodatkowego provider calla. Produkt zawsze kończy invalid output
+fail-closed. Wyłącznie syntetyczny runner może kontynuować istniejący plan po kompletnie
+rozliczonym invalid `JUDGE`, potwierdzonym dokładnym durable terminalnym `FAILED` audytem; taki
+case jest `REJECT`, a report oblewa jawne validity gates. `AiFailureExecutionEvidence` ma
+runtime-enforced allowlist i nie zawiera pola na prompt, input, output, raw JSON, provider body,
+raw message, cause, stack lub dowolne niekontrolowane `details`.
 
 `store: false` ogranicza utrwalenie obiektu odpowiedzi przez OpenAI, ale samo nie gwarantuje
 Zero Data Retention ani braku logów abuse monitoring. Ustawienia organizacji, ZDR i
@@ -324,6 +335,18 @@ i 45,732 USD micros. Nie powstał report ani accepted manifest, nie osiągnięto
 wykonano rerunu. Ten offline fix wykonuje zero provider calls, kosztuje USD 0, nie autoryzuje
 kolejnego baseline i utrzymuje Fazę 3B3 w `REVIEW`.
 
+Trzeci osobno autoryzowany run z source
+`abf0f4b258c5950381e597b0192580527d71953f` i workload fingerprintem
+`280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8` zatrzymał się
+na `P01 / JUDGE / 1/46` z `INVALID_STRUCTURED_OUTPUT`. Safe evidence nie rozstrzygało, czy
+provider call nastąpił, więc `attemptAccountingComplete=false`; zero znanych prób i zero
+znanych USD micros jest wyłącznie settled subtotalem. Istnieje jeden `FAILED` `AiRun`, zero
+review/narrative/`GENERATE`; nie wykonano retry, rerunu, smoke, diagnostycznego calla, resume,
+continuation ani fallbacku. Privacy-safe SQLite SHA-256 to
+`5039F1DAF0F434BC0BB231B7B8D9EC9F90AE1CA8A10CF980858A064CBA2BA37B`; raw danych nie
+odczytywano. Ten corrective Draft PR jest również offline-only, nie autoryzuje następnego
+baseline i utrzymuje Fazę 3B3 w `REVIEW`.
+
 ## Produktowy use case 3B3
 
 `RankedOptions.generateNarrative()` buduje `grounded-option-context-v1` wyłącznie z udanego
@@ -371,8 +394,8 @@ atomowo zapisuje review, `NarrativeRuns`, `OptionNarratives` i znormalizowane
 `NarrativeFactReferences`.
 
 Trwałe linkage używa historycznych scalar IDs, więc 30-dniowy domyślny cleanup audytu nie
-narusza produktu ani durable review. Szczegółową decyzję grounded 3B2 opisuje ADR 0007, a
-quality gate — ADR 0008.
+narusza produktu ani durable review. Szczegółową decyzję grounded 3B2 opisuje ADR 0007,
+quality gate — ADR 0008, a rozdzielenie transportu i lokalnego bindingu — ADR 0009.
 
 ## Znane ograniczenia i następne fazy
 
@@ -382,6 +405,6 @@ quality gate — ADR 0008.
 - adaptery obsługują wyłącznie tekstowy structured output;
 - precheck pozostaje wąski i nie zastępuje semantycznej oceny `JUDGE`; granica money-stage
   opisana wyżej wymaga potwierdzenia podczas review;
-- produkt nie jest jeszcze włączony publicznie; dwa osobno autoryzowane live baseline
+- produkt nie jest jeszcze włączony publicznie; trzy osobno autoryzowane live baseline
   zatrzymały się bez reportu, accepted manifestu lub rerunu, więc Faza 3B3 pozostaje
   `REVIEW`.

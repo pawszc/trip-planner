@@ -5,7 +5,13 @@ import {
   resolveMaxOutputTokens,
   validateAiExecutionProfile,
 } from './config.ts';
-import { createInputFingerprint, isValidAiRunId } from './contracts.ts';
+import {
+  AI_REFUSAL_CATEGORY_VALUES,
+  createInputFingerprint,
+  isValidAiRunId,
+  validateStructuredAiOutput,
+  type AiRefusalCategory,
+} from './contracts.ts';
 import type {
   AiCallResult,
   AiExecutionProfile,
@@ -15,6 +21,10 @@ import type {
   StructuredAiRequest,
 } from './contracts.ts';
 import { AiError } from './errors.ts';
+import {
+  parseAiFailureExecutionEvidence,
+  type AiFailureExecutionEvidence,
+} from './failure-execution-evidence.ts';
 import {
   AI_PRE_START_FAILURE_CODE_VALUES,
   NoopAiOperationalSignalSink,
@@ -31,6 +41,11 @@ const SHA_256_PATTERN = /^[0-9a-f]{64}$/u;
 const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const FALLBACK_OPERATIONAL_INSTANT = '1970-01-01T00:00:00.000Z';
 const AI_PRE_START_FAILURE_CODES = new Set<string>(AI_PRE_START_FAILURE_CODE_VALUES);
+const AI_REFUSAL_CATEGORIES = new Set<unknown>(AI_REFUSAL_CATEGORY_VALUES);
+
+function safeRefusalCategory(value: unknown): AiRefusalCategory {
+  return AI_REFUSAL_CATEGORIES.has(value) ? (value as AiRefusalCategory) : 'unknown';
+}
 
 function isNarrativeAiTaskType(taskType: AiTaskType): taskType is NarrativeAiTaskType {
   return taskType === 'GENERATE' || taskType === 'JUDGE';
@@ -86,6 +101,16 @@ function auditFailure(
   return new AiError('AI_AUDIT_FAILED', 'The AI audit record could not be persisted safely.', {
     provider: profile.provider,
     model: profile.model,
+    ...(stage !== 'STARTED'
+      ? {}
+      : {
+          executionEvidence: {
+            provider: profile.provider,
+            configuredModel: profile.model,
+            providerCallAttempted: false,
+            attempts: 0,
+          },
+        }),
     details:
       originalErrorCode === undefined
         ? {
@@ -179,15 +204,52 @@ function validateResultOutput<TOutput>(
   request: StructuredAiRequest<TOutput>,
   profile: AiExecutionProfile,
 ): TOutput {
-  const validation = request.outputSchema.safeParse(result.output);
+  const validation = validateStructuredAiOutput(request, result.output);
   if (!validation.success) {
+    let executionEvidence: AiFailureExecutionEvidence;
+    try {
+      executionEvidence = parseAiFailureExecutionEvidence({
+        provider: result.provider,
+        configuredModel: result.configuredModel,
+        providerCallAttempted: true,
+        validationFailureStage: validation.validationFailureStage,
+        responseModel: result.responseModel,
+        providerResponseStatus: 'COMPLETED',
+        ...(result.providerRequestId === undefined
+          ? {}
+          : { providerRequestId: result.providerRequestId }),
+        ...(result.providerResponseId === undefined
+          ? {}
+          : { providerResponseId: result.providerResponseId }),
+        usage: {
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          totalTokens: result.usage.totalTokens,
+          cacheReadTokens: result.usage.cacheReadTokens ?? 0,
+          cacheWriteTokens: result.usage.cacheWriteTokens ?? 0,
+          reasoningTokens: result.usage.reasoningTokens ?? 0,
+        },
+        attempts: result.attempts,
+        latencyMs: result.latencyMs,
+      });
+    } catch {
+      metadataMismatch(
+        profile,
+        'The selected adapter returned invalid completed-response accounting metadata.',
+      );
+    }
     throw new AiError(
       'INVALID_STRUCTURED_OUTPUT',
-      'The AI adapter output failed gateway-level local schema validation.',
-      { provider: profile.provider, model: profile.model },
+      'The AI adapter output failed gateway-level controlled local validation.',
+      {
+        provider: profile.provider,
+        model: profile.model,
+        details: { validationFailureStage: validation.validationFailureStage },
+        executionEvidence,
+      },
     );
   }
-  return validation.data;
+  return validation.output;
 }
 
 export class AiGateway {
@@ -412,14 +474,18 @@ export class AiGateway {
         ...(executionEvidence?.providerIncompleteReason === undefined
           ? {}
           : { providerIncompleteReason: executionEvidence.providerIncompleteReason }),
+        ...(executionEvidence?.providerCallAttempted === undefined
+          ? {}
+          : { providerCallAttempted: executionEvidence.providerCallAttempted }),
+        ...(executionEvidence?.validationFailureStage === undefined
+          ? {}
+          : { validationFailureStage: executionEvidence.validationFailureStage }),
         ...(error.code === 'MODEL_REFUSAL'
           ? {
               refusal: {
                 refused: true,
                 ...(executionEvidence?.refusalCategory === undefined
-                  ? typeof error.details.category === 'string'
-                    ? { category: error.details.category }
-                    : {}
+                  ? { category: safeRefusalCategory(error.details.category) }
                   : { category: executionEvidence.refusalCategory }),
               },
             }
@@ -446,6 +512,9 @@ export class AiGateway {
       ...(result.providerRequestId === undefined
         ? {}
         : { providerRequestId: result.providerRequestId }),
+      ...(result.providerResponseId === undefined
+        ? {}
+        : { providerResponseId: result.providerResponseId }),
     };
     try {
       await this.recorder.record(successEvent);

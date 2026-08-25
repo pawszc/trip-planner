@@ -37,6 +37,7 @@ const deterministicContractAdapter: OfflineNarrativeEvalAdapter = {
       generatedSchemaValid: true,
       exactReferencesValid: true,
       actualDecision: 'PUBLISH' as const,
+      judgeStructuredOutputValid: true,
       requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
       requiredPropertyResults: qualityCase.authored.requiredProperties.map((propertyId) => ({
         propertyId: propertyId as NarrativeE2eRequiredPropertyId,

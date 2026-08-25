@@ -41,6 +41,8 @@ function safePreflight(summary: NarrativeLiveEvalPreflightSummary) {
   return {
     status: 'PREFLIGHT_PASSED',
     planVersion: summary.plan.planVersion,
+    executionContractVersion: summary.plan.executionContractVersion,
+    failureAccountingVersion: summary.plan.failureAccountingVersion,
     tokenCeilingVersion: summary.plan.tokenCeilingVersion,
     costCeilingVersion: summary.plan.costCeilingVersion,
     retryPolicyVersion: summary.plan.retryPolicyVersion,

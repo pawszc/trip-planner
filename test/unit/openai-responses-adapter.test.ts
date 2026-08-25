@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { zodTextFormat } from 'openai/helpers/zod';
 import { loadAiConfig } from '../../srv/ai/config.js';
-import { AiProvider, AiTaskType } from '../../srv/ai/contracts.js';
+import {
+  AiProvider,
+  AiTaskType,
+  resolveStructuredAiProviderOutputSchema,
+} from '../../srv/ai/contracts.js';
 import type { AiExecutionProfile, StructuredAiRequest } from '../../srv/ai/contracts.js';
 import { AiError } from '../../srv/ai/errors.js';
 import {
@@ -15,6 +21,17 @@ import type {
 } from '../../srv/ai/adapters/openai-responses-adapter.js';
 import { createLiveSmokeRequest, liveSmokeSchema } from '../../srv/ai/schemas/live-smoke-schema.js';
 import type { LiveSmokeOutput } from '../../srv/ai/schemas/live-smoke-schema.js';
+import {
+  NARRATIVE_JUDGE_DIMENSIONS,
+  type NarrativeJudgeInput,
+  type NarrativeJudgeOutput,
+} from '../../srv/narratives/narrative-judge.js';
+import {
+  loadNarrativeQualityDataset,
+  resolveNarrativeQualityDataset,
+} from '../../srv/evals/dataset.js';
+import { prepareNarrativeQualityLiveEvalPlan } from '../../srv/evals/live-plan.js';
+import { resolveSyntheticNarrativeQualityFixture } from '../../srv/evals/synthetic-fixtures.js';
 
 const validOutput: LiveSmokeOutput = {
   ok: true,
@@ -49,6 +66,30 @@ function profile(overrides: Partial<AiExecutionProfile> = {}): AiExecutionProfil
   };
 }
 
+function exactP01Descriptor() {
+  const resolved = resolveNarrativeQualityDataset(
+    loadNarrativeQualityDataset(),
+    resolveSyntheticNarrativeQualityFixture,
+  );
+  const plan = prepareNarrativeQualityLiveEvalPlan(resolved, loadAiConfig({ AI_MAX_RETRIES: '0' }));
+  const descriptor = plan.calls[0];
+  if (descriptor?.caseId !== 'P01' || descriptor.request.taskType !== AiTaskType.JUDGE) {
+    throw new Error('The exact frozen P01 JUDGE descriptor is unavailable.');
+  }
+  return descriptor;
+}
+
+function exactP01AllPassOutput(): NarrativeJudgeOutput {
+  const request = exactP01Descriptor().request;
+  const input = request.input as NarrativeJudgeInput;
+  return {
+    qualityContextFingerprint: input.fingerprint,
+    narrativeFingerprint: input.narrativeFingerprint,
+    dimensions: NARRATIVE_JUDGE_DIMENSIONS.map((dimension) => ({ dimension, status: 'PASS' })),
+    findings: [],
+  };
+}
+
 function callAdapter(
   adapter: OpenAiResponsesAdapter,
   executionProfile: AiExecutionProfile = profile(),
@@ -57,11 +98,9 @@ function callAdapter(
   return adapter.call(request, executionProfile);
 }
 
-function successResponse<TOutput>(
-  request: OpenAiStructuredRequest<TOutput>,
-): OpenAiStructuredResponse<TOutput> {
+function successResponse(request: OpenAiStructuredRequest): OpenAiStructuredResponse {
   return {
-    outputParsed: request.outputSchema.parse(validOutput),
+    readOutputText: () => JSON.stringify(validOutput),
     responseStatus: 'COMPLETED',
     providerResponseId: 'resp_adapter_test',
     responseModel: `${request.model}-snapshot`,
@@ -74,12 +113,12 @@ function successResponse<TOutput>(
 
 function successFactory(
   onOptions?: (options: OpenAiClientOptions) => void,
-  onRequest?: (request: OpenAiStructuredRequest<unknown>) => void,
+  onRequest?: (request: OpenAiStructuredRequest) => void,
 ): OpenAiClientFactory {
   return (options) => {
     onOptions?.(options);
     return {
-      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
+      async execute(request: OpenAiStructuredRequest) {
         onRequest?.(request);
         return successResponse(request);
       },
@@ -212,33 +251,36 @@ describe('OpenAI Responses adapter', () => {
   });
 
   it('classifies terminal response states and preserves safe execution evidence', async () => {
+    const forbiddenOutputRead = vi.fn(() => {
+      throw new Error('Terminal or refused output must never be read.');
+    });
     const refusalFactory: OpenAiClientFactory = () => ({
-      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
-        return { ...successResponse(request), refused: true };
+      async execute(request: OpenAiStructuredRequest) {
+        return { ...successResponse(request), refused: true, readOutputText: forbiddenOutputRead };
       },
     });
     const emptyFactory: OpenAiClientFactory = () => ({
-      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
-        return { ...successResponse(request), outputParsed: null };
+      async execute(request: OpenAiStructuredRequest) {
+        return { ...successResponse(request), readOutputText: () => '' };
       },
     });
     const incompleteFactory: OpenAiClientFactory = () => ({
-      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
+      async execute(request: OpenAiStructuredRequest) {
         return {
           ...successResponse(request),
           responseStatus: 'INCOMPLETE',
           incompleteReason: 'MAX_OUTPUT_TOKENS',
-          outputParsed: null,
+          readOutputText: forbiddenOutputRead,
         };
       },
     });
     const filteredFactory: OpenAiClientFactory = () => ({
-      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
+      async execute(request: OpenAiStructuredRequest) {
         return {
           ...successResponse(request),
           responseStatus: 'INCOMPLETE',
           incompleteReason: 'CONTENT_FILTER',
-          outputParsed: null,
+          readOutputText: forbiddenOutputRead,
         };
       },
     });
@@ -279,14 +321,42 @@ describe('OpenAI Responses adapter', () => {
         refusalCategory: 'content_filter',
       },
     });
+    expect(forbiddenOutputRead).not.toHaveBeenCalled();
   });
+
+  it.each(['FAILED', 'CANCELLED', 'QUEUED', 'IN_PROGRESS', 'UNKNOWN'] as const)(
+    'handles %s before reading output text',
+    async (responseStatus) => {
+      const forbiddenOutputRead = vi.fn(() => {
+        throw new Error('Non-completed output must never be read.');
+      });
+      const factory: OpenAiClientFactory = () => ({
+        async execute(request: OpenAiStructuredRequest) {
+          return {
+            ...successResponse(request),
+            responseStatus,
+            readOutputText: forbiddenOutputRead,
+          };
+        },
+      });
+
+      await expect(
+        callAdapter(new OpenAiResponsesAdapter(config(), factory)),
+      ).rejects.toMatchObject({
+        code: 'PROVIDER_ERROR',
+        executionEvidence: { providerResponseStatus: responseStatus, attempts: 1, usage },
+      });
+      expect(forbiddenOutputRead).not.toHaveBeenCalled();
+    },
+  );
 
   it('locally validates parsed output with the original Zod schema', async () => {
     const invalidFactory: OpenAiClientFactory = () => ({
-      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
+      async execute(request: OpenAiStructuredRequest) {
         return {
           ...successResponse(request),
-          outputParsed: { ok: false, phase: '3b1', check: 'structured-output' } as TOutput,
+          readOutputText: () =>
+            JSON.stringify({ ok: false, phase: '3b1', check: 'structured-output' }),
         };
       },
     });
@@ -298,7 +368,7 @@ describe('OpenAI Responses adapter', () => {
 
   it('rejects an empty response model from OpenAI', async () => {
     const emptyModelFactory: OpenAiClientFactory = () => ({
-      async execute<TOutput>(request: OpenAiStructuredRequest<TOutput>) {
+      async execute(request: OpenAiStructuredRequest) {
         return { ...successResponse(request), responseModel: '' };
       },
     });
@@ -344,19 +414,25 @@ describe('OpenAI Responses adapter', () => {
     expect(error).toBeDefined();
     expect(JSON.stringify(error?.toSafeJSON())).not.toContain(credential);
     expect(String(error)).not.toContain(credential);
+    expect(error?.cause).toBeUndefined();
   });
 });
 
 describe('official OpenAI SDK transport', () => {
-  function sdkFactoryFor(payload: Readonly<Record<string, unknown>>): OpenAiClientFactory {
+  function sdkFactoryFor(
+    payload: Readonly<Record<string, unknown>>,
+    onFetch?: () => void,
+  ): OpenAiClientFactory {
     return (options) =>
       createOpenAiSdkClient({
         ...options,
-        fetchImplementation: async () =>
-          new Response(JSON.stringify(payload), {
+        fetchImplementation: async () => {
+          onFetch?.();
+          return new Response(JSON.stringify(payload), {
             status: 200,
             headers: { 'content-type': 'application/json', 'x-request-id': 'req_sdk_terminal' },
-          }),
+          });
+        },
       });
   }
 
@@ -379,6 +455,22 @@ describe('official OpenAI SDK transport', () => {
     };
   }
 
+  function completedP01Payload(outputText: string) {
+    return terminalPayload({
+      status: 'completed',
+      model: 'gpt-5.6-luna',
+      output: [
+        {
+          id: 'msg_fake_p01',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: outputText, annotations: [], logprobs: [] }],
+        },
+      ],
+    });
+  }
+
   async function terminalAdapterError(payload: Readonly<Record<string, unknown>>) {
     try {
       await callAdapter(new OpenAiResponsesAdapter(config(), sdkFactoryFor(payload)));
@@ -388,6 +480,331 @@ describe('official OpenAI SDK transport', () => {
     }
     throw new Error('Expected terminal SDK response to fail locally.');
   }
+
+  it('constructs the exact P01 provider schema independently before any fake fetch', () => {
+    const descriptor = exactP01Descriptor();
+    let fetchCalls = 0;
+    const unusedClient = createOpenAiSdkClient({
+      apiKey: 'offline-placeholder',
+      timeoutMs: 30_000,
+      maxRetries: 0,
+      fetchImplementation: async () => {
+        fetchCalls += 1;
+        throw new Error('The schema-only proof must not invoke fetch.');
+      },
+    });
+
+    expect(unusedClient).toBeDefined();
+    expect(() =>
+      zodTextFormat(
+        resolveStructuredAiProviderOutputSchema(descriptor.request),
+        descriptor.request.schemaName,
+      ),
+    ).not.toThrow();
+    expect(fetchCalls).toBe(0);
+  });
+
+  it('reaches fake fetch and returns exact P01 through the SDK create path', async () => {
+    const descriptor = exactP01Descriptor();
+    const output = exactP01AllPassOutput();
+    let fetchCalls = 0;
+    const adapter = new OpenAiResponsesAdapter(
+      config({ AI_MAX_RETRIES: '0' }),
+      sdkFactoryFor(completedP01Payload(JSON.stringify(output)), () => {
+        fetchCalls += 1;
+      }),
+    );
+
+    const result = await adapter.call(descriptor.request, descriptor.profile);
+
+    expect(fetchCalls).toBe(1);
+    expect(result.output).toEqual(output);
+    expect(result).toMatchObject({
+      responseModel: 'gpt-5.6-luna',
+      attempts: 1,
+      usage,
+    });
+  });
+
+  it('classifies exact P01 post-response parser and binding failures with complete evidence', async () => {
+    const descriptor = exactP01Descriptor();
+    const allPass = exactP01AllPassOutput();
+    const failedFactual = {
+      ...allPass,
+      dimensions: allPass.dimensions.map((result) =>
+        result.dimension === 'FACTUAL_ENTAILMENT' ? { ...result, status: 'FAIL' as const } : result,
+      ),
+    };
+    const validFinding = {
+      reasonCode: 'UNSUPPORTED_CLAIM' as const,
+      severity: 'MAJOR' as const,
+      blockSequences: [1],
+      factIds: [],
+    };
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly outputText: string;
+      readonly stage:
+        | 'RESPONSE_JSON_PARSE'
+        | 'TRANSPORT_SCHEMA_VALIDATION'
+        | 'CONTEXT_BINDING'
+        | 'DIMENSION_BINDING'
+        | 'FINDING_BINDING';
+    }> = [
+      {
+        name: 'malformed JSON',
+        outputText: '{"sentinel":"sk-proj-RAW_OUTPUT_SENTINEL",',
+        stage: 'RESPONSE_JSON_PARSE',
+      },
+      { name: 'base object', outputText: JSON.stringify({}), stage: 'TRANSPORT_SCHEMA_VALIDATION' },
+      {
+        name: 'quality fingerprint',
+        outputText: JSON.stringify({ ...allPass, qualityContextFingerprint: 'f'.repeat(64) }),
+        stage: 'CONTEXT_BINDING',
+      },
+      {
+        name: 'narrative fingerprint',
+        outputText: JSON.stringify({ ...allPass, narrativeFingerprint: 'e'.repeat(64) }),
+        stage: 'CONTEXT_BINDING',
+      },
+      {
+        name: 'missing dimension',
+        outputText: JSON.stringify({ ...allPass, dimensions: allPass.dimensions.slice(0, 7) }),
+        stage: 'DIMENSION_BINDING',
+      },
+      {
+        name: 'duplicate dimension',
+        outputText: JSON.stringify({
+          ...allPass,
+          dimensions: allPass.dimensions.map((result, index) =>
+            index === 7 ? { ...result, dimension: 'FACTUAL_ENTAILMENT' } : result,
+          ),
+        }),
+        stage: 'DIMENSION_BINDING',
+      },
+      {
+        name: 'reason-to-dimension',
+        outputText: JSON.stringify({ ...allPass, findings: [validFinding] }),
+        stage: 'FINDING_BINDING',
+      },
+      {
+        name: 'reason severity',
+        outputText: JSON.stringify({
+          ...failedFactual,
+          findings: [{ ...validFinding, severity: 'CRITICAL' }],
+        }),
+        stage: 'FINDING_BINDING',
+      },
+      {
+        name: 'context fact ID',
+        outputText: JSON.stringify({
+          ...failedFactual,
+          findings: [{ ...validFinding, factIds: [`fact_${'f'.repeat(64)}`] }],
+        }),
+        stage: 'FINDING_BINDING',
+      },
+      {
+        name: 'context block sequence',
+        outputText: JSON.stringify({
+          ...failedFactual,
+          findings: [{ ...validFinding, blockSequences: [2] }],
+        }),
+        stage: 'FINDING_BINDING',
+      },
+      {
+        name: 'unknown reason enum',
+        outputText: JSON.stringify({
+          ...failedFactual,
+          findings: [{ ...validFinding, reasonCode: 'FREE_FORM_REASON' }],
+        }),
+        stage: 'TRANSPORT_SCHEMA_VALIDATION',
+      },
+      {
+        name: 'unknown severity enum',
+        outputText: JSON.stringify({
+          ...failedFactual,
+          findings: [{ ...validFinding, severity: 'WARNING' }],
+        }),
+        stage: 'TRANSPORT_SCHEMA_VALIDATION',
+      },
+      {
+        name: 'invalid fact ID shape',
+        outputText: JSON.stringify({
+          ...failedFactual,
+          findings: [{ ...validFinding, factIds: ['fact_invalid'] }],
+        }),
+        stage: 'TRANSPORT_SCHEMA_VALIDATION',
+      },
+    ];
+
+    for (const testCase of cases) {
+      let fetchCalls = 0;
+      const adapter = new OpenAiResponsesAdapter(
+        config({ AI_MAX_RETRIES: '0' }),
+        sdkFactoryFor(completedP01Payload(testCase.outputText), () => {
+          fetchCalls += 1;
+        }),
+      );
+      let error: AiError | undefined;
+      try {
+        await adapter.call(descriptor.request, descriptor.profile);
+      } catch (caught) {
+        if (caught instanceof AiError) error = caught;
+      }
+
+      expect(error, testCase.name).toMatchObject({
+        code: 'INVALID_STRUCTURED_OUTPUT',
+        executionEvidence: {
+          providerCallAttempted: true,
+          validationFailureStage: testCase.stage,
+          providerResponseStatus: 'COMPLETED',
+          responseModel: 'gpt-5.6-luna',
+          attempts: 1,
+          usage,
+        },
+      });
+      expect(fetchCalls, testCase.name).toBe(1);
+      expect(error?.cause, testCase.name).toBeUndefined();
+      expect(JSON.stringify(error?.toSafeJSON()), testCase.name).not.toContain(
+        'RAW_OUTPUT_SENTINEL',
+      );
+      expect(String(error), testCase.name).not.toContain('RAW_OUTPUT_SENTINEL');
+    }
+  });
+
+  it('classifies exact P01 schema construction before request with complete zero accounting', async () => {
+    const descriptor = exactP01Descriptor();
+    let fetchCalls = 0;
+    const adapter = new OpenAiResponsesAdapter(config({ AI_MAX_RETRIES: '0' }), (options) =>
+      createOpenAiSdkClient({
+        ...options,
+        fetchImplementation: async () => {
+          fetchCalls += 1;
+          throw new Error('Schema construction must fail before fetch.');
+        },
+      }),
+    );
+
+    await expect(
+      adapter.call({ ...descriptor.request, providerOutputSchema: z.date() }, descriptor.profile),
+    ).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      executionEvidence: {
+        providerCallAttempted: false,
+        validationFailureStage: 'SCHEMA_CONSTRUCTION',
+        attempts: 0,
+      },
+    });
+    expect(fetchCalls).toBe(0);
+  });
+
+  it('classifies synchronous client initialization failure before fetch with complete zero accounting', async () => {
+    const rawMessage =
+      'RAW_PRE_FETCH_INITIALIZATION_SENTINEL sk-proj-pre-fetch-secret private@example.test';
+    let fetchCalls = 0;
+    const adapter = new OpenAiResponsesAdapter(config({ AI_MAX_RETRIES: '0' }), (options) => {
+      createOpenAiSdkClient({
+        ...options,
+        fetchImplementation: async () => {
+          fetchCalls += 1;
+          throw new Error('Controlled fetch must remain unreachable.');
+        },
+      });
+      throw new Error(rawMessage);
+    });
+
+    let error: AiError | undefined;
+    try {
+      await callAdapter(adapter);
+    } catch (caught) {
+      if (caught instanceof AiError) error = caught;
+    }
+
+    expect(fetchCalls).toBe(0);
+    expect(error).toMatchObject({
+      code: 'PROVIDER_ERROR',
+      executionEvidence: {
+        provider: 'OPENAI',
+        configuredModel: 'gpt-profile-model',
+        providerCallAttempted: false,
+        attempts: 0,
+      },
+    });
+    expect(error?.executionEvidence).not.toHaveProperty('usage');
+    expect(error?.executionEvidence).not.toHaveProperty('providerRequestId');
+    expect(error?.executionEvidence).not.toHaveProperty('providerResponseId');
+    expect(error?.executionEvidence).not.toHaveProperty('responseModel');
+    expect(error?.executionEvidence).not.toHaveProperty('providerResponseStatus');
+    expect(error?.executionEvidence).not.toHaveProperty('providerIncompleteReason');
+    expect(JSON.stringify(error?.toSafeJSON())).not.toContain(rawMessage);
+    expect(String(error)).not.toContain(rawMessage);
+    expect(error?.stack).not.toContain(rawMessage);
+    expect(error?.cause).toBeUndefined();
+  });
+
+  it('records a started SDK request without usage as incomplete safe accounting', async () => {
+    const rawMessage = 'fetch failed: ECONNRESET RAW_PROVIDER_MESSAGE_SENTINEL';
+    let fetchCalls = 0;
+    const adapter = new OpenAiResponsesAdapter(config({ AI_MAX_RETRIES: '0' }), (options) =>
+      createOpenAiSdkClient({
+        ...options,
+        fetchImplementation: async () => {
+          fetchCalls += 1;
+          throw new Error(rawMessage);
+        },
+      }),
+    );
+
+    let error: AiError | undefined;
+    try {
+      await callAdapter(adapter);
+    } catch (caught) {
+      if (caught instanceof AiError) error = caught;
+    }
+
+    expect(fetchCalls).toBe(1);
+    expect(error).toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE',
+      executionEvidence: {
+        provider: 'OPENAI',
+        configuredModel: 'gpt-profile-model',
+        providerCallAttempted: true,
+        attempts: 1,
+      },
+    });
+    expect(error?.executionEvidence).not.toHaveProperty('usage');
+    expect(error?.executionEvidence).not.toHaveProperty('providerResponseStatus');
+    expect(error?.cause).toBeUndefined();
+    expect(JSON.stringify(error?.toSafeJSON())).not.toContain(rawMessage);
+    expect(String(error)).not.toContain(rawMessage);
+    expect(error?.stack).not.toContain(rawMessage);
+  });
+
+  it('fails closed with incomplete accounting when SDK response metadata is malformed', async () => {
+    const error = await terminalAdapterError(
+      terminalPayload({
+        usage: {
+          input_tokens: 11,
+          output_tokens: 7,
+          total_tokens: 18,
+          input_tokens_details: null,
+          output_tokens_details: null,
+        },
+      }),
+    );
+
+    expect(error).toMatchObject({
+      code: 'PROVIDER_ERROR',
+      executionEvidence: {
+        provider: 'OPENAI',
+        configuredModel: 'gpt-profile-model',
+        providerCallAttempted: true,
+        attempts: 1,
+      },
+    });
+    expect(error.executionEvidence).not.toHaveProperty('usage');
+    expect(error.cause).toBeUndefined();
+  });
 
   it('classifies SDK incomplete max-output responses with complete safe evidence', async () => {
     const error = await terminalAdapterError(
@@ -459,7 +876,7 @@ describe('official OpenAI SDK transport', () => {
     expect(JSON.stringify(error.toSafeJSON())).not.toContain(rawMessage);
   });
 
-  it('uses responses.parse with zodTextFormat and a tool-free, non-stored payload offline', async () => {
+  it('uses responses.create with zodTextFormat and a tool-free, non-stored payload offline', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const fetchImplementation: typeof fetch = async (_input, init) => {
       if (typeof init?.body !== 'string') {
@@ -515,7 +932,7 @@ describe('official OpenAI SDK transport', () => {
       instructions: 'Return structured output.',
       input: JSON.stringify(validOutput),
       schemaName: 'phase_3b1_live_smoke',
-      outputSchema: liveSmokeSchema,
+      providerOutputSchema: liveSmokeSchema,
       maxOutputTokens: 128,
       reasoningEffort: 'none',
       store: false,
@@ -524,7 +941,6 @@ describe('official OpenAI SDK transport', () => {
     });
 
     expect(response).toMatchObject({
-      outputParsed: validOutput,
       responseStatus: 'COMPLETED',
       providerResponseId: 'resp_test',
       responseModel: 'gpt-5.6-luna',
@@ -532,6 +948,9 @@ describe('official OpenAI SDK transport', () => {
       attempts: 1,
       usage,
     });
+    expect(response).not.toHaveProperty('outputText');
+    expect(JSON.stringify(response)).not.toContain(JSON.stringify(validOutput));
+    expect(response.readOutputText()).toBe(JSON.stringify(validOutput));
     expect(requestBody).toMatchObject({
       model: 'gpt-5.6-luna',
       store: false,
@@ -547,5 +966,52 @@ describe('official OpenAI SDK transport', () => {
         },
       },
     });
+  });
+
+  it('forces SDK logging off even when ambient OPENAI_LOG requests debug output', async () => {
+    vi.stubEnv('OPENAI_LOG', 'debug');
+    const consoleSpies = [
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    ];
+    try {
+      const client = createOpenAiSdkClient({
+        apiKey: 'offline-placeholder',
+        timeoutMs: 30_000,
+        maxRetries: 0,
+        fetchImplementation: async () =>
+          new Response(
+            JSON.stringify(
+              completedP01Payload(
+                '{"raw":"RAW_SDK_LOG_OUTPUT_SENTINEL","secret":"sk-proj-log-sentinel"}',
+              ),
+            ),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json', 'x-request-id': 'req_sdk_log' },
+            },
+          ),
+      });
+
+      await client.execute({
+        model: 'gpt-5.6-luna',
+        instructions: 'PROMPT_SDK_LOG_SENTINEL',
+        input: 'CANDIDATE_SDK_LOG_SENTINEL private@example.test',
+        schemaName: 'phase_3b3_sdk_log_proof',
+        providerOutputSchema: liveSmokeSchema,
+        maxOutputTokens: 128,
+        reasoningEffort: 'none',
+        store: false,
+        tools: [],
+        toolChoice: 'none',
+      });
+
+      for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of consoleSpies) spy.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 });

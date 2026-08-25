@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { AiConfig } from '../ai/config.ts';
-import { AiTaskType, createInputFingerprint, type JsonValue } from '../ai/contracts.ts';
+import {
+  AiTaskType,
+  createInputFingerprint,
+  resolveStructuredAiProviderOutputSchema,
+  type JsonValue,
+} from '../ai/contracts.ts';
 import {
   EvalContractError,
   loadNarrativeQualityDataset,
@@ -14,6 +19,8 @@ import {
   type LiveEvalLimits,
 } from './live-guard.ts';
 import {
+  NARRATIVE_LIVE_EVAL_EXECUTION_CONTRACT_VERSION,
+  NARRATIVE_LIVE_EVAL_FAILURE_ACCOUNTING_VERSION,
   prepareNarrativeQualityLiveEvalPlan,
   type NarrativeLiveEvalSafePlan,
   type PreparedLivePlan,
@@ -116,7 +123,7 @@ function workloadFingerprint(plan: PreparedLivePlan): string {
   const calls = plan.calls.map((call) => {
     let outputSchema: unknown;
     try {
-      outputSchema = z.toJSONSchema(call.request.outputSchema);
+      outputSchema = z.toJSONSchema(resolveStructuredAiProviderOutputSchema(call.request));
     } catch {
       throw new EvalContractError(
         'INVALID_EVAL_INPUT',
@@ -138,7 +145,12 @@ function workloadFingerprint(plan: PreparedLivePlan): string {
       maximumOutputTokensPerAttempt: call.budget.maximumUsagePerAttempt.outputTokens / 2,
     };
   });
-  return createInputFingerprint({ versions: NARRATIVE_EVAL_CONTRACT_VERSIONS, calls });
+  return createInputFingerprint({
+    executionContractVersion: NARRATIVE_LIVE_EVAL_EXECUTION_CONTRACT_VERSION,
+    failureAccountingVersion: NARRATIVE_LIVE_EVAL_FAILURE_ACCOUNTING_VERSION,
+    versions: NARRATIVE_EVAL_CONTRACT_VERSIONS,
+    calls,
+  });
 }
 
 function profileSummary(

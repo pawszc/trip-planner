@@ -3,6 +3,7 @@ import type { AiConfig } from '../ai/config.ts';
 import {
   AiTaskType,
   canonicalizeJson,
+  resolveStructuredAiProviderOutputSchema,
   type AiExecutionProfile,
   type StructuredAiRequest,
 } from '../ai/contracts.ts';
@@ -46,6 +47,8 @@ import {
 } from './synthetic-fixtures.ts';
 
 export const NARRATIVE_LIVE_EVAL_PLAN_VERSION = 'narrative-quality-live-plan-v1';
+export const NARRATIVE_LIVE_EVAL_EXECUTION_CONTRACT_VERSION = 'narrative-quality-live-execution-v2';
+export const NARRATIVE_LIVE_EVAL_FAILURE_ACCOUNTING_VERSION = 'post-response-failure-accounting-v3';
 export const NARRATIVE_LIVE_EVAL_TOKEN_CEILING_VERSION =
   'utf8-wire-bytes-plus-4096-protocol-tokens-v1';
 export const NARRATIVE_LIVE_EVAL_COST_CEILING_VERSION = 'full-ceiling-each-token-class-v1';
@@ -85,6 +88,8 @@ export interface NarrativeLiveEvalSafePlannedCall {
 
 export interface NarrativeLiveEvalSafePlan {
   readonly planVersion: typeof NARRATIVE_LIVE_EVAL_PLAN_VERSION;
+  readonly executionContractVersion: typeof NARRATIVE_LIVE_EVAL_EXECUTION_CONTRACT_VERSION;
+  readonly failureAccountingVersion: typeof NARRATIVE_LIVE_EVAL_FAILURE_ACCOUNTING_VERSION;
   readonly tokenCeilingVersion: typeof NARRATIVE_LIVE_EVAL_TOKEN_CEILING_VERSION;
   readonly costCeilingVersion: typeof NARRATIVE_LIVE_EVAL_COST_CEILING_VERSION;
   readonly retryPolicyVersion: typeof NARRATIVE_LIVE_EVAL_RETRY_POLICY_VERSION;
@@ -156,7 +161,7 @@ function profileForRequest(
 function schemaWireBytes(request: StructuredAiRequest<unknown>): number {
   let schema: unknown;
   try {
-    schema = z.toJSONSchema(request.outputSchema);
+    schema = z.toJSONSchema(resolveStructuredAiProviderOutputSchema(request));
   } catch {
     throw new EvalContractError(
       'INVALID_EVAL_INPUT',
@@ -452,6 +457,8 @@ export function prepareNarrativeQualityLiveEvalPlan(
   );
   const safe: NarrativeLiveEvalSafePlan = {
     planVersion: NARRATIVE_LIVE_EVAL_PLAN_VERSION,
+    executionContractVersion: NARRATIVE_LIVE_EVAL_EXECUTION_CONTRACT_VERSION,
+    failureAccountingVersion: NARRATIVE_LIVE_EVAL_FAILURE_ACCOUNTING_VERSION,
     tokenCeilingVersion: NARRATIVE_LIVE_EVAL_TOKEN_CEILING_VERSION,
     costCeilingVersion: NARRATIVE_LIVE_EVAL_COST_CEILING_VERSION,
     retryPolicyVersion: NARRATIVE_LIVE_EVAL_RETRY_POLICY_VERSION,

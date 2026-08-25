@@ -3,6 +3,8 @@ import {
   canonicalizeJson,
   createInputFingerprint,
   isValidAiRunId,
+  AiTaskType,
+  validateStructuredAiOutput,
   type AiCallResult,
   type AiUsage,
   type StructuredAiRequest,
@@ -11,11 +13,11 @@ import { AI_ERROR_CODE_VALUES, AiError, type AiErrorCode } from '../ai/errors.ts
 import type {
   AiProviderIncompleteReason,
   AiProviderResponseStatus,
+  AiValidationFailureStage,
 } from '../ai/failure-execution-evidence.ts';
 import type { GroundedOptionContext } from '../narratives/grounded-option-context.ts';
 import {
   createNarrativeJudgeRequest,
-  parseNarrativeJudgeOutput,
   type NarrativeJudgeOutput,
   type NarrativeJudgeReasonCode,
 } from '../narratives/narrative-judge.ts';
@@ -44,6 +46,7 @@ import {
 import {
   LiveEvalBudgetGuard,
   preflightLiveEvaluation,
+  type LiveEvalBudgetSnapshot,
   type LiveCallReservation,
 } from './live-guard.ts';
 import {
@@ -95,6 +98,8 @@ export interface RunNarrativeLiveEvaluationInput {
   readonly createExecutor: () => Promise<NarrativeLiveEvalExecutor>;
   readonly resolvedDataset?: ResolvedNarrativeQualityDataset;
   readonly onPreflight?: (summary: NarrativeLiveEvalPreflightSummary) => void;
+  /** Offline fault-injection seam for verifying post-execution accounting. */
+  readonly buildReport?: typeof buildPrivacySafeEvalReport;
 }
 
 export interface NarrativeLiveEvaluationResult {
@@ -113,7 +118,7 @@ export interface SafeNarrativeLiveEvalFailure {
     | 'LIVE_EVAL_EXECUTION_FAILED'
     | 'LIVE_EVAL_RUNNER_FAILED';
   readonly reportProduced: false;
-  readonly providerCallMayHaveOccurred: boolean;
+  readonly providerCallAttempted: boolean;
   readonly attemptAccountingComplete: boolean;
   readonly caseId?: string;
   readonly taskType?: 'GENERATE' | 'JUDGE';
@@ -125,25 +130,53 @@ export interface SafeNarrativeLiveEvalFailure {
   readonly responseModel?: string;
   readonly providerResponseStatus?: AiProviderResponseStatus;
   readonly providerIncompleteReason?: AiProviderIncompleteReason;
+  readonly providerRequestId?: string;
+  readonly providerResponseId?: string;
+  readonly validationFailureStage?: AiValidationFailureStage;
   readonly attempts?: number;
   readonly usage?: Readonly<Required<AiUsage>>;
   readonly latencyMs?: number;
+  readonly refusalCategory?: 'content_filter' | 'model_refusal' | 'unknown';
   readonly knownCumulativeProviderAttempts?: number;
   readonly knownCumulativeEstimatedCostUsdMicros?: number;
 }
 
 interface ValidatedExecution<TOutput> {
+  readonly kind: 'SUCCEEDED';
   readonly result: AiCallResult<TOutput>;
   readonly usage: BillableTokenUsage;
   readonly auditSucceeded: true;
 }
 
+interface AccountedInvalidJudgeExecution {
+  readonly kind: 'ACCOUNTED_INVALID_STRUCTURED_OUTPUT';
+  readonly validationFailureStage: Exclude<AiValidationFailureStage, 'SCHEMA_CONSTRUCTION'>;
+}
+
+type NarrativeLiveEvalExecution<TOutput> =
+  ValidatedExecution<TOutput> | AccountedInvalidJudgeExecution;
+
 const RESPONSE_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/u;
+const POST_RESPONSE_VALIDATION_STAGES = new Set<AiValidationFailureStage>([
+  'RESPONSE_JSON_PARSE',
+  'TRANSPORT_SCHEMA_VALIDATION',
+  'CONTEXT_BINDING',
+  'DIMENSION_BINDING',
+  'FINDING_BINDING',
+]);
 const PRECHECK_DIMENSION_BY_REASON = Object.freeze({
   MONEY_CALCULATION_OR_REFORMAT: 'MONEY_DATE_TIME_FIDELITY',
   UNTRUSTED_CONTENT_EXPOSED: 'SAFETY_INSTRUCTION_INTEGRITY',
   PII_OR_SECRET_EXPOSURE: 'SAFETY_INSTRUCTION_INTEGRITY',
 } as const satisfies Partial<Record<NarrativeJudgeReasonCode, NarrativeQualityDimension>>);
+const SAFE_EVAL_FAILURE_CODE_VALUES = new Set<string>([
+  ...AI_ERROR_CODE_VALUES,
+  'INVALID_DATASET',
+  'DATASET_FINGERPRINT_MISMATCH',
+  'INVALID_DATASET_AUTHORING',
+  'INVALID_EVAL_INPUT',
+  'LIVE_EVAL_BLOCKED',
+]);
 
 function uniqueInOrder<T>(values: readonly T[]): readonly T[] {
   return [...new Set(values)];
@@ -200,7 +233,7 @@ function validateExecutionResult<TOutput>(
       'A live-eval result failed local metadata, audit, refusal, or profile validation.',
     );
   }
-  const parsedOutput = descriptor.request.outputSchema.safeParse(result.output);
+  const parsedOutput = validateStructuredAiOutput(descriptor.request, result.output);
   if (!parsedOutput.success) {
     throw new EvalContractError(
       'LIVE_EVAL_BLOCKED',
@@ -208,7 +241,8 @@ function validateExecutionResult<TOutput>(
     );
   }
   return {
-    result: { ...result, output: parsedOutput.data },
+    kind: 'SUCCEEDED',
+    result: { ...result, output: parsedOutput.output },
     usage: normalizeUsage(result.usage),
     auditSucceeded: true,
   };
@@ -218,7 +252,7 @@ function underlyingFailureCode(error: unknown): string {
   if (error instanceof AiError || error instanceof EvalContractError) return error.code;
   if (typeof error !== 'object' || error === null) return 'UNKNOWN';
   const code = (error as { readonly code?: unknown }).code;
-  return typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/u.test(code) ? code : 'UNKNOWN';
+  return typeof code === 'string' && SAFE_EVAL_FAILURE_CODE_VALUES.has(code) ? code : 'UNKNOWN';
 }
 
 export class NarrativeLiveEvalExecutionError extends Error {
@@ -226,7 +260,7 @@ export class NarrativeLiveEvalExecutionError extends Error {
   readonly caseId: string;
   readonly taskType: 'GENERATE' | 'JUDGE';
   readonly logicalCallSequence: number;
-  readonly providerCallMayHaveOccurred: boolean;
+  readonly providerCallAttempted: boolean;
   readonly underlyingCode: string;
   readonly completedLogicalCalls: number;
   readonly attemptAccountingComplete: boolean;
@@ -235,16 +269,19 @@ export class NarrativeLiveEvalExecutionError extends Error {
   readonly responseModel?: string;
   readonly providerResponseStatus?: AiProviderResponseStatus;
   readonly providerIncompleteReason?: AiProviderIncompleteReason;
+  readonly providerRequestId?: string;
+  readonly providerResponseId?: string;
+  readonly validationFailureStage?: AiValidationFailureStage;
   readonly attempts?: number;
   readonly usage?: Readonly<Required<AiUsage>>;
   readonly latencyMs?: number;
+  readonly refusalCategory?: 'content_filter' | 'model_refusal' | 'unknown';
   readonly knownCumulativeProviderAttempts: number;
   readonly knownCumulativeEstimatedCostUsdMicros: number;
 
   constructor(
     descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
     logicalCallSequence: number,
-    providerCallMayHaveOccurred: boolean,
     underlying: unknown,
     accounting: FailureAccounting,
   ) {
@@ -253,7 +290,7 @@ export class NarrativeLiveEvalExecutionError extends Error {
     this.caseId = descriptor.caseId;
     this.taskType = descriptor.request.taskType as 'GENERATE' | 'JUDGE';
     this.logicalCallSequence = logicalCallSequence;
-    this.providerCallMayHaveOccurred = providerCallMayHaveOccurred;
+    this.providerCallAttempted = accounting.providerCallAttempted;
     this.underlyingCode = underlyingFailureCode(underlying);
     this.completedLogicalCalls = accounting.completedLogicalCalls;
     this.attemptAccountingComplete = accounting.attemptAccountingComplete;
@@ -270,23 +307,67 @@ export class NarrativeLiveEvalExecutionError extends Error {
     if (accounting.providerIncompleteReason !== undefined) {
       this.providerIncompleteReason = accounting.providerIncompleteReason;
     }
+    if (accounting.providerRequestId !== undefined) {
+      this.providerRequestId = accounting.providerRequestId;
+    }
+    if (accounting.providerResponseId !== undefined) {
+      this.providerResponseId = accounting.providerResponseId;
+    }
+    if (accounting.validationFailureStage !== undefined) {
+      this.validationFailureStage = accounting.validationFailureStage;
+    }
     if (accounting.attempts !== undefined) this.attempts = accounting.attempts;
     if (accounting.usage !== undefined) this.usage = accounting.usage;
     if (accounting.latencyMs !== undefined) this.latencyMs = accounting.latencyMs;
+    if (accounting.refusalCategory !== undefined) {
+      this.refusalCategory = accounting.refusalCategory;
+    }
+  }
+}
+
+export class NarrativeLiveEvalPostProcessingError extends Error {
+  readonly code = 'LIVE_EVAL_RUNNER_FAILED' as const;
+  readonly providerCallAttempted: boolean;
+  readonly underlyingCode: string;
+  readonly completedLogicalCalls: number;
+  readonly attemptAccountingComplete: boolean;
+  readonly knownCumulativeProviderAttempts: number;
+  readonly knownCumulativeEstimatedCostUsdMicros: number;
+
+  constructor(
+    underlying: unknown,
+    snapshot: LiveEvalBudgetSnapshot,
+    completedLogicalCalls: number,
+  ) {
+    super('Live evaluation failed during deterministic post-processing without a partial report.');
+    this.name = 'NarrativeLiveEvalPostProcessingError';
+    this.providerCallAttempted = snapshot.providerAttemptsCompleted > 0;
+    this.underlyingCode = underlyingFailureCode(underlying);
+    this.completedLogicalCalls = completedLogicalCalls;
+    this.attemptAccountingComplete =
+      !snapshot.activeReservation && snapshot.logicalCallsStarted === completedLogicalCalls;
+    this.knownCumulativeProviderAttempts = snapshot.providerAttemptsCompleted;
+    this.knownCumulativeEstimatedCostUsdMicros = snapshot.estimatedCostUsdMicros;
   }
 }
 
 interface FailureAccounting {
   readonly completedLogicalCalls: number;
+  readonly providerCallAttempted: boolean;
   readonly attemptAccountingComplete: boolean;
   readonly provider?: 'OPENAI' | 'ANTHROPIC';
   readonly configuredModel?: string;
   readonly responseModel?: string;
   readonly providerResponseStatus?: AiProviderResponseStatus;
   readonly providerIncompleteReason?: AiProviderIncompleteReason;
+  readonly providerRequestId?: string;
+  readonly providerResponseId?: string;
+  readonly validationFailureStage?: AiValidationFailureStage;
   readonly attempts?: number;
   readonly usage?: Readonly<Required<AiUsage>>;
   readonly latencyMs?: number;
+  readonly refusalCategory?: 'content_filter' | 'model_refusal' | 'unknown';
+  readonly currentEstimatedCostUsdMicros?: number;
   readonly knownCumulativeProviderAttempts: number;
   readonly knownCumulativeEstimatedCostUsdMicros: number;
 }
@@ -297,11 +378,21 @@ function settleFailureAccounting(
   reservation: LiveCallReservation | undefined,
   error: unknown,
   completedLogicalCalls: number,
+  responseModelConsistent: boolean,
 ): FailureAccounting {
   const before = guard.snapshot();
   const evidence = error instanceof AiError ? error.executionEvidence : undefined;
+  const providerCallAttempted = evidence?.providerCallAttempted ?? reservation !== undefined;
+  const errorProfileMatches =
+    error instanceof AiError &&
+    error.provider === descriptor.profile.provider &&
+    error.model === descriptor.profile.model;
+  const evidenceProfileMatches =
+    evidence?.provider === descriptor.profile.provider &&
+    evidence.configuredModel === descriptor.profile.model;
   const common = {
     completedLogicalCalls,
+    providerCallAttempted,
     ...(evidence?.provider === undefined ? {} : { provider: evidence.provider }),
     ...(evidence?.configuredModel === undefined
       ? {}
@@ -313,22 +404,56 @@ function settleFailureAccounting(
     ...(evidence?.providerIncompleteReason === undefined
       ? {}
       : { providerIncompleteReason: evidence.providerIncompleteReason }),
+    ...(evidence?.providerRequestId === undefined
+      ? {}
+      : { providerRequestId: evidence.providerRequestId }),
+    ...(evidence?.providerResponseId === undefined
+      ? {}
+      : { providerResponseId: evidence.providerResponseId }),
+    ...(evidence?.validationFailureStage === undefined
+      ? {}
+      : { validationFailureStage: evidence.validationFailureStage }),
     ...(evidence?.attempts === undefined ? {} : { attempts: evidence.attempts }),
     ...(evidence?.usage === undefined ? {} : { usage: evidence.usage }),
     ...(evidence?.latencyMs === undefined ? {} : { latencyMs: evidence.latencyMs }),
+    ...(evidence?.refusalCategory === undefined
+      ? {}
+      : { refusalCategory: evidence.refusalCategory }),
   };
   if (reservation === undefined) {
     return {
       ...common,
-      attemptAccountingComplete: true,
+      attemptAccountingComplete:
+        evidence === undefined ||
+        (errorProfileMatches &&
+          evidenceProfileMatches &&
+          evidence.providerCallAttempted === false &&
+          evidence.attempts === 0 &&
+          evidence.usage === undefined),
+      knownCumulativeProviderAttempts: before.providerAttemptsCompleted,
+      knownCumulativeEstimatedCostUsdMicros: before.estimatedCostUsdMicros,
+    };
+  }
+  if (evidence?.providerCallAttempted === false) {
+    return {
+      ...common,
+      attemptAccountingComplete:
+        errorProfileMatches &&
+        evidenceProfileMatches &&
+        evidence.attempts === 0 &&
+        evidence.usage === undefined,
       knownCumulativeProviderAttempts: before.providerAttemptsCompleted,
       knownCumulativeEstimatedCostUsdMicros: before.estimatedCostUsdMicros,
     };
   }
   if (
     evidence === undefined ||
-    evidence.provider !== descriptor.profile.provider ||
-    evidence.configuredModel !== descriptor.profile.model ||
+    !errorProfileMatches ||
+    evidence.providerCallAttempted !== true ||
+    !evidenceProfileMatches ||
+    evidence.responseModel === undefined ||
+    !RESPONSE_MODEL_PATTERN.test(evidence.responseModel) ||
+    !responseModelConsistent ||
     evidence.attempts !== 1 ||
     evidence.usage === undefined
   ) {
@@ -345,6 +470,7 @@ function settleFailureAccounting(
     return {
       ...common,
       attemptAccountingComplete: true,
+      currentEstimatedCostUsdMicros: settled.estimatedCostUsdMicros - before.estimatedCostUsdMicros,
       knownCumulativeProviderAttempts: settled.providerAttemptsCompleted,
       knownCumulativeEstimatedCostUsdMicros: settled.estimatedCostUsdMicros,
     };
@@ -358,13 +484,70 @@ function settleFailureAccounting(
   }
 }
 
+type PostResponseValidationFailureStage = Exclude<AiValidationFailureStage, 'SCHEMA_CONSTRUCTION'>;
+
+function isPostResponseValidationFailureStage(
+  stage: AiValidationFailureStage | undefined,
+): stage is PostResponseValidationFailureStage {
+  return stage !== undefined && POST_RESPONSE_VALIDATION_STAGES.has(stage);
+}
+
+function hasDurableFailedAuditLink(error: AiError): boolean {
+  const aiRunId = error.details.aiRunId;
+  // AiGateway adds this UUID only after terminal FAILED persistence succeeds. It is consumed as
+  // an internal proof and is deliberately absent from reports and safe CLI failures.
+  return typeof aiRunId === 'string' && isValidAiRunId(aiRunId);
+}
+
+function continuableInvalidJudgeStage(
+  descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
+  error: unknown,
+  accounting: FailureAccounting,
+): PostResponseValidationFailureStage | undefined {
+  if (
+    descriptor.request.taskType !== AiTaskType.JUDGE ||
+    !(error instanceof AiError) ||
+    error.code !== 'INVALID_STRUCTURED_OUTPUT' ||
+    error.retryable ||
+    error.provider !== descriptor.profile.provider ||
+    error.model !== descriptor.profile.model ||
+    !hasDurableFailedAuditLink(error)
+  ) {
+    return undefined;
+  }
+  const evidence = error.executionEvidence;
+  if (
+    evidence === undefined ||
+    evidence.providerCallAttempted !== true ||
+    evidence.provider !== descriptor.profile.provider ||
+    evidence.configuredModel !== descriptor.profile.model ||
+    evidence.providerResponseStatus !== 'COMPLETED' ||
+    evidence.providerIncompleteReason !== undefined ||
+    evidence.responseModel === undefined ||
+    !RESPONSE_MODEL_PATTERN.test(evidence.responseModel) ||
+    evidence.providerRequestId === undefined ||
+    evidence.providerResponseId === undefined ||
+    evidence.attempts !== 1 ||
+    evidence.usage === undefined ||
+    !Number.isSafeInteger(evidence.latencyMs) ||
+    (evidence.latencyMs ?? -1) < 0 ||
+    evidence.refusalCategory !== undefined ||
+    !isPostResponseValidationFailureStage(evidence.validationFailureStage) ||
+    !accounting.attemptAccountingComplete ||
+    accounting.currentEstimatedCostUsdMicros === undefined
+  ) {
+    return undefined;
+  }
+  return evidence.validationFailureStage;
+}
+
 export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiveEvalFailure {
   if (error instanceof NarrativeLiveEvalExecutionError) {
     return {
       status: 'FAILED',
       code: error.code,
       reportProduced: false,
-      providerCallMayHaveOccurred: error.providerCallMayHaveOccurred,
+      providerCallAttempted: error.providerCallAttempted,
       attemptAccountingComplete: error.attemptAccountingComplete,
       caseId: error.caseId,
       taskType: error.taskType,
@@ -380,9 +563,32 @@ export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiv
       ...(error.providerIncompleteReason === undefined
         ? {}
         : { providerIncompleteReason: error.providerIncompleteReason }),
+      ...(error.providerRequestId === undefined
+        ? {}
+        : { providerRequestId: error.providerRequestId }),
+      ...(error.providerResponseId === undefined
+        ? {}
+        : { providerResponseId: error.providerResponseId }),
+      ...(error.validationFailureStage === undefined
+        ? {}
+        : { validationFailureStage: error.validationFailureStage }),
       ...(error.attempts === undefined ? {} : { attempts: error.attempts }),
       ...(error.usage === undefined ? {} : { usage: error.usage }),
       ...(error.latencyMs === undefined ? {} : { latencyMs: error.latencyMs }),
+      ...(error.refusalCategory === undefined ? {} : { refusalCategory: error.refusalCategory }),
+      knownCumulativeProviderAttempts: error.knownCumulativeProviderAttempts,
+      knownCumulativeEstimatedCostUsdMicros: error.knownCumulativeEstimatedCostUsdMicros,
+    };
+  }
+  if (error instanceof NarrativeLiveEvalPostProcessingError) {
+    return {
+      status: 'FAILED',
+      code: error.code,
+      reportProduced: false,
+      providerCallAttempted: error.providerCallAttempted,
+      attemptAccountingComplete: error.attemptAccountingComplete,
+      completedLogicalCalls: error.completedLogicalCalls,
+      underlyingCode: error.underlyingCode,
       knownCumulativeProviderAttempts: error.knownCumulativeProviderAttempts,
       knownCumulativeEstimatedCostUsdMicros: error.knownCumulativeEstimatedCostUsdMicros,
     };
@@ -392,17 +598,18 @@ export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiv
       status: 'FAILED',
       code: error.code,
       reportProduced: false,
-      providerCallMayHaveOccurred: false,
+      providerCallAttempted: false,
       attemptAccountingComplete: true,
     };
   }
   if (error instanceof AiError) {
+    const providerCallAttempted = error.executionEvidence?.providerCallAttempted ?? false;
     return {
       status: 'FAILED',
       code: error.code,
       reportProduced: false,
-      providerCallMayHaveOccurred: false,
-      attemptAccountingComplete: true,
+      providerCallAttempted,
+      attemptAccountingComplete: !providerCallAttempted,
     };
   }
   const candidateCode = underlyingFailureCode(error);
@@ -412,7 +619,7 @@ export function toSafeNarrativeLiveEvalFailure(error: unknown): SafeNarrativeLiv
       ? (candidateCode as AiErrorCode)
       : 'LIVE_EVAL_RUNNER_FAILED',
     reportProduced: false,
-    providerCallMayHaveOccurred: false,
+    providerCallAttempted: false,
     attemptAccountingComplete: true,
   };
 }
@@ -455,6 +662,17 @@ function judgeOutcome(caseId: string, output: NarrativeJudgeOutput): SemanticCas
       .map(({ dimension }) => dimension),
     reasonCodes: uniqueInOrder(output.findings.map(({ reasonCode }) => reasonCode)),
     strictJudgeOutputValid: true,
+  };
+}
+
+function invalidJudgeOutcome(caseId: string): SemanticCaseOutcome {
+  return {
+    caseId,
+    actualDecision: 'REJECT',
+    actualStage: 'JUDGE',
+    failedDimensions: [],
+    reasonCodes: [],
+    strictJudgeOutputValid: false,
   };
 }
 
@@ -544,8 +762,9 @@ function findCall<TOutput>(
 /**
  * Executes only after the complete synthetic plan passes opt-in, credential, price and cap
  * preflight. Retry remains zero. A terminal failure settles its active reservation only when the
- * thrown error carries a complete, validated one-attempt usage record for the exact profile. Every
- * failure stops the run before the next call and never emits a partial report.
+ * thrown error carries a complete, validated one-attempt usage record for the exact profile. Only
+ * a fully accounted, post-response JUDGE validation failure with durable FAILED audit linkage is
+ * converted into a fail-closed case outcome; every other failure stops before the next call.
  */
 export async function runNarrativeQualityLiveEvaluation(
   input: RunNarrativeLiveEvaluationInput,
@@ -591,16 +810,14 @@ export async function runNarrativeQualityLiveEvaluation(
   const execute = async <TOutput>(
     descriptor: NarrativeLiveEvalCallDescriptor<TOutput>,
     actualRequest: StructuredAiRequest<TOutput> = descriptor.request,
-  ): Promise<ValidatedExecution<TOutput>> => {
+  ): Promise<NarrativeLiveEvalExecution<TOutput>> => {
     const actualDescriptor =
       actualRequest === descriptor.request ? descriptor : { ...descriptor, request: actualRequest };
     let logicalCallSequence = guard.snapshot().logicalCallsStarted + 1;
-    let providerCallMayHaveOccurred = false;
     let reservation: LiveCallReservation | undefined;
     try {
       reservation = guard.authorizeNextCall(actualDescriptor.budget);
       logicalCallSequence = reservation.sequence;
-      providerCallMayHaveOccurred = true;
       const execution = await executor.call(actualDescriptor);
       const validated = validateExecutionResult(actualDescriptor, execution);
       const profileKey = `${validated.result.taskType}:${validated.result.provider}:${validated.result.configuredModel}`;
@@ -639,142 +856,232 @@ export async function runNarrativeQualityLiveEvaluation(
         attempts: validated.result.attempts,
         refused: false,
         refusalCategory: null,
+        terminalAuditStatus: 'SUCCEEDED',
+        structuredOutputValid: true,
+        validationFailureStage: null,
+        exactAuditLinkageValid: true,
         estimatedCostUsdMicros: settled.estimatedCostUsdMicros - beforeCost,
       });
       return validated;
     } catch (error) {
+      const evidence = error instanceof AiError ? error.executionEvidence : undefined;
+      const profileKey = `${actualDescriptor.request.taskType}:${actualDescriptor.profile.provider}:${actualDescriptor.profile.model}`;
+      const previousResponseModel = responseModelsByProfile.get(profileKey);
+      const responseModelConsistent =
+        evidence?.responseModel !== undefined &&
+        (previousResponseModel === undefined || previousResponseModel === evidence.responseModel);
+      const accounting = settleFailureAccounting(
+        guard,
+        actualDescriptor as NarrativeLiveEvalCallDescriptor<unknown>,
+        reservation,
+        error,
+        operations.length,
+        responseModelConsistent,
+      );
+      const validationFailureStage = continuableInvalidJudgeStage(
+        actualDescriptor as NarrativeLiveEvalCallDescriptor<unknown>,
+        error,
+        accounting,
+      );
+      if (validationFailureStage !== undefined && reservation !== undefined) {
+        const completeEvidence = (error as AiError).executionEvidence!;
+        const usage = normalizeUsage(completeEvidence.usage!);
+        responseModelsByProfile.set(profileKey, completeEvidence.responseModel!);
+        operations.push({
+          logicalCallSequence: reservation.sequence,
+          caseId: actualDescriptor.caseId,
+          taskType: 'JUDGE',
+          provider: completeEvidence.provider,
+          configuredModel: completeEvidence.configuredModel,
+          responseModel: completeEvidence.responseModel!,
+          configuredEffort: actualDescriptor.profile.effort,
+          configuredMaxOutputTokens: actualDescriptor.profile.maxOutputTokens,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadTokens: usage.cacheReadTokens,
+          cacheWriteTokens: usage.cacheWriteTokens,
+          reasoningTokens: usage.reasoningTokens,
+          latencyMs: completeEvidence.latencyMs!,
+          attempts: 1,
+          refused: false,
+          refusalCategory: null,
+          terminalAuditStatus: 'FAILED',
+          structuredOutputValid: false,
+          validationFailureStage,
+          exactAuditLinkageValid: true,
+          estimatedCostUsdMicros: accounting.currentEstimatedCostUsdMicros!,
+        });
+        return {
+          kind: 'ACCOUNTED_INVALID_STRUCTURED_OUTPUT',
+          validationFailureStage,
+        };
+      }
       throw new NarrativeLiveEvalExecutionError(
         actualDescriptor as NarrativeLiveEvalCallDescriptor<unknown>,
         logicalCallSequence,
-        providerCallMayHaveOccurred,
         error,
-        settleFailureAccounting(
-          guard,
-          actualDescriptor as NarrativeLiveEvalCallDescriptor<unknown>,
-          reservation,
-          error,
-          operations.length,
-        ),
+        accounting,
       );
     }
   };
 
-  const primaryOutcomes: SemanticCaseOutcome[] = [];
-  for (const prepared of plan.semanticCases) {
-    const caseId = prepared.qualityCase.authored.id;
-    if (!prepared.precheck.passed) {
-      primaryOutcomes.push(precheckOutcome(prepared));
-      continue;
+  try {
+    const primaryOutcomes: SemanticCaseOutcome[] = [];
+    for (const prepared of plan.semanticCases) {
+      const caseId = prepared.qualityCase.authored.id;
+      if (!prepared.precheck.passed) {
+        primaryOutcomes.push(precheckOutcome(prepared));
+        continue;
+      }
+      const descriptor = findCall<NarrativeJudgeOutput>(plan, caseId, 'PRIMARY');
+      const execution = await execute(descriptor);
+      if (execution.kind === 'ACCOUNTED_INVALID_STRUCTURED_OUTPUT') {
+        primaryOutcomes.push(invalidJudgeOutcome(caseId));
+        continue;
+      }
+      primaryOutcomes.push(judgeOutcome(caseId, execution.result.output));
     }
-    const qualityContext = prepared.qualityContext!;
-    const descriptor = findCall<NarrativeJudgeOutput>(plan, caseId, 'PRIMARY');
-    const execution = await execute(descriptor);
-    const output = parseNarrativeJudgeOutput(execution.result.output, qualityContext);
-    primaryOutcomes.push(judgeOutcome(caseId, output));
-  }
 
-  const semanticById = new Map(
-    plan.semanticCases.map((prepared) => [prepared.qualityCase.authored.id, prepared]),
-  );
-  const repeatedSentinelOutcomes: SemanticCaseOutcome[] = [];
-  for (const caseId of NARRATIVE_QUALITY_SENTINEL_CASE_IDS) {
-    const prepared = semanticById.get(caseId)!;
-    const descriptor = findCall<NarrativeJudgeOutput>(plan, caseId, 'STABILITY_REPEAT');
-    const execution = await execute(descriptor);
-    const output = parseNarrativeJudgeOutput(execution.result.output, prepared.qualityContext!);
-    repeatedSentinelOutcomes.push(judgeOutcome(caseId, output));
-  }
+    const repeatedSentinelOutcomes: SemanticCaseOutcome[] = [];
+    for (const caseId of NARRATIVE_QUALITY_SENTINEL_CASE_IDS) {
+      const descriptor = findCall<NarrativeJudgeOutput>(plan, caseId, 'STABILITY_REPEAT');
+      const execution = await execute(descriptor);
+      if (execution.kind === 'ACCOUNTED_INVALID_STRUCTURED_OUTPUT') {
+        repeatedSentinelOutcomes.push(invalidJudgeOutcome(caseId));
+        continue;
+      }
+      repeatedSentinelOutcomes.push(judgeOutcome(caseId, execution.result.output));
+    }
 
-  const endToEndOutcomes: EndToEndCaseOutcome[] = [];
-  for (const prepared of plan.endToEndCases) {
-    const caseId = prepared.qualityCase.authored.id;
-    const context = prepared.qualityCase.groundedContext;
-    const initialDeterministicState = canonicalizeJson(context);
-    const generateDescriptor = findCall<OptionNarrativeOutput>(plan, caseId, 'END_TO_END_GENERATE');
-    const generated = await execute(generateDescriptor);
-    const candidate = parseOptionNarrativeOutput(generated.result.output, context);
-    const requiredPropertyResults = evaluateNarrativeE2eRequiredProperties({
-      caseId,
-      requiredPropertyIds: prepared.qualityCase.authored.requiredProperties,
-      candidate,
-      context,
-      modelView: prepared.modelView,
-      constraints: prepared.constraints,
-    });
-    const precheck = runNarrativeSafetyPrecheck({
-      context,
-      modelView: prepared.modelView,
-      narrativeOutput: candidate,
-    });
-    if (!precheck.passed) {
+    const endToEndOutcomes: EndToEndCaseOutcome[] = [];
+    for (const prepared of plan.endToEndCases) {
+      const caseId = prepared.qualityCase.authored.id;
+      const context = prepared.qualityCase.groundedContext;
+      const initialDeterministicState = canonicalizeJson(context);
+      const generateDescriptor = findCall<OptionNarrativeOutput>(
+        plan,
+        caseId,
+        'END_TO_END_GENERATE',
+      );
+      const generated = await execute(generateDescriptor);
+      if (generated.kind !== 'SUCCEEDED') {
+        throw new EvalContractError(
+          'INVALID_EVAL_INPUT',
+          'A GENERATE structured-output failure cannot use JUDGE case-level continuation.',
+        );
+      }
+      const candidate = parseOptionNarrativeOutput(generated.result.output, context);
+      const requiredPropertyResults = evaluateNarrativeE2eRequiredProperties({
+        caseId,
+        requiredPropertyIds: prepared.qualityCase.authored.requiredProperties,
+        candidate,
+        context,
+        modelView: prepared.modelView,
+        constraints: prepared.constraints,
+      });
+      const precheck = runNarrativeSafetyPrecheck({
+        context,
+        modelView: prepared.modelView,
+        narrativeOutput: candidate,
+      });
+      if (!precheck.passed) {
+        endToEndOutcomes.push({
+          caseId,
+          generateLogicalCalls: 1,
+          judgeLogicalCalls: 0,
+          generatedSchemaValid: true,
+          exactReferencesValid: true,
+          actualDecision: 'REJECT',
+          judgeStructuredOutputValid: null,
+          requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+          requiredPropertyResults,
+          generateAuditSucceeded: generated.auditSucceeded,
+          judgeAuditSucceeded: false,
+          publicationBundleLinkageValidInMemory: false,
+          deterministicStateUnchanged: canonicalizeJson(context) === initialDeterministicState,
+        });
+        continue;
+      }
+
+      const qualityContext = buildNarrativeLiveEvalQualityContext(
+        context,
+        prepared.modelView,
+        candidate,
+        prepared.constraints,
+      );
+      const judgeRequest = createNarrativeJudgeRequest(qualityContext);
+      const judgeDescriptor = findCall<NarrativeJudgeOutput>(plan, caseId, 'END_TO_END_JUDGE');
+      const judged = await execute(judgeDescriptor, judgeRequest);
+      if (judged.kind === 'ACCOUNTED_INVALID_STRUCTURED_OUTPUT') {
+        endToEndOutcomes.push({
+          caseId,
+          generateLogicalCalls: 1,
+          judgeLogicalCalls: 1,
+          generatedSchemaValid: true,
+          exactReferencesValid: true,
+          actualDecision: 'REJECT',
+          judgeStructuredOutputValid: false,
+          requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+          requiredPropertyResults,
+          generateAuditSucceeded: generated.auditSucceeded,
+          judgeAuditSucceeded: false,
+          publicationBundleLinkageValidInMemory: false,
+          deterministicStateUnchanged: canonicalizeJson(context) === initialDeterministicState,
+        });
+        continue;
+      }
+      const judgeOutput = judged.result.output;
+      const actualDecision = decideNarrativePublication(judgeOutput);
+      const publicationBundleLinkageValidInMemory =
+        actualDecision === 'PUBLISH' &&
+        validatePublicationBundleLinkageInMemory({
+          context,
+          modelView: prepared.modelView,
+          candidate,
+          qualityContext,
+          judgeOutput,
+          generateResult: generated.result,
+          judgeResult: judged.result,
+        });
       endToEndOutcomes.push({
         caseId,
         generateLogicalCalls: 1,
-        judgeLogicalCalls: 0,
+        judgeLogicalCalls: 1,
         generatedSchemaValid: true,
         exactReferencesValid: true,
-        actualDecision: 'REJECT',
+        actualDecision,
+        judgeStructuredOutputValid: true,
         requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
         requiredPropertyResults,
         generateAuditSucceeded: generated.auditSucceeded,
-        judgeAuditSucceeded: false,
-        publicationBundleLinkageValidInMemory: false,
+        judgeAuditSucceeded: judged.auditSucceeded,
+        publicationBundleLinkageValidInMemory,
         deterministicStateUnchanged: canonicalizeJson(context) === initialDeterministicState,
       });
-      continue;
     }
 
-    const qualityContext = buildNarrativeLiveEvalQualityContext(
-      context,
-      prepared.modelView,
-      candidate,
-      prepared.constraints,
-    );
-    const judgeRequest = createNarrativeJudgeRequest(qualityContext);
-    const judgeDescriptor = findCall<NarrativeJudgeOutput>(plan, caseId, 'END_TO_END_JUDGE');
-    const judged = await execute(judgeDescriptor, judgeRequest);
-    const judgeOutput = parseNarrativeJudgeOutput(judged.result.output, qualityContext);
-    const actualDecision = decideNarrativePublication(judgeOutput);
-    const publicationBundleLinkageValidInMemory =
-      actualDecision === 'PUBLISH' &&
-      validatePublicationBundleLinkageInMemory({
-        context,
-        modelView: prepared.modelView,
-        candidate,
-        qualityContext,
-        judgeOutput,
-        generateResult: generated.result,
-        judgeResult: judged.result,
-      });
-    endToEndOutcomes.push({
-      caseId,
-      generateLogicalCalls: 1,
-      judgeLogicalCalls: 1,
-      generatedSchemaValid: true,
-      exactReferencesValid: true,
-      actualDecision,
-      requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
-      requiredPropertyResults,
-      generateAuditSucceeded: generated.auditSucceeded,
-      judgeAuditSucceeded: judged.auditSucceeded,
-      publicationBundleLinkageValidInMemory,
-      deterministicStateUnchanged: canonicalizeJson(context) === initialDeterministicState,
+    const report = (input.buildReport ?? buildPrivacySafeEvalReport)({
+      dataset: plan.resolvedDataset.dataset,
+      versions: NARRATIVE_EVAL_CONTRACT_VERSIONS,
+      outcomes: primaryOutcomes,
+      repeatedSentinelOutcomes,
+      endToEndOutcomes,
+      operations,
     });
+    return {
+      preflight: preflightSummary,
+      primaryOutcomes,
+      repeatedSentinelOutcomes,
+      endToEndOutcomes,
+      report,
+    };
+  } catch (error) {
+    if (
+      error instanceof NarrativeLiveEvalExecutionError ||
+      error instanceof NarrativeLiveEvalPostProcessingError
+    ) {
+      throw error;
+    }
+    throw new NarrativeLiveEvalPostProcessingError(error, guard.snapshot(), operations.length);
   }
-
-  const report = buildPrivacySafeEvalReport({
-    dataset: plan.resolvedDataset.dataset,
-    versions: NARRATIVE_EVAL_CONTRACT_VERSIONS,
-    outcomes: primaryOutcomes,
-    repeatedSentinelOutcomes,
-    endToEndOutcomes,
-    operations,
-  });
-  return {
-    preflight: preflightSummary,
-    primaryOutcomes,
-    repeatedSentinelOutcomes,
-    endToEndOutcomes,
-    report,
-  };
 }

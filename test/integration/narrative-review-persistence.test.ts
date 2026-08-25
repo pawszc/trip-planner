@@ -630,6 +630,8 @@ describe('CAP/SQLite narrative review persistence', () => {
       configuredEffort: null,
       configuredMaxOutputTokens: null,
       effectiveMaxOutputTokens: null,
+      providerCallAttempted: null,
+      validationFailureStage: null,
     });
     expect((await readAll('NarrativeRuns'))[0]).toMatchObject({
       reviewRunId: null,

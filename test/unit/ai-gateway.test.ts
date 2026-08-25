@@ -76,6 +76,7 @@ class FakeAdapter implements StructuredAiAdapter {
       usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
       latencyMs: 7,
       providerRequestId: `${this.provider}-request`,
+      providerResponseId: `${this.provider}-response`,
       attempts: 1,
       refusal: { refused: false },
     };
@@ -313,6 +314,7 @@ describe('task-aware AI gateway', () => {
         executionEvidence: {
           provider: AiProvider.OPENAI,
           configuredModel: 'gpt-5.6-luna',
+          providerCallAttempted: true,
           responseModel: 'gpt-5.6-luna-snapshot',
           providerResponseStatus: 'INCOMPLETE',
           providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
@@ -345,6 +347,7 @@ describe('task-aware AI gateway', () => {
       code: 'INCOMPLETE_MODEL_OUTPUT',
       details: { aiRunId: fixedRunIds[0] },
       executionEvidence: {
+        providerCallAttempted: true,
         providerResponseStatus: 'INCOMPLETE',
         providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
         attempts: 1,
@@ -358,6 +361,7 @@ describe('task-aware AI gateway', () => {
       providerResponseId: 'resp_gateway_safe',
       providerResponseStatus: 'INCOMPLETE',
       providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      providerCallAttempted: true,
       attempts: 1,
       latencyMs: 250,
       usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
@@ -375,6 +379,12 @@ describe('task-aware AI gateway', () => {
     await expect(subject.call(request(AiTaskType.DECIDE))).rejects.toMatchObject({
       code: 'AI_AUDIT_FAILED',
       details: { stage: 'STARTED' },
+      executionEvidence: {
+        provider: AiProvider.OPENAI,
+        configuredModel: 'gpt-5.6-luna',
+        providerCallAttempted: false,
+        attempts: 0,
+      },
     });
     expect(openai.calls).toBe(0);
   });
@@ -604,9 +614,36 @@ describe('task-aware AI gateway', () => {
 
     await expect(subject.call(request(AiTaskType.DECIDE))).rejects.toMatchObject({
       code: 'INVALID_STRUCTURED_OUTPUT',
+      executionEvidence: {
+        providerCallAttempted: true,
+        validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+        providerResponseStatus: 'COMPLETED',
+        responseModel: 'gpt-5.6-luna-snapshot',
+        providerRequestId: 'OPENAI-request',
+        providerResponseId: 'OPENAI-response',
+        attempts: 1,
+        usage: {
+          inputTokens: 3,
+          outputTokens: 2,
+          totalTokens: 5,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+        },
+      },
     });
     expect(recorder.events.map(({ status }) => status)).toEqual(['STARTED', 'FAILED']);
-    expect(recorder.events[1]).toMatchObject({ errorCode: 'INVALID_STRUCTURED_OUTPUT' });
+    expect(recorder.events[1]).toMatchObject({
+      errorCode: 'INVALID_STRUCTURED_OUTPUT',
+      providerCallAttempted: true,
+      validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+      providerResponseStatus: 'COMPLETED',
+      responseModel: 'gpt-5.6-luna-snapshot',
+      providerRequestId: 'OPENAI-request',
+      providerResponseId: 'OPENAI-response',
+      attempts: 1,
+      usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+    });
   });
 
   it('records metadata without instructions, grounded input or parsed output', async () => {

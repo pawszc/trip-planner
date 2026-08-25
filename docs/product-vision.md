@@ -59,8 +59,8 @@ Synthetic frozen dataset, schema parity, metryki i deterministic contract replay
 odtwarzalną weryfikację kontraktów bez credentiali, sieci i kosztu; replay nie mierzy jakości
 modelu. Live E2E ma niezależne executable properties, a realną persistence dowodzi CAP/SQLite.
 Finalny live baseline wymaga osobnej zgody i limitów 48 calls, 56 attempts oraz USD 3.00.
-Dwa osobno autoryzowane one-shot runy zatrzymały się fail-closed przed raportem jakości i nie
-były ponawiane. Offline output-budget fix wykonuje zero provider calls, nie autoryzuje
+Trzy osobno autoryzowane one-shot runy zatrzymały się fail-closed przed raportem jakości i nie
+były ponawiane. Offline parse-evidence fix wykonuje zero provider calls, nie autoryzuje
 kolejnego baseline, a faza pozostaje w `REVIEW` i nie jest `DONE`.
 
 ## Różnica wobec chatbota

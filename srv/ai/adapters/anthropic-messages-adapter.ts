@@ -6,14 +6,18 @@ import type { ZodType } from 'zod';
 import type { AiConfig, AnthropicEffort } from '../config.ts';
 import { resolveMaxOutputTokens, validateAiExecutionProfile } from '../config.ts';
 import {
+  AI_REFUSAL_CATEGORY_VALUES,
   AiProvider,
   canonicalizeJson,
   createInputFingerprint,
   isValidAiRunId,
+  resolveStructuredAiProviderOutputSchema,
+  validateStructuredAiOutput,
 } from '../contracts.ts';
 import type {
   AiCallResult,
   AiExecutionProfile,
+  AiRefusalCategory,
   AiUsage,
   StructuredAiAdapter,
   StructuredAiRequest,
@@ -48,7 +52,7 @@ export interface AnthropicStructuredResponse {
   usage: AiUsage;
   providerRequestId?: string;
   attempts: number;
-  refusalCategory?: string;
+  refusalCategory?: unknown;
 }
 
 export interface AnthropicMessagesClient {
@@ -70,6 +74,7 @@ export const createAnthropicSdkClient: AnthropicClientFactory = (options) => {
     timeout: options.timeoutMs,
     maxRetries: options.maxRetries,
     fetch: countedFetch,
+    logLevel: 'off',
   });
 
   return {
@@ -164,8 +169,41 @@ function validateRequestMetadata<TOutput>(request: StructuredAiRequest<TOutput>)
   }
 }
 
-function normalizeStopReason(stopReason: StopReason | null): string {
-  return stopReason ?? 'null';
+const ANTHROPIC_STOP_REASON_VALUES = new Set<string>([
+  'end_turn',
+  'max_tokens',
+  'stop_sequence',
+  'tool_use',
+  'pause_turn',
+  'refusal',
+  'model_context_window_exceeded',
+]);
+const ANTHROPIC_REFUSAL_CATEGORY_VALUES = new Set<string>([
+  'cyber',
+  'bio',
+  'frontier_llm',
+  'reasoning_extraction',
+  'general_harms',
+]);
+
+function normalizeStopReason(stopReason: unknown): string {
+  if (stopReason === null) return 'null';
+  return typeof stopReason === 'string' && ANTHROPIC_STOP_REASON_VALUES.has(stopReason)
+    ? stopReason
+    : 'UNKNOWN';
+}
+
+function normalizeRefusalCategory(category: unknown): AiRefusalCategory {
+  if (
+    category === undefined ||
+    category === null ||
+    (typeof category === 'string' && ANTHROPIC_REFUSAL_CATEGORY_VALUES.has(category))
+  ) {
+    return 'model_refusal';
+  }
+  return AI_REFUSAL_CATEGORY_VALUES.includes(category as AiRefusalCategory)
+    ? (category as AiRefusalCategory)
+    : 'unknown';
 }
 
 function incompleteOutputMessage(stopReason: StopReason | null): string {
@@ -246,30 +284,30 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
         model: profile.model,
         instructions: request.instructions,
         input: canonicalizeJson(request.input),
-        outputSchema: request.outputSchema,
+        outputSchema: resolveStructuredAiProviderOutputSchema(request),
         maxOutputTokens: resolveMaxOutputTokens(request.maxOutputTokens, profile.maxOutputTokens),
         effort: profile.effort as AnthropicEffort,
         thinking: 'disabled',
         tools: [],
       });
 
-      if (response.stopReason === 'refusal') {
+      const stopReason = normalizeStopReason(response.stopReason);
+      if (stopReason === 'refusal') {
         throw new AiError('MODEL_REFUSAL', 'Anthropic refused the structured output request.', {
           provider: this.provider,
           model: profile.model,
-          details:
-            response.refusalCategory === undefined ? {} : { category: response.refusalCategory },
+          details: { category: normalizeRefusalCategory(response.refusalCategory) },
         });
       }
 
-      if (response.stopReason !== 'end_turn') {
+      if (stopReason !== 'end_turn') {
         throw new AiError(
           'INVALID_STRUCTURED_OUTPUT',
           incompleteOutputMessage(response.stopReason),
           {
             provider: this.provider,
             model: profile.model,
-            details: { stopReason: normalizeStopReason(response.stopReason) },
+            details: { stopReason },
           },
         );
       }
@@ -297,19 +335,22 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
       let parsed: unknown;
       try {
         parsed = JSON.parse(text);
-      } catch (cause) {
+      } catch {
         throw new AiError('INVALID_STRUCTURED_OUTPUT', 'Anthropic output was not valid JSON.', {
           provider: this.provider,
           model: profile.model,
-          cause,
         });
       }
-      const locallyValidated = request.outputSchema.safeParse(parsed);
+      const locallyValidated = validateStructuredAiOutput(request, parsed);
       if (!locallyValidated.success) {
         throw new AiError(
           'INVALID_STRUCTURED_OUTPUT',
-          'Anthropic output failed local schema validation.',
-          { provider: this.provider, model: profile.model, cause: locallyValidated.error },
+          'Anthropic output failed controlled local validation.',
+          {
+            provider: this.provider,
+            model: profile.model,
+            details: { validationFailureStage: locallyValidated.validationFailureStage },
+          },
         );
       }
       if (response.model.trim().length === 0) {
@@ -321,7 +362,7 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
 
       return {
         aiRunId,
-        output: locallyValidated.data,
+        output: locallyValidated.output,
         provider: this.provider,
         configuredModel: profile.model,
         responseModel: response.model,

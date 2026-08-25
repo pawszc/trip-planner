@@ -178,6 +178,12 @@ i pozostaje wyłącznie comparison scenario ponad capem, nigdy automatycznym fal
 Workload fingerprint to
 `280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`.
 
+ADR 0009 supersedes only the structured-output transport and failed-output accounting parts of
+this decision after the third separately authorized baseline stopped at `P01 / JUDGE / 1/46`.
+The versioned JUDGE transport schema v2 and execution/accounting contracts produce workload
+fingerprint `2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b`; the frozen
+profiles, 46-call plan, zero retry, ceiling 1,185,201 USD micros, and USD 3.00 cap are unchanged.
+
 Ten output-budget fix wykonuje zero live/paid calls i kosztuje USD 0. Nie autoryzuje kolejnego
 baseline. Faza 3B3 pozostaje w statusie `REVIEW`, nawet po zielonej weryfikacji offline, i nie
 może zostać oznaczona `DONE`.

@@ -77,15 +77,18 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   ceny, poprawnych caps lub budżetu jeszcze przed pierwszym provider call;
 - safe review/rejection/publication bundles, exact generate/judge links, legacy nullability i
   brak candidate/raw content w internal review metadata;
-- offline konwersję tego samego schematu przez helpery structured output obu SDK;
+- exact P01 offline proof przez oficjalny OpenAI SDK, prawdziwy request/context/schema i
+  kontrolowany fake fetch z sentinelem liczby wywołań;
+- canonical diff starego provider-visible P01 schema i statycznego transport schema v2;
 - atomowy mapper `NarrativeRuns`/`OptionNarratives`/`NarrativeFactReferences` z walidacją
   dokładnego audytu AI oraz historycznym scalar `NarrativeRuns.aiRunId`;
 - kontrakty rzeczywistych wywołań obu oficjalnych SDK przez transport HTTP in-memory;
-- structured outputs, ponowną lokalną walidację oraz pełną klasyfikację terminalnych
-  Responses API: completed/incomplete/failed/cancelled/queued/in-progress, max output,
-  content filter, refusal i completed bez parsed outputu;
-- zamknięty `AiFailureExecutionEvidence`, zachowanie evidence przez durable `aiRunId`, brak
-  raw contentu w serializacji oraz settlement failed attempt wyłącznie z kompletnego usage;
+- structured outputs, metadata przed parserami i pełną klasyfikację terminalnych Responses
+  API: completed/incomplete/failed/cancelled/queued/in-progress, max output, content filter,
+  refusal, malformed JSON, transport schema oraz jawne context/dimension/finding binding;
+- zamknięty `AiFailureExecutionEvidence`, jawne `providerCallAttempted` i
+  `validationFailureStage`, zachowanie evidence przez durable `aiRunId`, brak raw contentu w
+  serializacji/persistence/stdout oraz settlement failed attempt wyłącznie z kompletnego usage;
 - timeout, retry, zamknięty katalog błędów oraz redakcję kluczy i nagłówków;
 - dokładnie jeden allowlistowany `AI_PRE_START_FAILURE` dla każdej próby `GENERATE`/`JUDGE`
   bez durable `STARTED`, bez `aiRunId`/raw danych i zawsze z `providerCallAttempted=false`;
@@ -231,28 +234,39 @@ snapshot cen z 2026-08-21 oraz integer-only cost engine dają dla zaakceptowaneg
 `OPENAI / gpt-5.6-luna / low / 2048` ceiling 1,185,201 USD micros: 401,101 dla
 `GENERATE` i 784,100 dla `JUDGE`. Zapas do capu USD 3.00 wynosi 1,814,799 USD micros,
 a workload fingerprint to
-`280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`.
+`2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b`.
 `gpt-5.6-terra / low / 2048` pozostaje wyłącznie scenariuszem porównawczym i z ceiling
 8,241,209 USD micros jest blokowany przez niezmieniony cap. Nie jest to ścieżka fallbacku.
 Preflight nie jest uruchamiany przez test, build, start, `verify`, `verify:full` ani CI.
 
-Dwa osobno autoryzowane one-shot runy zatrzymały się fail-closed bez rerunu. Run z
+Trzy osobno autoryzowane one-shot runy zatrzymały się fail-closed bez rerunu. Run z
 2026-08-23 zatrzymał się na 18/46 (`R06`, `JUDGE`, `EMPTY_MODEL_OUTPUT`); 17 kompletnie
 rozliczonych operacji ma subtotal 32,386 USD micros, a próba 18 nie ma kompletnego
 accounting. Drugi run ze źródła `a4785502c6fe01e978dea1a85aa8d90ff66b90a6`
 zatrzymał się na 23/46 (`R12`, `JUDGE`, `INCOMPLETE_MODEL_OUTPUT`, status `INCOMPLETE`,
 reason `MAX_OUTPUT_TOKENS`); accounting wszystkich 23 prób jest kompletny, a znany koszt
-wynosi 45,732 USD micros. Nie powstał report jakości ani accepted manifest. Ta poprawka
-wykonuje zero live/provider calls, kosztuje USD 0 i nie autoryzuje kolejnego baseline.
+wynosi 45,732 USD micros. Nie powstał report jakości ani accepted manifest, a drugi run nie
+wykonał `GENERATE`. Trzeci run ze źródła
+`abf0f4b258c5950381e597b0192580527d71953f` zatrzymał się na `P01 / JUDGE / 1/46` z
+`INVALID_STRUCTURED_OUTPUT`, niepełnym accountingiem i jednym `FAILED` `AiRun`; zero known
+attempts/cost było tylko settled subtotalem. Nie było review, narrative, `GENERATE`, retry,
+resume ani fallbacku. Ta poprawka wykonuje zero live/provider calls, kosztuje USD 0 i nie
+autoryzuje kolejnego baseline.
 
-Regresje runnera dowodzą dwóch osobnych ścieżek. Kompletne, exact-profile evidence jednej
-próby jest rozliczane tym samym integer-only cost engine, zwiększa provider attempts i daje
-`attemptAccountingComplete=true`; evidence niepełne pozostawia accounting false bez
-domyślnego usage lub kosztu. Obie ścieżki zatrzymują kolejną sekwencję i zwracają wyłącznie
-allowlistowany safe failure bez partial reportu, rerunu, resume, continuation ani fallbacku.
+Regresje runnera dowodzą trzech osobnych ścieżek. Pre-request schema failure ma
+`providerCallAttempted=false`, attempts 0 i kompletne rozliczenie zera. Post-request failure
+bez usage pozostawia accounting niepełny i zatrzymuje cały run. Kompletny post-response
+invalid `JUDGE` z exact profile, jednym attemptem, usage, integer-only settlement i durable
+`FAILED` linkage nie wykonuje retry ani dodatkowego calla: tworzy fail-closed `REJECT`, idzie
+do kolejnej planowanej operacji i kończy pełnym reportem `FAIL`. Primary zachowuje 100%
+strict validity, stability repeat ma osobny gate 8/8 i nie liczy invalid jako agreement, a E2E
+ma osobny judge-validity gate i nigdy nie buduje publication bundle z invalid outputu.
+Regresja accepted-manifest zmienia critical case i koszty operacji, pozostawia stare passing
+metrics/gates/summary, ponownie liczy fingerprint i dowodzi odrzucenia przez kanoniczny rebuild;
+osobny sentinel dowodzi odrzucenia dodatkowego raw pola raportu.
 Safe preflight zawiera exact profiles, wersje, fingerprint workloadu, wersję i datę weryfikacji
-cennika, planowane calls/attempts/koszt oraz limity. Safe failure może dodatkowo przenieść
-wyłącznie dostępne `provider`, `configuredModel`, `responseModel` i `latencyMs`.
+cennika, planowane calls/attempts/koszt oraz limity. Safe failure przenosi wyłącznie zamknięte
+allowlistowane metadata.
 
 Testy `AiRuns` uruchamiają prawdziwy CAP 10 i SQLite in-memory. Store wykonuje krótkie,
 niezależne transakcje i nie utrzymuje transakcji podczas call providera. Aktywna transakcja

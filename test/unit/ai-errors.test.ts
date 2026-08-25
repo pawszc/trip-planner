@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { AiProvider } from '../../srv/ai/contracts.js';
 import { AI_ERROR_CODE_VALUES, AiError, normalizeProviderFailure } from '../../srv/ai/errors.js';
-import { parseAiFailureExecutionEvidence } from '../../srv/ai/failure-execution-evidence.js';
+import {
+  AI_VALIDATION_FAILURE_STAGE_VALUES,
+  parseAiFailureExecutionEvidence,
+} from '../../srv/ai/failure-execution-evidence.js';
 
 const modelContext = {
   provider: AiProvider.OPENAI,
@@ -10,6 +13,17 @@ const modelContext = {
 } as const;
 
 describe('normalized AI errors', () => {
+  it('keeps the privacy-safe validation-stage catalog closed', () => {
+    expect(AI_VALIDATION_FAILURE_STAGE_VALUES).toEqual([
+      'SCHEMA_CONSTRUCTION',
+      'RESPONSE_JSON_PARSE',
+      'TRANSPORT_SCHEMA_VALIDATION',
+      'CONTEXT_BINDING',
+      'DIMENSION_BINDING',
+      'FINDING_BINDING',
+    ]);
+  });
+
   it('keeps the required error catalog closed and complete', () => {
     expect(AI_ERROR_CODE_VALUES).toEqual([
       'AI_DISABLED',
@@ -109,6 +123,7 @@ describe('normalized AI errors', () => {
     const evidence = parseAiFailureExecutionEvidence({
       provider: 'OPENAI',
       configuredModel: 'gpt-5.6-luna',
+      providerCallAttempted: true,
       responseModel: 'gpt-5.6-luna-2026-08-01',
       providerResponseStatus: 'INCOMPLETE',
       providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
@@ -152,6 +167,8 @@ describe('normalized AI errors', () => {
       parseAiFailureExecutionEvidence({
         provider: 'OPENAI',
         configuredModel: 'gpt-5.6-luna',
+        providerCallAttempted: false,
+        attempts: 0,
         prompt: 'PROMPT_SENTINEL',
       }),
     ).toThrow(/forbidden field/i);
@@ -159,8 +176,84 @@ describe('normalized AI errors', () => {
       parseAiFailureExecutionEvidence({
         provider: 'OPENAI',
         configuredModel: 'gpt-5.6-luna',
+        providerCallAttempted: true,
+        attempts: 1,
         providerResponseId: 'https://private.example.test/item',
       }),
     ).toThrow(/providerResponseId/i);
+  });
+
+  it('distinguishes exact zero-call schema failures from completed post-response validation', () => {
+    expect(
+      parseAiFailureExecutionEvidence({
+        provider: 'OPENAI',
+        configuredModel: 'gpt-5.6-luna',
+        providerCallAttempted: false,
+        validationFailureStage: 'SCHEMA_CONSTRUCTION',
+        attempts: 0,
+        latencyMs: 3,
+      }),
+    ).toEqual({
+      provider: 'OPENAI',
+      configuredModel: 'gpt-5.6-luna',
+      providerCallAttempted: false,
+      validationFailureStage: 'SCHEMA_CONSTRUCTION',
+      attempts: 0,
+      latencyMs: 3,
+    });
+
+    expect(
+      parseAiFailureExecutionEvidence({
+        provider: 'OPENAI',
+        configuredModel: 'gpt-5.6-luna',
+        providerCallAttempted: true,
+        validationFailureStage: 'CONTEXT_BINDING',
+        responseModel: 'gpt-5.6-luna-snapshot',
+        providerResponseStatus: 'COMPLETED',
+        attempts: 1,
+      }),
+    ).toMatchObject({
+      providerCallAttempted: true,
+      validationFailureStage: 'CONTEXT_BINDING',
+      providerResponseStatus: 'COMPLETED',
+      attempts: 1,
+    });
+  });
+
+  it('rejects inconsistent provider-call accounting and validation stages', () => {
+    expect(() =>
+      parseAiFailureExecutionEvidence({
+        provider: 'OPENAI',
+        configuredModel: 'gpt-5.6-luna',
+        providerCallAttempted: false,
+        attempts: 1,
+      }),
+    ).toThrow(/attempts/i);
+    expect(() =>
+      parseAiFailureExecutionEvidence({
+        provider: 'OPENAI',
+        configuredModel: 'gpt-5.6-luna',
+        providerCallAttempted: false,
+        attempts: 0,
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+        },
+      }),
+    ).toThrow(/response metadata/i);
+    expect(() =>
+      parseAiFailureExecutionEvidence({
+        provider: 'OPENAI',
+        configuredModel: 'gpt-5.6-luna',
+        providerCallAttempted: true,
+        validationFailureStage: 'DIMENSION_BINDING',
+        providerResponseStatus: 'INCOMPLETE',
+        attempts: 1,
+      }),
+    ).toThrow(/completed provider response/i);
   });
 });

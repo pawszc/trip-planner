@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { AiProvider, AiTaskType } from '../../srv/ai/contracts.ts';
+import {
+  AiProvider,
+  AiTaskType,
+  createInputFingerprint,
+  type JsonValue,
+} from '../../srv/ai/contracts.ts';
 import {
   resolveNarrativeQualityDataset,
   type ResolvedNarrativeQualityCase,
@@ -15,7 +20,11 @@ import {
   NARRATIVE_QUALITY_BASELINE_MANIFEST_VERSION,
   validateNarrativeQualityBaseline,
 } from '../../srv/evals/baseline.ts';
-import { verifyEvalReportFingerprint, type EvalOperationEvidence } from '../../srv/evals/report.ts';
+import {
+  verifyEvalReportFingerprint,
+  type EvalOperationEvidence,
+  type NarrativeEvalReport,
+} from '../../srv/evals/report.ts';
 import {
   evalContractVersions,
   frozenNarrativeQualityDataset,
@@ -49,6 +58,7 @@ function inMemoryAdapter(log: string[] = []): OfflineNarrativeEvalAdapter {
         generatedSchemaValid: result.generatedSchemaValid,
         exactReferencesValid: result.exactReferencesValid,
         actualDecision: result.actualDecision,
+        judgeStructuredOutputValid: result.judgeStructuredOutputValid,
         requiredPropertyCatalogVersion: result.requiredPropertyCatalogVersion,
         requiredPropertyResults: result.requiredPropertyResults,
         generateAuditSucceeded: result.generateAuditSucceeded,
@@ -79,6 +89,10 @@ const operations: readonly EvalOperationEvidence[] = Object.freeze([
     attempts: 1,
     refused: false,
     refusalCategory: null,
+    terminalAuditStatus: 'SUCCEEDED',
+    structuredOutputValid: true,
+    validationFailureStage: null,
+    exactAuditLinkageValid: true,
     estimatedCostUsdMicros: 100,
   },
   {
@@ -99,6 +113,10 @@ const operations: readonly EvalOperationEvidence[] = Object.freeze([
     attempts: 2,
     refused: false,
     refusalCategory: null,
+    terminalAuditStatus: 'SUCCEEDED',
+    structuredOutputValid: true,
+    validationFailureStage: null,
+    exactAuditLinkageValid: true,
     estimatedCostUsdMicros: 200,
   },
 ]);
@@ -111,8 +129,8 @@ const baselineOperations: readonly EvalOperationEvidence[] = Object.freeze(
       caseId,
       taskType,
       provider: generate ? AiProvider.ANTHROPIC : AiProvider.OPENAI,
-      configuredModel: generate ? 'generator-pinned-v1' : 'judge-pinned-v1',
-      responseModel: generate ? 'generator-response-pinned-v1' : 'judge-response-pinned-v1',
+      configuredModel: generate ? 'claude-sonnet-5' : 'gpt-5.6-luna',
+      responseModel: generate ? 'claude-sonnet-5-response-v1' : 'gpt-5.6-luna-response-v1',
       configuredEffort: 'low' as const,
       configuredMaxOutputTokens: generate ? 1_600 : 2_048,
       inputTokens: 120,
@@ -124,7 +142,11 @@ const baselineOperations: readonly EvalOperationEvidence[] = Object.freeze(
       attempts: 1,
       refused: false,
       refusalCategory: null,
-      estimatedCostUsdMicros: 100,
+      terminalAuditStatus: 'SUCCEEDED' as const,
+      structuredOutputValid: true,
+      validationFailureStage: null,
+      exactAuditLinkageValid: true,
+      estimatedCostUsdMicros: generate ? 540 : 60,
     };
   }),
 );
@@ -218,7 +240,7 @@ describe('deterministic offline narrative eval harness', () => {
       manifestVersion: NARRATIVE_QUALITY_BASELINE_MANIFEST_VERSION,
       baselineId: 'narrative-quality-baseline-test-v1',
       accepted: true,
-      reportVersion: 'narrative-quality-eval-report-v1',
+      reportVersion: 'narrative-quality-eval-report-v2',
       datasetVersion: 'narrative-quality-v1',
       datasetFingerprintBasisVersion: 'parsed-canonical-json-sha256-v1',
       datasetFingerprint: report.datasetFingerprint,
@@ -229,15 +251,15 @@ describe('deterministic offline narrative eval harness', () => {
       profiles: {
         generate: {
           provider: AiProvider.ANTHROPIC,
-          configuredModel: 'generator-pinned-v1',
-          responseModel: 'generator-response-pinned-v1',
+          configuredModel: 'claude-sonnet-5',
+          responseModel: 'claude-sonnet-5-response-v1',
           effort: 'low',
           maxOutputTokens: 1_600,
         },
         judge: {
           provider: AiProvider.OPENAI,
-          configuredModel: 'judge-pinned-v1',
-          responseModel: 'judge-response-pinned-v1',
+          configuredModel: 'gpt-5.6-luna',
+          responseModel: 'gpt-5.6-luna-response-v1',
           effort: 'low',
           maxOutputTokens: 2_048,
         },
@@ -249,6 +271,159 @@ describe('deterministic offline narrative eval harness', () => {
       baselineId: manifest.baselineId,
       reportFingerprint: report.reportFingerprint,
     });
+    const { reportFingerprint: currentReportFingerprint, ...currentReportBasis } = report;
+    expect(currentReportFingerprint).toBe(manifest.reportFingerprint);
+    const staleReportBasis = {
+      ...currentReportBasis,
+      reportVersion: 'narrative-quality-eval-report-v1',
+    };
+    const staleReport = {
+      ...staleReportBasis,
+      reportFingerprint: createInputFingerprint(staleReportBasis as unknown as JsonValue),
+    } as unknown as NarrativeEvalReport;
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, reportFingerprint: staleReport.reportFingerprint },
+        report: staleReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+
+    const criticalRejectCaseId = report.cases.find(
+      (row) => row.critical && row.expectedDecision === 'REJECT',
+    )!.caseId;
+    const forgedDerivedBasis = {
+      ...currentReportBasis,
+      cases: report.cases.map((row) =>
+        row.caseId === criticalRejectCaseId ? { ...row, actualDecision: 'PUBLISH' as const } : row,
+      ),
+      operations: report.operations.map((operation) => ({
+        ...operation,
+        estimatedCostUsdMicros: 3_000_000,
+      })),
+      // The forged metrics, gates and summary deliberately remain the original passing values.
+    };
+    const forgedDerivedReport = {
+      ...forgedDerivedBasis,
+      reportFingerprint: createInputFingerprint(forgedDerivedBasis as unknown as JsonValue),
+    } as NarrativeEvalReport;
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, reportFingerprint: forgedDerivedReport.reportFingerprint },
+        report: forgedDerivedReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+
+    const shiftedEndToEndAdapter = inMemoryAdapter();
+    shiftedEndToEndAdapter.evaluateEndToEndCase = async (qualityCase) => {
+      const outcome = passingEndToEndOutcome(qualityCase.authored.id);
+      return {
+        ...outcome,
+        generateLogicalCalls:
+          qualityCase.authored.id === 'E01' ? 0 : qualityCase.authored.id === 'E02' ? 2 : 1,
+      };
+    };
+    const { report: shiftedEndToEndReport } = await runDeterministicContractReplay({
+      resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
+      versions: evalContractVersions,
+      adapter: shiftedEndToEndAdapter,
+      operations: baselineOperations,
+    });
+    expect(shiftedEndToEndReport.endToEnd.gates.passed).toBe(true);
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: {
+          ...manifest,
+          reportFingerprint: shiftedEndToEndReport.reportFingerprint,
+        },
+        report: shiftedEndToEndReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+
+    const { report: underpricedReport } = await runDeterministicContractReplay({
+      resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
+      versions: evalContractVersions,
+      adapter: inMemoryAdapter(),
+      operations: baselineOperations.map((operation, index) =>
+        index === 0
+          ? {
+              ...operation,
+              inputTokens: 800_000,
+              outputTokens: 800_000,
+              estimatedCostUsdMicros: 0,
+            }
+          : operation,
+      ),
+    });
+    expect(underpricedReport.operationalSummary.estimatedCostUsdMicros).toBeLessThan(
+      report.operationalSummary.estimatedCostUsdMicros,
+    );
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, reportFingerprint: underpricedReport.reportFingerprint },
+        report: underpricedReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+
+    const unsafeReportBasis = {
+      ...currentReportBasis,
+      rawOutput: 'RAW_BASELINE_REPORT_SENTINEL',
+    };
+    const unsafeReport = {
+      ...unsafeReportBasis,
+      reportFingerprint: createInputFingerprint(unsafeReportBasis as unknown as JsonValue),
+    } as unknown as NarrativeEvalReport;
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, reportFingerprint: unsafeReport.reportFingerprint },
+        report: unsafeReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+
+    const nestedUnsafeReportBasis = {
+      ...currentReportBasis,
+      cases: report.cases.map((row) =>
+        row.caseId === 'R02' ? { ...row, actualDecision: 'RAW_REPORT_DECISION_SENTINEL' } : row,
+      ),
+    };
+    const nestedUnsafeReport = {
+      ...nestedUnsafeReportBasis,
+      reportFingerprint: createInputFingerprint(nestedUnsafeReportBasis as unknown as JsonValue),
+    } as unknown as NarrativeEvalReport;
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, reportFingerprint: nestedUnsafeReport.reportFingerprint },
+        report: nestedUnsafeReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+
+    const unsafePropertyReportBasis = {
+      ...currentReportBasis,
+      endToEnd: {
+        ...report.endToEnd,
+        cases: report.endToEnd.cases.map((row, index) =>
+          index === 0
+            ? {
+                ...row,
+                requiredPropertyResults: row.requiredPropertyResults.map((result, resultIndex) =>
+                  resultIndex === 0
+                    ? { ...result, rawOutput: 'RAW_E2E_PROPERTY_SENTINEL' }
+                    : result,
+                ),
+              }
+            : row,
+        ),
+      },
+    };
+    const unsafePropertyReport = {
+      ...unsafePropertyReportBasis,
+      reportFingerprint: createInputFingerprint(unsafePropertyReportBasis as unknown as JsonValue),
+    } as unknown as NarrativeEvalReport;
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, reportFingerprint: unsafePropertyReport.reportFingerprint },
+        report: unsafePropertyReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
     expect(() =>
       validateNarrativeQualityBaseline({
         manifest: {
@@ -259,6 +434,32 @@ describe('deterministic offline narrative eval harness', () => {
           },
         },
         report,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+
+    const { report: failedAuditReport } = await runDeterministicContractReplay({
+      resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
+      versions: evalContractVersions,
+      adapter: inMemoryAdapter(),
+      operations: baselineOperations.map((operation, index) =>
+        index === 0
+          ? {
+              ...operation,
+              terminalAuditStatus: 'FAILED' as const,
+              structuredOutputValid: false,
+              validationFailureStage: 'CONTEXT_BINDING' as const,
+            }
+          : operation,
+      ),
+    });
+    expect(failedAuditReport.semantic.gates.passed).toBe(true);
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: {
+          ...manifest,
+          reportFingerprint: failedAuditReport.reportFingerprint,
+        },
+        report: failedAuditReport,
       }),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
 

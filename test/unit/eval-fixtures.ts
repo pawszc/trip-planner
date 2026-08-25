@@ -34,6 +34,7 @@ export function passingEndToEndOutcome(caseId: string): EndToEndCaseOutcome {
     generatedSchemaValid: true,
     exactReferencesValid: true,
     actualDecision: 'PUBLISH',
+    judgeStructuredOutputValid: true,
     requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
     requiredPropertyResults: authored.requiredProperties.map((propertyId) => ({
       propertyId: propertyId as NarrativeE2eRequiredPropertyId,

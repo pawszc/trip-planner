@@ -333,10 +333,13 @@ logicznych calls, 56 attempts i USD 3.00. Czysty `npm run eval:live:preflight` w
 plan i cost estimator, ale nie importuje ścieżki wykonawczej i działa bez opt-inów,
 credentiali, bazy lub sieci. Pierwszym runtime scenario jest exact Luna/low/2048; canonical
 ceiling wynosi 1,185,201 USD micros, a kodowo wyliczony zapas do capu 1,814,799 micros. Exact
-Terra/2048 pozostaje wyłącznie comparison scenario ponad capem, nie fallbackiem. Dwa osobno
+Terra/2048 pozostaje wyłącznie comparison scenario ponad capem, nie fallbackiem. Trzy osobno
 autoryzowane runy zatrzymały się fail-closed przed raportem jakości i nie były ponawiane.
-Ten offline fix wykonuje zero provider calls, nie autoryzuje kolejnego baseline i pozostawia
-Fazę 3B3 w `REVIEW` do osobnej zgody oraz przejścia wszystkich bramek.
+Transport JUDGE v2 zachowuje metadata przed parserami i rozdziela statyczny schema od exact
+lokalnych bindingów; syntetyczny runner może raportować kompletnie rozliczony invalid jako
+`FAIL`, ale produkt i accepted manifest pozostają fail-closed. Ten offline fix wykonuje zero
+provider calls, nie autoryzuje kolejnego baseline i pozostawia Fazę 3B3 w `REVIEW` do osobnej
+zgody oraz przejścia wszystkich bramek.
 
 ## Stos technologiczny
 
