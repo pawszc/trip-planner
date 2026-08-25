@@ -76,10 +76,18 @@ interface PersistedAiRun {
   providerResponseId: string | null;
   providerResponseStatus: string | null;
   providerIncompleteReason: string | null;
+  providerCallAttempted: boolean | null;
+  validationFailureStage: string | null;
   refusal: boolean;
   refusalCategory: string | null;
   errorCode: string | null;
   retryable: boolean | null;
+}
+
+interface SqliteColumnInfo {
+  name: string;
+  notnull: number;
+  dflt_value: string | null;
 }
 
 function startedEvent(
@@ -175,6 +183,7 @@ class SqliteTerminalFailureAdapter implements StructuredAiAdapter {
       executionEvidence: {
         provider: this.provider,
         configuredModel: profile.model,
+        providerCallAttempted: true,
         responseModel: `${profile.model}-failed-snapshot`,
         providerResponseStatus: 'INCOMPLETE',
         providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
@@ -192,15 +201,54 @@ class SqliteTerminalFailureAdapter implements StructuredAiAdapter {
         latencyMs: 240,
       },
       cause: new Error(
-        'sk-proj-rawsentinel PROMPT_SENTINEL CANDIDATE_SENTINEL RAW_PROVIDER_MESSAGE',
+        'sk-proj-rawsentinel PROMPT_SENTINEL CANDIDATE_SENTINEL CONTEXT_SENTINEL ' +
+          'https://private.example.test/source private@example.test RAW_PROVIDER_MESSAGE ' +
+          'PROVIDER_STACK_SENTINEL',
       ),
     });
   }
 }
 
-function gatewayRequest(): StructuredAiRequest<{ decision: 'ok' }> {
+class SqlitePostResponseValidationFailureAdapter implements StructuredAiAdapter {
+  readonly provider = AiProvider.OPENAI;
+
+  async call<TOutput>(
+    _request: StructuredAiRequest<TOutput>,
+    profile: AiExecutionProfile,
+  ): Promise<AiCallResult<TOutput>> {
+    throw new AiError('INVALID_STRUCTURED_OUTPUT', 'Controlled post-response validation failure.', {
+      provider: this.provider,
+      model: profile.model,
+      retryable: false,
+      executionEvidence: {
+        provider: this.provider,
+        configuredModel: profile.model,
+        providerCallAttempted: true,
+        validationFailureStage: 'CONTEXT_BINDING',
+        responseModel: `${profile.model}-failed-snapshot`,
+        providerResponseStatus: 'COMPLETED',
+        providerRequestId: 'req_sqlite_binding_failed',
+        providerResponseId: 'resp_sqlite_binding_failed',
+        usage: {
+          inputTokens: 40,
+          outputTokens: 10,
+          totalTokens: 50,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 2,
+        },
+        attempts: 1,
+        latencyMs: 120,
+      },
+    });
+  }
+}
+
+function gatewayRequest(taskType: AiTaskType = AiTaskType.DECIDE): StructuredAiRequest<{
+  decision: 'ok';
+}> {
   return {
-    taskType: AiTaskType.DECIDE,
+    taskType,
     promptVersion: 'sqlite-composition-prompt-v1',
     schemaVersion: 'sqlite-composition-schema-v1',
     schemaName: 'sqlite_composition_result',
@@ -346,6 +394,8 @@ describe('internal CAP AiRuns persistence', () => {
       providerResponseId: null,
       providerResponseStatus: null,
       providerIncompleteReason: null,
+      providerCallAttempted: null,
+      validationFailureStage: null,
       promptVersion: 'prompt-v1',
       schemaVersion: 'schema-v1',
       inputFingerprint: fingerprint,
@@ -442,6 +492,7 @@ describe('internal CAP AiRuns persistence', () => {
       providerResponseId: 'resp_failed',
       providerResponseStatus: 'INCOMPLETE',
       providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      providerCallAttempted: true,
       refusal: { refused: false },
       errorCode: 'INCOMPLETE_MODEL_OUTPUT',
       retryable: false,
@@ -463,6 +514,8 @@ describe('internal CAP AiRuns persistence', () => {
       providerResponseId: 'resp_failed',
       providerResponseStatus: 'INCOMPLETE',
       providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      providerCallAttempted: true,
+      validationFailureStage: null,
       refusal: false,
       refusalCategory: null,
       errorCode: 'INCOMPLETE_MODEL_OUTPUT',
@@ -474,8 +527,47 @@ describe('internal CAP AiRuns persistence', () => {
     expect(Number(records[0]?.cacheWriteTokens)).toBe(80);
     expect(Number(records[0]?.reasoningTokens)).toBe(4);
     expect(JSON.stringify(records[0])).not.toMatch(
-      /PROMPT_SENTINEL|CANDIDATE_SENTINEL|RAW_PROVIDER_MESSAGE|provider stack|sk-proj-rawsentinel/,
+      /PROMPT_SENTINEL|CANDIDATE_SENTINEL|CONTEXT_SENTINEL|private\.example\.test|private@example\.test|RAW_PROVIDER_MESSAGE|PROVIDER_STACK_SENTINEL|provider stack|sk-proj-rawsentinel/,
     );
+  });
+
+  it('stores nullable/no-default failure fields and exact zero-call schema evidence', async () => {
+    const columns = (await cds.db.run(
+      "PRAGMA table_info('trip_planner_AiRuns')",
+    )) as SqliteColumnInfo[];
+    for (const columnName of ['providerCallAttempted', 'validationFailureStage']) {
+      expect(columns.find((column) => column.name === columnName)).toMatchObject({
+        notnull: 0,
+        dflt_value: null,
+      });
+    }
+
+    const aiRunId = '00000000-0000-4000-8000-000000000133';
+    const event = startedEvent(aiRunId);
+    await recorder.record(event);
+    await recorder.record({
+      ...event,
+      status: 'FAILED',
+      completedAt: '2026-08-12T10:00:00.010Z',
+      latencyMs: 10,
+      attempts: 0,
+      providerCallAttempted: false,
+      validationFailureStage: 'SCHEMA_CONSTRUCTION',
+      errorCode: 'INVALID_STRUCTURED_OUTPUT',
+      retryable: false,
+    });
+
+    expect(await readAiRun(aiRunId)).toMatchObject({
+      status: 'FAILED',
+      responseModel: null,
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+      attempts: 0,
+      providerCallAttempted: false,
+      validationFailureStage: 'SCHEMA_CONSTRUCTION',
+      errorCode: 'INVALID_STRUCTURED_OUTPUT',
+    });
   });
 
   it('rejects duplicate STARTED without adding another record', async () => {
@@ -671,7 +763,11 @@ describe('full offline gateway persistence composition', () => {
     await expect(gateway.call(gatewayRequest())).rejects.toMatchObject({
       code: 'INCOMPLETE_MODEL_OUTPUT',
       details: { aiRunId },
-      executionEvidence: { providerResponseStatus: 'INCOMPLETE', attempts: 1 },
+      executionEvidence: {
+        providerCallAttempted: true,
+        providerResponseStatus: 'INCOMPLETE',
+        attempts: 1,
+      },
     });
     const record = await readAiRun(aiRunId);
     expect(record).toMatchObject({
@@ -682,6 +778,8 @@ describe('full offline gateway persistence composition', () => {
       providerResponseId: 'resp_sqlite_failed',
       providerResponseStatus: 'INCOMPLETE',
       providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      providerCallAttempted: true,
+      validationFailureStage: null,
       attempts: 1,
       latencyMs: 240,
       errorCode: 'INCOMPLETE_MODEL_OUTPUT',
@@ -691,7 +789,7 @@ describe('full offline gateway persistence composition', () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
     expect(JSON.stringify(record)).not.toMatch(
-      /PROMPT_SENTINEL|CANDIDATE_SENTINEL|RAW_PROVIDER_MESSAGE|sk-proj-rawsentinel/,
+      /PROMPT_SENTINEL|CANDIDATE_SENTINEL|CONTEXT_SENTINEL|private\.example\.test|private@example\.test|RAW_PROVIDER_MESSAGE|PROVIDER_STACK_SENTINEL|sk-proj-rawsentinel/,
     );
     await expect(
       cds.db.run(cds.ql.SELECT.from('trip.planner.NarrativeRuns')),
@@ -699,6 +797,47 @@ describe('full offline gateway persistence composition', () => {
     await expect(
       cds.db.run(cds.ql.SELECT.from('trip.planner.NarrativeReviewRuns')),
     ).resolves.toHaveLength(0);
+  });
+
+  it('links a completed post-response validation failure to the exact durable FAILED request', async () => {
+    const aiRunId = '00000000-0000-4000-8000-000000000123';
+    const request = gatewayRequest(AiTaskType.JUDGE);
+    const gateway = createPersistentAiGateway(loadAiConfig({ AI_ENABLED: 'true' }), {
+      adapters: [new SqlitePostResponseValidationFailureAdapter()],
+      generateAiRunId: () => aiRunId,
+      now: (() => {
+        const times = [new Date('2026-08-12T13:00:00.000Z'), new Date('2026-08-12T13:00:01.000Z')];
+        return () => times.shift() ?? new Date('2026-08-12T13:00:02.000Z');
+      })(),
+    });
+
+    await expect(gateway.call(request)).rejects.toMatchObject({
+      code: 'INVALID_STRUCTURED_OUTPUT',
+      details: { aiRunId },
+      executionEvidence: {
+        providerCallAttempted: true,
+        validationFailureStage: 'CONTEXT_BINDING',
+        providerResponseStatus: 'COMPLETED',
+        attempts: 1,
+      },
+    });
+    expect(await readAiRun(aiRunId)).toMatchObject({
+      ID: aiRunId,
+      status: 'FAILED',
+      taskType: 'JUDGE',
+      provider: 'OPENAI',
+      configuredModel: 'gpt-5.6-luna',
+      promptVersion: request.promptVersion,
+      schemaVersion: request.schemaVersion,
+      inputFingerprint: createInputFingerprint(request.input),
+      responseModel: 'gpt-5.6-luna-failed-snapshot',
+      providerResponseStatus: 'COMPLETED',
+      providerCallAttempted: true,
+      validationFailureStage: 'CONTEXT_BINDING',
+      attempts: 1,
+      errorCode: 'INVALID_STRUCTURED_OUTPUT',
+      retryable: false,
+    });
   });
 });
 

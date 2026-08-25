@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { AiTaskType, canonicalizeJson, type StructuredAiRequest } from '../ai/contracts.ts';
+import {
+  AiTaskType,
+  canonicalizeJson,
+  type StructuredAiOutputValidationResult,
+  type StructuredAiRequest,
+} from '../ai/contracts.ts';
 import { AiError } from '../ai/errors.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import type { NarrativeQualityContext } from './narrative-quality-context.ts';
@@ -98,6 +103,36 @@ const dimensionSchema = z
   })
   .strict();
 
+/** Frozen option-narrative-schema-v1 permits at most eight provider-visible blocks. */
+export const NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES = 8;
+
+const narrativeJudgeTransportFindingSchema = z
+  .object({
+    reasonCode: z.enum(NARRATIVE_JUDGE_REASON_CODES),
+    severity: z.enum(NARRATIVE_JUDGE_SEVERITIES),
+    blockSequences: z
+      .array(z.number().int().min(1).max(NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES))
+      .min(1)
+      .max(NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES),
+    factIds: z.array(factIdSchema).max(32),
+  })
+  .strict();
+
+/**
+ * Static provider-visible contract. Context membership and cross-field rules are deliberately
+ * absent because strict JSON Schema cannot express those bindings safely.
+ */
+export const NARRATIVE_JUDGE_TRANSPORT_SCHEMA = z
+  .object({
+    qualityContextFingerprint: fingerprintSchema,
+    narrativeFingerprint: fingerprintSchema,
+    dimensions: z.array(dimensionSchema).min(1).max(NARRATIVE_JUDGE_DIMENSIONS.length),
+    findings: z.array(narrativeJudgeTransportFindingSchema).max(64),
+  })
+  .strict();
+
+export type NarrativeJudgeTransportOutput = z.infer<typeof NARRATIVE_JUDGE_TRANSPORT_SCHEMA>;
+
 function hasDuplicates<T>(values: readonly T[]): boolean {
   return new Set(values).size !== values.length;
 }
@@ -106,148 +141,135 @@ function isAscending(values: readonly number[]): boolean {
   return values.every((value, index) => index === 0 || value > values[index - 1]!);
 }
 
-export function createNarrativeJudgeOutputSchema(qualityContext: NarrativeQualityContext) {
+function validationSuccess<TOutput>(output: TOutput): StructuredAiOutputValidationResult<TOutput> {
+  return { success: true, output };
+}
+
+function validationFailure(
+  validationFailureStage:
+    'TRANSPORT_SCHEMA_VALIDATION' | 'CONTEXT_BINDING' | 'DIMENSION_BINDING' | 'FINDING_BINDING',
+): StructuredAiOutputValidationResult<never> {
+  return { success: false, validationFailureStage };
+}
+
+export function validateNarrativeJudgeTransportOutput(
+  output: unknown,
+): StructuredAiOutputValidationResult<NarrativeJudgeTransportOutput> {
+  const parsed = NARRATIVE_JUDGE_TRANSPORT_SCHEMA.safeParse(output);
+  return parsed.success
+    ? validationSuccess(parsed.data)
+    : validationFailure('TRANSPORT_SCHEMA_VALIDATION');
+}
+
+export function validateNarrativeJudgeContextBinding(
+  output: NarrativeJudgeTransportOutput,
+  qualityContext: NarrativeQualityContext,
+): StructuredAiOutputValidationResult<NarrativeJudgeTransportOutput> {
+  if (
+    output.qualityContextFingerprint !== qualityContext.fingerprint ||
+    output.narrativeFingerprint !== qualityContext.narrativeFingerprint
+  ) {
+    return validationFailure('CONTEXT_BINDING');
+  }
+  return validationSuccess(output);
+}
+
+export function validateNarrativeJudgeDimensionBinding(
+  output: NarrativeJudgeTransportOutput,
+): StructuredAiOutputValidationResult<NarrativeJudgeTransportOutput> {
+  const dimensions = output.dimensions.map(({ dimension }) => dimension);
+  if (
+    hasDuplicates(dimensions) ||
+    NARRATIVE_JUDGE_DIMENSIONS.some((dimension) => !dimensions.includes(dimension))
+  ) {
+    return validationFailure('DIMENSION_BINDING');
+  }
+  return validationSuccess(output);
+}
+
+export function validateNarrativeJudgeFindingBinding(
+  output: NarrativeJudgeTransportOutput,
+  qualityContext: NarrativeQualityContext,
+): StructuredAiOutputValidationResult<NarrativeJudgeOutput> {
   const blockCount = qualityContext.narrative.blocks.length;
   const validFactIds = new Set(qualityContext.modelView.facts.map((fact) => fact.factId));
-  const findingSchema = z
-    .object({
-      reasonCode: z.enum(NARRATIVE_JUDGE_REASON_CODES),
-      severity: z.enum(NARRATIVE_JUDGE_SEVERITIES),
-      blockSequences: z.array(z.number().int().min(1).max(blockCount)).min(1).max(blockCount),
-      factIds: z.array(factIdSchema).max(32),
-    })
-    .strict()
-    .superRefine((finding, refinement) => {
-      if (hasDuplicates(finding.blockSequences) || !isAscending(finding.blockSequences)) {
-        refinement.addIssue({
-          code: 'custom',
-          path: ['blockSequences'],
-          message: 'Finding block sequences must be unique and ascending.',
-        });
-      }
-      if (hasDuplicates(finding.factIds)) {
-        refinement.addIssue({
-          code: 'custom',
-          path: ['factIds'],
-          message: 'Finding fact IDs must be unique.',
-        });
-      }
-      for (const [index, factId] of finding.factIds.entries()) {
-        if (!validFactIds.has(factId)) {
-          refinement.addIssue({
-            code: 'custom',
-            path: ['factIds', index],
-            message: 'Finding fact ID is outside the exact quality context.',
-          });
-        }
-      }
-      const allowedSeverities = NARRATIVE_JUDGE_REASON_SEVERITIES[finding.reasonCode];
-      if (!allowedSeverities.includes(finding.severity)) {
-        refinement.addIssue({
-          code: 'custom',
-          path: ['severity'],
-          message: 'Finding severity is not allowed for the selected rubric reason.',
-        });
-      }
-    });
+  const dimensionStatuses = new Map(
+    output.dimensions.map(({ dimension, status }) => [dimension, status] as const),
+  );
+  const failedDimensions = new Set(
+    [...dimensionStatuses.entries()]
+      .filter(([, status]) => status === 'FAIL')
+      .map(([dimension]) => dimension),
+  );
 
-  return z
-    .object({
-      qualityContextFingerprint: fingerprintSchema,
-      narrativeFingerprint: fingerprintSchema,
-      dimensions: z.array(dimensionSchema).length(NARRATIVE_JUDGE_DIMENSIONS.length),
-      findings: z.array(findingSchema).max(64),
-    })
-    .strict()
-    .superRefine((output, refinement) => {
-      if (output.qualityContextFingerprint !== qualityContext.fingerprint) {
-        refinement.addIssue({
-          code: 'custom',
-          path: ['qualityContextFingerprint'],
-          message: 'Judge output belongs to another quality context.',
-        });
-      }
-      if (output.narrativeFingerprint !== qualityContext.narrativeFingerprint) {
-        refinement.addIssue({
-          code: 'custom',
-          path: ['narrativeFingerprint'],
-          message: 'Judge output belongs to another narrative.',
-        });
-      }
+  for (const finding of output.findings) {
+    if (
+      hasDuplicates(finding.blockSequences) ||
+      !isAscending(finding.blockSequences) ||
+      finding.blockSequences.some((sequence) => sequence > blockCount) ||
+      hasDuplicates(finding.factIds) ||
+      finding.factIds.some((factId) => !validFactIds.has(factId)) ||
+      !NARRATIVE_JUDGE_REASON_SEVERITIES[finding.reasonCode].includes(finding.severity) ||
+      !NARRATIVE_JUDGE_REASON_DIMENSIONS[finding.reasonCode].some((dimension) =>
+        failedDimensions.has(dimension),
+      )
+    ) {
+      return validationFailure('FINDING_BINDING');
+    }
+  }
+  for (const dimension of failedDimensions) {
+    if (
+      !output.findings.some((finding) =>
+        NARRATIVE_JUDGE_REASON_DIMENSIONS[finding.reasonCode].includes(dimension),
+      )
+    ) {
+      return validationFailure('FINDING_BINDING');
+    }
+  }
+  if (failedDimensions.size === 0 && output.findings.length > 0) {
+    return validationFailure('FINDING_BINDING');
+  }
+  return validationSuccess(output);
+}
 
-      const dimensionStatuses = new Map<NarrativeJudgeDimension, NarrativeJudgeDimensionStatus>();
-      for (const [index, result] of output.dimensions.entries()) {
-        if (dimensionStatuses.has(result.dimension)) {
-          refinement.addIssue({
-            code: 'custom',
-            path: ['dimensions', index, 'dimension'],
-            message: 'Judge dimensions must occur exactly once.',
-          });
-        }
-        dimensionStatuses.set(result.dimension, result.status);
-      }
-      for (const dimension of NARRATIVE_JUDGE_DIMENSIONS) {
-        if (!dimensionStatuses.has(dimension)) {
-          refinement.addIssue({
-            code: 'custom',
-            path: ['dimensions'],
-            message: `Judge output is missing dimension ${dimension}.`,
-          });
-        }
-      }
+export function validateNarrativeJudgeOutput(
+  output: unknown,
+  qualityContext: NarrativeQualityContext,
+): StructuredAiOutputValidationResult<NarrativeJudgeOutput> {
+  const transport = validateNarrativeJudgeTransportOutput(output);
+  if (!transport.success) return transport;
+  const context = validateNarrativeJudgeContextBinding(transport.output, qualityContext);
+  if (!context.success) return context;
+  const dimensions = validateNarrativeJudgeDimensionBinding(context.output);
+  if (!dimensions.success) return dimensions;
+  return validateNarrativeJudgeFindingBinding(dimensions.output, qualityContext);
+}
 
-      const failedDimensions = new Set(
-        [...dimensionStatuses.entries()]
-          .filter(([, status]) => status === 'FAIL')
-          .map(([dimension]) => dimension),
-      );
-      for (const [index, finding] of output.findings.entries()) {
-        const applicable = NARRATIVE_JUDGE_REASON_DIMENSIONS[finding.reasonCode];
-        if (!applicable.some((dimension) => failedDimensions.has(dimension))) {
-          refinement.addIssue({
-            code: 'custom',
-            path: ['findings', index, 'reasonCode'],
-            message: 'A finding must correspond to at least one failed dimension.',
-          });
-        }
-      }
-      for (const dimension of failedDimensions) {
-        if (
-          !output.findings.some((finding) => {
-            const applicable: readonly NarrativeJudgeDimension[] =
-              NARRATIVE_JUDGE_REASON_DIMENSIONS[finding.reasonCode];
-            return applicable.includes(dimension);
-          })
-        ) {
-          refinement.addIssue({
-            code: 'custom',
-            path: ['dimensions'],
-            message: `Failed dimension ${dimension} has no corresponding finding.`,
-          });
-        }
-      }
-      if (failedDimensions.size === 0 && output.findings.length > 0) {
-        refinement.addIssue({
-          code: 'custom',
-          path: ['findings'],
-          message: 'An all-pass judge output cannot contain findings.',
-        });
-      }
-    });
+export function createNarrativeJudgeOutputSchema(qualityContext: NarrativeQualityContext) {
+  return NARRATIVE_JUDGE_TRANSPORT_SCHEMA.superRefine((output, refinement) => {
+    const validation = validateNarrativeJudgeOutput(output, qualityContext);
+    if (!validation.success) {
+      refinement.addIssue({
+        code: 'custom',
+        message: `Narrative judge validation failed at ${validation.validationFailureStage}.`,
+      });
+    }
+  });
 }
 
 export function parseNarrativeJudgeOutput(
   output: unknown,
   qualityContext: NarrativeQualityContext,
 ): NarrativeJudgeOutput {
-  const parsed = createNarrativeJudgeOutputSchema(qualityContext).safeParse(output);
+  const parsed = validateNarrativeJudgeOutput(output, qualityContext);
   if (!parsed.success) {
     throw new AiError(
       'INVALID_STRUCTURED_OUTPUT',
       'The narrative judge output failed strict local quality validation.',
+      { details: { validationFailureStage: parsed.validationFailureStage } },
     );
   }
-  return parsed.data;
+  return parsed.output;
 }
 
 export function createNarrativeJudgeInput(
@@ -297,6 +319,8 @@ export function createNarrativeJudgeRequest(
     instructions: NARRATIVE_JUDGE_INSTRUCTIONS,
     input,
     outputSchema: createNarrativeJudgeOutputSchema(qualityContext),
+    providerOutputSchema: NARRATIVE_JUDGE_TRANSPORT_SCHEMA,
+    validateOutput: (output) => validateNarrativeJudgeOutput(output, qualityContext),
     planningRunId: qualityContext.modelView.planningRun.id as string,
     rankedOptionId: qualityContext.modelView.rankedOption.id as string,
   };

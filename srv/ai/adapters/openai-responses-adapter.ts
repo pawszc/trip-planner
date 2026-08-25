@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import OpenAI, { APIError } from 'openai';
+import OpenAI from 'openai';
 import { zodTextFormat } from 'openai/helpers/zod';
 import type { ZodType } from 'zod';
 import type { AiConfig, OpenAiReasoningEffort } from '../config.ts';
@@ -9,6 +9,8 @@ import {
   canonicalizeJson,
   createInputFingerprint,
   isValidAiRunId,
+  resolveStructuredAiProviderOutputSchema,
+  validateStructuredAiOutput,
 } from '../contracts.ts';
 import type {
   AiCallResult,
@@ -35,12 +37,12 @@ export interface OpenAiClientOptions {
   fetchImplementation?: typeof fetch;
 }
 
-export interface OpenAiStructuredRequest<TOutput> {
+export interface OpenAiStructuredRequest {
   model: string;
   instructions: string;
   input: string;
   schemaName: string;
-  outputSchema: ZodType<TOutput>;
+  providerOutputSchema: ZodType;
   maxOutputTokens: number;
   reasoningEffort: OpenAiReasoningEffort;
   store: false;
@@ -48,8 +50,9 @@ export interface OpenAiStructuredRequest<TOutput> {
   toolChoice: 'none';
 }
 
-export interface OpenAiStructuredResponse<TOutput> {
-  outputParsed: TOutput | null;
+export interface OpenAiStructuredResponse {
+  /** Reads model text only after the adapter has accepted all allowlisted response metadata. */
+  readOutputText(): string;
   responseStatus: OpenAiResponseStatus;
   incompleteReason?: OpenAiIncompleteReason;
   providerResponseId?: string;
@@ -65,17 +68,33 @@ export type OpenAiResponseStatus = AiProviderResponseStatus;
 export type OpenAiIncompleteReason = AiProviderIncompleteReason;
 
 export interface OpenAiResponsesClient {
-  execute<TOutput>(
-    request: OpenAiStructuredRequest<TOutput>,
-  ): Promise<OpenAiStructuredResponse<TOutput>>;
+  execute(request: OpenAiStructuredRequest): Promise<OpenAiStructuredResponse>;
 }
 
 export type OpenAiClientFactory = (options: OpenAiClientOptions) => OpenAiResponsesClient;
 
-class OpenAiStructuredOutputError extends Error {
-  constructor(cause: unknown) {
-    super('OpenAI returned output that could not be parsed with the configured schema.', { cause });
-    this.name = 'OpenAiStructuredOutputError';
+class OpenAiSchemaConstructionError extends Error {
+  constructor() {
+    super('OpenAI provider schema construction failed safely.');
+    this.name = 'OpenAiSchemaConstructionError';
+  }
+}
+
+class OpenAiRequestExecutionError extends Error {
+  readonly attempts: number;
+  readonly metadata: ProviderFailureMetadata;
+  readonly terminalKind?: 'CONTENT_FILTER' | 'LENGTH';
+
+  constructor(
+    attempts: number,
+    metadata: ProviderFailureMetadata,
+    terminalKind?: 'CONTENT_FILTER' | 'LENGTH',
+  ) {
+    super('OpenAI request failed before complete response metadata was available.');
+    this.name = 'OpenAiRequestExecutionError';
+    this.attempts = attempts;
+    this.metadata = Object.freeze({ ...metadata });
+    if (terminalKind !== undefined) this.terminalKind = terminalKind;
   }
 }
 
@@ -109,27 +128,45 @@ export const createOpenAiSdkClient: OpenAiClientFactory = (options) => {
     timeout: options.timeoutMs,
     maxRetries: options.maxRetries,
     fetch: countedFetch,
+    // Never allow ambient OPENAI_LOG to expose instructions, input, response bodies or raw output.
+    logLevel: 'off',
   });
 
   return {
-    async execute<TOutput>(
-      request: OpenAiStructuredRequest<TOutput>,
-    ): Promise<OpenAiStructuredResponse<TOutput>> {
+    async execute(request: OpenAiStructuredRequest): Promise<OpenAiStructuredResponse> {
+      let format: ReturnType<typeof zodTextFormat>;
       try {
-        const pending = client.responses.parse({
-          model: request.model,
-          instructions: request.instructions,
-          input: [{ role: 'user', content: request.input }],
-          text: {
-            format: zodTextFormat(request.outputSchema, request.schemaName),
-          },
-          max_output_tokens: request.maxOutputTokens,
-          reasoning: { effort: request.reasoningEffort },
-          store: request.store,
-          tools: [...request.tools],
-          tool_choice: request.toolChoice,
-        });
-        const { data, request_id: requestId } = await pending.withResponse();
+        format = zodTextFormat(request.providerOutputSchema, request.schemaName);
+      } catch {
+        throw new OpenAiSchemaConstructionError();
+      }
+      const pending = client.responses.create({
+        model: request.model,
+        instructions: request.instructions,
+        input: [{ role: 'user', content: request.input }],
+        text: { format },
+        max_output_tokens: request.maxOutputTokens,
+        reasoning: { effort: request.reasoningEffort },
+        store: request.store,
+        tools: [...request.tools],
+        tool_choice: request.toolChoice,
+      });
+      let responseWithMetadata: Awaited<ReturnType<typeof pending.withResponse>>;
+      try {
+        responseWithMetadata = await pending.withResponse();
+      } catch (error) {
+        throw new OpenAiRequestExecutionError(
+          attempts,
+          openAiFailureMetadata(error),
+          isContentFilterError(error)
+            ? 'CONTENT_FILTER'
+            : isLengthFinishError(error)
+              ? 'LENGTH'
+              : undefined,
+        );
+      }
+      try {
+        const { data, request_id: requestId } = responseWithMetadata;
         const refused = data.output.some(
           (item) =>
             item.type === 'message' && item.content.some((content) => content.type === 'refusal'),
@@ -139,30 +176,31 @@ export const createOpenAiSdkClient: OpenAiClientFactory = (options) => {
         const providerRequestId = safeProviderIdentifier(requestId);
         const responseModel = safeModelIdentifier(data.model);
         const responseErrorCode = safeProviderCode(data.error?.code);
+        const responseStatus = mapOpenAiResponseStatus(data.status);
+        const usage =
+          data.usage === null || data.usage === undefined ? undefined : mapOpenAiUsage(data.usage);
         return {
-          outputParsed: data.output_parsed,
-          responseStatus: mapOpenAiResponseStatus(data.status),
+          readOutputText: () => data.output_text,
+          responseStatus,
           ...(incompleteReason === undefined ? {} : { incompleteReason }),
           ...(providerResponseId === undefined ? {} : { providerResponseId }),
           ...(responseModel === undefined ? {} : { responseModel }),
-          ...(data.usage === null || data.usage === undefined
-            ? {}
-            : { usage: mapOpenAiUsage(data.usage) }),
+          ...(usage === undefined ? {} : { usage }),
           attempts: Math.max(attempts, 1),
           refused,
           ...(providerRequestId === undefined ? {} : { providerRequestId }),
           ...(responseErrorCode === undefined ? {} : { responseErrorCode }),
         };
       } catch (error) {
-        if (
-          error instanceof APIError ||
-          isContentFilterError(error) ||
-          isLengthFinishError(error) ||
-          error instanceof AiError
-        ) {
-          throw error;
-        }
-        throw new OpenAiStructuredOutputError(error);
+        throw new OpenAiRequestExecutionError(
+          Math.max(attempts, 1),
+          openAiFailureMetadata(error),
+          isContentFilterError(error)
+            ? 'CONTENT_FILTER'
+            : isLengthFinishError(error)
+              ? 'LENGTH'
+              : undefined,
+        );
       }
     },
   };
@@ -227,14 +265,17 @@ function mapOpenAiIncompleteReason(value: unknown): OpenAiIncompleteReason | und
 }
 
 function executionEvidence(
-  response: OpenAiStructuredResponse<unknown>,
+  response: OpenAiStructuredResponse,
   configuredModel: string,
   latencyMs: number,
   refusalCategory?: AiFailureExecutionEvidence['refusalCategory'],
+  validationFailureStage?: AiFailureExecutionEvidence['validationFailureStage'],
 ): AiFailureExecutionEvidence {
   return parseAiFailureExecutionEvidence({
     provider: AiProvider.OPENAI,
     configuredModel,
+    providerCallAttempted: true,
+    ...(validationFailureStage === undefined ? {} : { validationFailureStage }),
     ...(response.responseModel === undefined ? {} : { responseModel: response.responseModel }),
     providerResponseStatus: response.responseStatus,
     ...(response.incompleteReason === undefined
@@ -253,8 +294,36 @@ function executionEvidence(
   });
 }
 
+function schemaConstructionEvidence(
+  configuredModel: string,
+  latencyMs: number,
+): AiFailureExecutionEvidence {
+  return parseAiFailureExecutionEvidence({
+    provider: AiProvider.OPENAI,
+    configuredModel,
+    providerCallAttempted: false,
+    validationFailureStage: 'SCHEMA_CONSTRUCTION',
+    attempts: 0,
+    latencyMs,
+  });
+}
+
+function requestFailureEvidence(
+  configuredModel: string,
+  latencyMs: number,
+  attempts: number,
+): AiFailureExecutionEvidence {
+  return parseAiFailureExecutionEvidence({
+    provider: AiProvider.OPENAI,
+    configuredModel,
+    providerCallAttempted: attempts > 0,
+    attempts,
+    latencyMs,
+  });
+}
+
 function providerTerminalError(
-  response: OpenAiStructuredResponse<unknown>,
+  response: OpenAiStructuredResponse,
   configuredModel: string,
   evidence: AiFailureExecutionEvidence,
 ): AiError {
@@ -269,6 +338,45 @@ function providerTerminalError(
     },
     executionEvidence: evidence,
   });
+}
+
+function parseCompletedOutputText(
+  response: OpenAiStructuredResponse,
+  configuredModel: string,
+  latencyMs: number,
+): unknown {
+  let outputText: string;
+  try {
+    outputText = response.readOutputText();
+  } catch {
+    throw new AiError('PROVIDER_ERROR', 'OpenAI output text could not be read safely.', {
+      provider: AiProvider.OPENAI,
+      model: configuredModel,
+      executionEvidence: executionEvidence(response, configuredModel, latencyMs),
+    });
+  }
+  if (outputText.length === 0) {
+    throw new AiError('EMPTY_MODEL_OUTPUT', 'OpenAI returned no structured output text.', {
+      provider: AiProvider.OPENAI,
+      model: configuredModel,
+      executionEvidence: executionEvidence(response, configuredModel, latencyMs),
+    });
+  }
+  try {
+    return JSON.parse(outputText) as unknown;
+  } catch {
+    throw new AiError('INVALID_STRUCTURED_OUTPUT', 'OpenAI output was not valid JSON.', {
+      provider: AiProvider.OPENAI,
+      model: configuredModel,
+      executionEvidence: executionEvidence(
+        response,
+        configuredModel,
+        latencyMs,
+        undefined,
+        'RESPONSE_JSON_PARSE',
+      ),
+    });
+  }
 }
 
 function openAiFailureMetadata(error: unknown): ProviderFailureMetadata {
@@ -385,7 +493,7 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         instructions: request.instructions,
         input: canonicalizeJson(request.input),
         schemaName: request.schemaName,
-        outputSchema: request.outputSchema,
+        providerOutputSchema: resolveStructuredAiProviderOutputSchema(request),
         maxOutputTokens: resolveMaxOutputTokens(request.maxOutputTokens, profile.maxOutputTokens),
         reasoningEffort: profile.effort,
         store: false,
@@ -438,28 +546,7 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
           executionEvidence: evidence,
         });
       }
-      if (response.outputParsed === null) {
-        const evidence = executionEvidence(response, profile.model, latencyMs);
-        throw new AiError('EMPTY_MODEL_OUTPUT', 'OpenAI returned no parsed structured output.', {
-          provider: this.provider,
-          model: profile.model,
-          executionEvidence: evidence,
-        });
-      }
       const evidence = executionEvidence(response, profile.model, latencyMs);
-      const locallyValidated = request.outputSchema.safeParse(response.outputParsed);
-      if (!locallyValidated.success) {
-        throw new AiError(
-          'INVALID_STRUCTURED_OUTPUT',
-          'OpenAI output failed local schema validation.',
-          {
-            provider: this.provider,
-            model: profile.model,
-            executionEvidence: evidence,
-            cause: locallyValidated.error,
-          },
-        );
-      }
       if (response.responseModel === undefined) {
         throw new AiError('PROVIDER_ERROR', 'OpenAI returned an empty response model.', {
           provider: this.provider,
@@ -474,10 +561,29 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
           executionEvidence: evidence,
         });
       }
+      const parsedOutput = parseCompletedOutputText(response, profile.model, latencyMs);
+      const locallyValidated = validateStructuredAiOutput(request, parsedOutput);
+      if (!locallyValidated.success) {
+        throw new AiError(
+          'INVALID_STRUCTURED_OUTPUT',
+          'OpenAI output failed controlled local validation.',
+          {
+            provider: this.provider,
+            model: profile.model,
+            executionEvidence: executionEvidence(
+              response,
+              profile.model,
+              latencyMs,
+              undefined,
+              locallyValidated.validationFailureStage,
+            ),
+          },
+        );
+      }
 
       return {
         aiRunId,
-        output: locallyValidated.data,
+        output: locallyValidated.output,
         provider: this.provider,
         configuredModel: profile.model,
         responseModel: response.responseModel,
@@ -492,23 +598,67 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         ...(response.providerRequestId === undefined
           ? {}
           : { providerRequestId: response.providerRequestId }),
+        ...(response.providerResponseId === undefined
+          ? {}
+          : { providerResponseId: response.providerResponseId }),
       };
     } catch (error) {
       if (error instanceof AiError) {
         throw error;
       }
-      if (error instanceof OpenAiStructuredOutputError) {
+      if (error instanceof OpenAiSchemaConstructionError) {
+        const latencyMs = Math.max(0, Math.round(this.now() - startedAt));
         throw new AiError(
           'INVALID_STRUCTURED_OUTPUT',
-          'OpenAI output failed structured output parsing.',
-          { provider: this.provider, model: profile.model, cause: error },
+          'OpenAI provider schema construction failed.',
+          {
+            provider: this.provider,
+            model: profile.model,
+            executionEvidence: schemaConstructionEvidence(profile.model, latencyMs),
+          },
         );
+      }
+      if (error instanceof OpenAiRequestExecutionError) {
+        const latencyMs = Math.max(0, Math.round(this.now() - startedAt));
+        const evidence = requestFailureEvidence(profile.model, latencyMs, error.attempts);
+        if (error.terminalKind === 'CONTENT_FILTER') {
+          throw new AiError('MODEL_REFUSAL', 'OpenAI refused the structured output request.', {
+            provider: this.provider,
+            model: profile.model,
+            executionEvidence: evidence,
+          });
+        }
+        if (error.terminalKind === 'LENGTH') {
+          throw new AiError(
+            'INCOMPLETE_MODEL_OUTPUT',
+            'OpenAI did not complete structured output.',
+            {
+              provider: this.provider,
+              model: profile.model,
+              retryable: false,
+              executionEvidence: evidence,
+            },
+          );
+        }
+        const normalized = normalizeProviderFailure({
+          provider: this.provider,
+          model: profile.model,
+          modelEnvironmentVariable: `AI_${request.taskType}_MODEL`,
+          metadata: error.metadata,
+          cause: undefined,
+        });
+        throw new AiError(normalized.code, normalized.message, {
+          provider: this.provider,
+          model: profile.model,
+          retryable: normalized.retryable,
+          details: normalized.details,
+          executionEvidence: evidence,
+        });
       }
       if (isContentFilterError(error)) {
         throw new AiError('MODEL_REFUSAL', 'OpenAI refused the structured output request.', {
           provider: this.provider,
           model: profile.model,
-          cause: error,
         });
       }
       if (isLengthFinishError(error)) {
@@ -516,7 +666,6 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
           provider: this.provider,
           model: profile.model,
           retryable: false,
-          cause: error,
         });
       }
       throw normalizeProviderFailure({
@@ -524,7 +673,7 @@ export class OpenAiResponsesAdapter implements StructuredAiAdapter {
         model: profile.model,
         modelEnvironmentVariable: `AI_${request.taskType}_MODEL`,
         metadata: openAiFailureMetadata(error),
-        cause: error,
+        cause: undefined,
       });
     }
   }

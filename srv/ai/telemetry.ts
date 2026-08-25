@@ -10,6 +10,7 @@ import type { AiErrorCode } from './errors.ts';
 import type {
   AiProviderIncompleteReason,
   AiProviderResponseStatus,
+  AiValidationFailureStage,
 } from './failure-execution-evidence.ts';
 
 export type AiRunStatus = 'STARTED' | 'SUCCEEDED' | 'FAILED';
@@ -38,6 +39,8 @@ export interface AiRunTelemetryEvent {
   providerResponseId?: string;
   providerResponseStatus?: AiProviderResponseStatus;
   providerIncompleteReason?: AiProviderIncompleteReason;
+  providerCallAttempted?: boolean;
+  validationFailureStage?: AiValidationFailureStage;
   refusal?: AiRefusalState;
   errorCode?: AiErrorCode;
   retryable?: boolean;

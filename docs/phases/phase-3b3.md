@@ -10,12 +10,12 @@ uncertainty, provenance, and safety.
 
 ## Status
 
-`REVIEW — TWO LIVE BASELINES STOPPED SAFELY / JUDGE OUTPUT-BUDGET FIX IN REVIEW`
+`REVIEW — THREE LIVE BASELINES STOPPED SAFELY / OPENAI PARSE-EVIDENCE FIX IN REVIEW`
 
 The contract and its versioned synthetic golden dataset, schema, and rubric were merged to
-`main` before implementation started. Two separately authorized final live baselines were each
-executed exactly once and stopped fail-closed at sequences 18/46 and 23/46. No complete quality
-report or accepted baseline exists, no rerun was performed, and this phase cannot become
+`main` before implementation started. Three separately authorized final live baselines were each
+executed exactly once and stopped fail-closed at sequences 18/46, 23/46, and 1/46. No complete
+quality report or accepted baseline exists, no rerun was performed, and this phase cannot become
 `DONE`.
 
 The golden labels and initial thresholds are architect-curated for this phase. Changing a
@@ -47,8 +47,10 @@ contract change, not a test fix.
       Terra comparison. The runtime `JUDGE` profile is `OPENAI / gpt-5.6-luna / low / 2048`;
       Terra remains comparison-only and exceeds the unchanged USD 3 cap.
 - [x] `narrative-quality-model-profile-v2` records only the accepted Luna output-budget change.
-      Dataset, prompts, schema, rubric, publication policy, safety precheck, price catalog,
-      effort, calls, retry policy and hard caps remain frozen.
+      Dataset, prompt, rubric, publication policy, safety precheck, price catalog, model profile,
+      effort, calls, retry policy and hard caps remain frozen. The corrective Draft PR versions
+      only the provider-visible JUDGE schema, execution, failure-accounting, report, and accepted-
+      manifest contracts whose semantics change.
 - [x] Privacy-safe preflight evidence includes exact profiles, workload fingerprint, pricing
       metadata, plan and ceiling versions, planned calls/attempts/cost and limits. Failure
       evidence may additionally carry only available provider/model/latency allowlisted fields.
@@ -56,12 +58,16 @@ contract change, not a test fix.
 - [x] A failure before durable `STARTED` creates no review and no fabricated UUID, blocks the
       provider and product write, and emits exactly one independent privacy-safe operational
       signal with `providerCallAttempted=false`; post-`STARTED` paths retain their real audit.
+- [x] The corrective offline implementation separates provider schema construction, request,
+      response metadata, JSON parsing, transport validation, and three explicit local bindings.
+      A completely accounted post-response invalid JUDGE output can produce a failing synthetic
+      report only with exact durable `FAILED` audit linkage; the product remains fail-closed.
 - [ ] A further synthetic live baseline would require new explicit human authorization. The
-      two failed runs do not authorize a rerun, smoke test or diagnostic provider request.
+      three failed runs do not authorize a rerun, smoke test or diagnostic provider request.
 - [ ] `DONE` still requires a passing approved baseline, completed review, merge, and
       verification on `main`.
 
-### Privacy-safe evidence from the two authorized runs
+### Privacy-safe evidence from the three authorized runs
 
 - The first live command was executed exactly once from source commit
   `7af918ded8ee7b30d3fdabd92d705c2dd34e7c49` with `ANTHROPIC / claude-sonnet-5 / low /
@@ -86,6 +92,22 @@ contract change, not a test fix.
   rerun, resume, continuation or model/provider fallback was produced.
 - The output-budget fix is offline-only and does not authorize another smoke, diagnostic or
   baseline provider request. AI remains disabled by default.
+- The third live command was executed exactly once from source commit
+  `abf0f4b258c5950381e597b0192580527d71953f` with workload fingerprint
+  `280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`, exact profiles
+  `ANTHROPIC / claude-sonnet-5 / low / 1600` and
+  `OPENAI / gpt-5.6-luna / low / 2048`, zero retries, 46 logical calls, and at most 46
+  attempts. Its conservative ceiling was 1,185,201 USD micros under the unchanged 3,000,000
+  USD-micros hard cap.
+- It stopped on `P01 / JUDGE / 1/46` with non-retryable `INVALID_STRUCTURED_OUTPUT` before a
+  report. The safe evidence could only say a provider call may have occurred; attempt accounting
+  was incomplete, and zero known attempts / zero known USD micros was only the settled subtotal,
+  not the actual cost. One terminal `FAILED` `AiRun` exists; no review, narrative, or
+  `GENERATE`/Anthropic call exists.
+- Its privacy-safe isolated SQLite audit SHA-256 is
+  `5039F1DAF0F434BC0BB231B7B8D9EC9F90AE1CA8A10CF980858A064CBA2BA37B`. No raw output,
+  provider error, prompt, candidate, or other non-allowlisted SQLite value was read for this fix.
+  There was no retry, rerun, smoke, diagnostic request, resume, continuation, or fallback.
 
 ### Review item: precheck/JUDGE money boundary
 
@@ -484,10 +506,10 @@ average never masks one critical false accept.
   - maximum estimated cost no greater than USD 3.00;
   - a successful offline preflight.
 - No CI, test, build, startup, or postinstall hook may enable live eval.
-- No live call is authorized by this offline output-budget PR. Both separately authorized
+- No live call is authorized by this offline corrective PR. All three separately authorized
   one-shot baselines have already stopped safely; another baseline requires a new decision.
-  Report only settled usage and cost: the first run has one unaccounted attempt, while all 23
-  attempts in the second run have complete accounting.
+  Report only settled usage and cost: the first and third runs each contain an unaccounted
+  attempt, while all 23 attempts in the second run have complete accounting.
 
 ## Escalation triggers
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AiProvider, AiTaskType } from '../ai/contracts.ts';
+import { AiProvider, AiTaskType, canonicalizeJson, type JsonValue } from '../ai/contracts.ts';
 import {
   DATASET_FINGERPRINT_BASIS_VERSION,
   EvalContractError,
@@ -9,18 +9,27 @@ import {
   NARRATIVE_QUALITY_PRECHECK_CASE_IDS,
   NARRATIVE_QUALITY_SEMANTIC_CASE_IDS,
   NARRATIVE_QUALITY_SENTINEL_CASE_IDS,
+  loadNarrativeQualityDataset,
 } from './dataset.ts';
 import {
+  LATENCY_PERCENTILE_CONVENTION_VERSION,
   NARRATIVE_EVAL_REPORT_VERSION,
+  buildPrivacySafeEvalReport,
   evalContractVersionsSchema,
   verifyEvalReportFingerprint,
   type NarrativeEvalReport,
 } from './report.ts';
 import { LIVE_EVAL_HARD_CAPS } from './live-guard.ts';
 import { DIMENSION_MACRO_F1_CONVENTION_VERSION } from './metrics.ts';
-import { AI_PRICE_ARITHMETIC_VERSION } from './price-snapshot.ts';
+import {
+  AI_PRICE_ARITHMETIC_VERSION,
+  estimateCallCostUsdMicros,
+  findModelPrice,
+  loadAiPriceSnapshot,
+} from './price-snapshot.ts';
+import { NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION } from './required-properties.ts';
 
-export const NARRATIVE_QUALITY_BASELINE_MANIFEST_VERSION = 'narrative-quality-baseline-manifest-v1';
+export const NARRATIVE_QUALITY_BASELINE_MANIFEST_VERSION = 'narrative-quality-baseline-manifest-v2';
 
 const fingerprint = z.string().regex(/^[0-9a-f]{64}$/);
 const safeIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/);
@@ -113,7 +122,43 @@ function hasExactLiveBaselineEvidence(report: NarrativeEvalReport): boolean {
         actual.caseId !== expected.caseId ||
         actual.taskType !== expected.taskType ||
         actual.attempts !== 1 ||
-        actual.refused
+        actual.refused ||
+        actual.terminalAuditStatus !== 'SUCCEEDED' ||
+        !actual.structuredOutputValid ||
+        actual.validationFailureStage !== null ||
+        !actual.exactAuditLinkageValid
+      );
+    })
+  ) {
+    return false;
+  }
+  if (
+    report.endToEnd.cases.some((row) => {
+      const generateOperations = report.operations.filter(
+        (operation) =>
+          operation.caseId === row.caseId && operation.taskType === AiTaskType.GENERATE,
+      );
+      const judgeOperations = report.operations.filter(
+        (operation) => operation.caseId === row.caseId && operation.taskType === AiTaskType.JUDGE,
+      );
+      const generateAuditSucceeded =
+        generateOperations.length === 1 &&
+        generateOperations[0]!.terminalAuditStatus === 'SUCCEEDED' &&
+        generateOperations[0]!.exactAuditLinkageValid;
+      const judgeAuditSucceeded =
+        judgeOperations.length === 1 &&
+        judgeOperations[0]!.terminalAuditStatus === 'SUCCEEDED' &&
+        judgeOperations[0]!.exactAuditLinkageValid;
+      const judgeStructuredOutputValid =
+        judgeOperations.length === 0
+          ? null
+          : judgeOperations.length === 1 && judgeOperations[0]!.structuredOutputValid;
+      return (
+        row.generateLogicalCalls !== generateOperations.length ||
+        row.judgeLogicalCalls !== judgeOperations.length ||
+        row.generateAuditSucceeded !== generateAuditSucceeded ||
+        row.judgeAuditSucceeded !== judgeAuditSucceeded ||
+        row.judgeStructuredOutputValid !== judgeStructuredOutputValid
       );
     })
   ) {
@@ -135,6 +180,66 @@ function hasExactLiveBaselineEvidence(report: NarrativeEvalReport): boolean {
   );
 }
 
+function hasCatalogDerivedOperationCosts(report: NarrativeEvalReport): boolean {
+  try {
+    const priceSnapshot = loadAiPriceSnapshot();
+    if (priceSnapshot.priceCatalogVersion !== report.versions.priceCatalogVersion) return false;
+    return report.operations.every((operation) => {
+      const price = findModelPrice(priceSnapshot, operation.provider, operation.configuredModel);
+      if (price === undefined) return false;
+      const derived = estimateCallCostUsdMicros(price, {
+        inputTokens: operation.inputTokens,
+        outputTokens: operation.outputTokens,
+        cacheReadTokens: operation.cacheReadTokens,
+        cacheWriteTokens: operation.cacheWriteTokens,
+        reasoningTokens: operation.reasoningTokens,
+      });
+      return operation.estimatedCostUsdMicros === derived.usdMicros;
+    });
+  } catch {
+    return false;
+  }
+}
+
+function rebuildReportFromAllowlistedEvidence(report: NarrativeEvalReport): NarrativeEvalReport {
+  return buildPrivacySafeEvalReport({
+    dataset: loadNarrativeQualityDataset(),
+    versions: report.versions,
+    outcomes: report.cases.map((row) => ({
+      caseId: row.caseId,
+      actualDecision: row.actualDecision,
+      actualStage: row.actualStage,
+      failedDimensions: row.actualFailedDimensions,
+      reasonCodes: row.actualReasonCodes,
+      strictJudgeOutputValid: row.strictJudgeOutputValid,
+    })),
+    repeatedSentinelOutcomes: report.stability.cases.map((row) => ({
+      caseId: row.caseId,
+      actualDecision: row.actualDecision,
+      actualStage: 'JUDGE',
+      failedDimensions: row.actualFailedDimensions,
+      reasonCodes: row.actualReasonCodes,
+      strictJudgeOutputValid: row.strictJudgeOutputValid,
+    })),
+    endToEndOutcomes: report.endToEnd.cases.map((row) => ({
+      caseId: row.caseId,
+      generateLogicalCalls: row.generateLogicalCalls,
+      judgeLogicalCalls: row.judgeLogicalCalls,
+      generatedSchemaValid: row.generatedSchemaValid,
+      exactReferencesValid: row.exactReferencesValid,
+      actualDecision: row.actualDecision,
+      judgeStructuredOutputValid: row.judgeStructuredOutputValid,
+      requiredPropertyCatalogVersion: report.endToEnd.requiredPropertyCatalogVersion,
+      requiredPropertyResults: row.requiredPropertyResults,
+      generateAuditSucceeded: row.generateAuditSucceeded,
+      judgeAuditSucceeded: row.judgeAuditSucceeded,
+      publicationBundleLinkageValidInMemory: row.publicationBundleLinkageValidInMemory,
+      deterministicStateUnchanged: row.deterministicStateUnchanged,
+    })),
+    operations: report.operations,
+  });
+}
+
 /** Validates a pinned, passing, model-exact rollback baseline without alias substitution. */
 export function validateNarrativeQualityBaseline(
   input: ValidateBaselineInput,
@@ -146,8 +251,45 @@ export function validateNarrativeQualityBaseline(
       'The narrative-quality baseline manifest failed its strict schema.',
     );
   }
-  verifyEvalReportFingerprint(input.report);
   const manifest = parsed.data;
+  if (
+    input.report.reportVersion !== NARRATIVE_EVAL_REPORT_VERSION ||
+    manifest.reportVersion !== input.report.reportVersion ||
+    input.report.datasetVersion !== NARRATIVE_QUALITY_DATASET_VERSION ||
+    manifest.datasetVersion !== input.report.datasetVersion ||
+    input.report.dimensionMacroF1ConventionVersion !== DIMENSION_MACRO_F1_CONVENTION_VERSION ||
+    manifest.dimensionMacroF1ConventionVersion !== input.report.dimensionMacroF1ConventionVersion ||
+    input.report.priceArithmeticVersion !== AI_PRICE_ARITHMETIC_VERSION ||
+    manifest.priceArithmeticVersion !== input.report.priceArithmeticVersion ||
+    input.report.operationalSummary.latencyPercentileConventionVersion !==
+      LATENCY_PERCENTILE_CONVENTION_VERSION ||
+    input.report.endToEnd.requiredPropertyCatalogVersion !==
+      NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION
+  ) {
+    throw new EvalContractError(
+      'INVALID_EVAL_INPUT',
+      'The report is not bound to the current manifest and top-level contract versions.',
+    );
+  }
+  verifyEvalReportFingerprint(input.report);
+  let rebuiltReport: NarrativeEvalReport;
+  try {
+    rebuiltReport = rebuildReportFromAllowlistedEvidence(input.report);
+  } catch {
+    throw new EvalContractError(
+      'INVALID_EVAL_INPUT',
+      'The report source evidence is incomplete, unsafe, or invalid.',
+    );
+  }
+  if (
+    canonicalizeJson(rebuiltReport as unknown as JsonValue) !==
+    canonicalizeJson(input.report as unknown as JsonValue)
+  ) {
+    throw new EvalContractError(
+      'INVALID_EVAL_INPUT',
+      'The report contains stale or non-derived evidence, metrics, gates, versions, or totals.',
+    );
+  }
   if (
     manifest.reportFingerprint !== input.report.reportFingerprint ||
     manifest.datasetFingerprint !== input.report.datasetFingerprint ||
@@ -156,6 +298,7 @@ export function validateNarrativeQualityBaseline(
     !input.report.stability.gates.passed ||
     !input.report.endToEnd.gates.passed ||
     !hasExactLiveBaselineEvidence(input.report) ||
+    !hasCatalogDerivedOperationCosts(input.report) ||
     input.report.operationalSummary.logicalCalls > LIVE_EVAL_HARD_CAPS.logicalCalls ||
     input.report.operationalSummary.providerAttempts > LIVE_EVAL_HARD_CAPS.providerAttempts ||
     input.report.operationalSummary.estimatedCostUsdMicros >

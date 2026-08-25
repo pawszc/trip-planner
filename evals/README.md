@@ -33,7 +33,7 @@ network-free kalkulacją tego samego planu oraz kosztu. Runtime scenario
 micros. `SCENARIO_COMPARISON_TERRA` używa tego samego workloadu i ceiling 2048, ale kosztuje
 8,241,209 micros i pozostaje wyłącznie comparison scenario ponad capem, bez semantyki
 fallbacku. Workload fingerprint obu exact workloadów to
-`280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`.
+`2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b`.
 
 Pierwszy osobno autoryzowany run z 2026-08-23 na source
 `7af918ded8ee7b30d3fdabd92d705c2dd34e7c49` zatrzymał się fail-closed na 18/46 (`R06`,
@@ -51,10 +51,29 @@ configured/response model `gpt-5.6-luna`, a failed attempt użył 5,810 input, 7
 reasoning tokens i 14,158 ms. W żadnym runie nie osiągnięto `GENERATE`, nie powstał raport
 jakości ani accepted manifest i nie było rerunu.
 
-Retry policy `zero-retry-with-terminal-failure-accounting-v2` zachowuje zero retry. Runner
-rozlicza failed attempt tylko z zamkniętego `AiFailureExecutionEvidence`; privacy-safe
-failure przenosi z niego dostępne provider/configuredModel/responseModel/latency oraz
-dotychczasowe status/reason/usage/attempts bez provider IDs lub raw contentu. Live
-`PREFLIGHT_PASSED` emituje workload fingerprint, verified pricing, exact profile i wszystkie
-wersje planu/cost/retry ceiling. Ten offline fix i wszystkie jego testy wykonują zero provider
-calls, kosztują USD 0, nie autoryzują kolejnego baseline i utrzymują Fazę 3B3 w `REVIEW`.
+Trzeci osobno autoryzowany run na source
+`abf0f4b258c5950381e597b0192580527d71953f` użył poprzedniego workload fingerprintu
+`280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8`, Luna/low/2048,
+46 calls/attempts maximum, zero retry i ceiling 1,185,201 micros. Zatrzymał się dokładnie na
+`P01 / JUDGE / 1/46` z `INVALID_STRUCTURED_OUTPUT`; report nie powstał, accounting był
+niepełny, a zero known attempts / zero known cost było wyłącznie settled subtotalem. Jeden
+`FAILED` `AiRun`, zero review/narrative/`GENERATE`, SQLite audit SHA-256
+`5039F1DAF0F434BC0BB231B7B8D9EC9F90AE1CA8A10CF980858A064CBA2BA37B`; bez odczytu raw
+danych i bez rerunu, smoke, diagnostycznego requestu, retry, resume, continuation lub fallbacku.
+
+Retry policy `zero-retry-with-terminal-failure-accounting-v2` zachowuje zero retry. JUDGE
+schema v2 ma statyczny provider transport: względem exact P01 v1 zmienia wyłącznie
+`dimensions.minItems` z 8 na 1 oraz `blockSequences.maxItems` i `items.maximum` z aktualnej
+liczby bloków 1 na frozen globalne maksimum 8. Exact fingerprints, osiem wymiarów i finding
+cross-fields są wiązane lokalnie przez jawne etapy. Execution v2 i failure accounting v3
+pozwalają kontynuować wyłącznie kompletnie rozliczony post-response invalid `JUDGE` z exact
+durable `FAILED` linkage. Primary, repeat i E2E mają osobne validity gates; report v2 może
+być `FAIL`, natomiast manifest v2 nadal wymaga pełnego `PASS` i wyłącznie poprawnych
+`SUCCEEDED` operacji. Validator manifestu odbudowuje kanonicznie cały report z frozen datasetu
+i allowlistowanych primary/repeat/E2E/operation rows; nie ufa zapisanym metrics, gates, totals
+ani kosztowi i odrzuca dodatkowe pola. Privacy-safe failure przenosi tylko zamknięte metadata,
+bez raw contentu.
+Live `PREFLIGHT_PASSED` emituje workload fingerprint, verified pricing, exact profile i wersje
+plan/execution/accounting/cost/retry ceiling. Ten offline fix i wszystkie jego testy wykonują
+zero provider calls, kosztują USD 0, nie autoryzują kolejnego baseline i utrzymują Fazę 3B3 w
+`REVIEW`.

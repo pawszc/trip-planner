@@ -97,6 +97,9 @@ describe('credential-free narrative live cost preflight', () => {
     const terra = outputs.find(({ scenarioId }) => scenarioId === 'SCENARIO_COMPARISON_TERRA')!;
     expect(luna).toMatchObject({
       status: 'COST_PREFLIGHT_PASSED',
+      executionContractVersion: 'narrative-quality-live-execution-v2',
+      failureAccountingVersion: 'post-response-failure-accounting-v3',
+      retryPolicyVersion: 'zero-retry-with-terminal-failure-accounting-v2',
       pricingVerifiedAt: '2026-08-21',
       plannedLogicalCalls: 46,
       plannedGenerateCalls: 4,
@@ -211,7 +214,7 @@ describe('credential-free narrative live cost preflight', () => {
       configuredModel: 'gpt-5.6-terra',
     });
     expect(luna.workloadFingerprint).toBe(
-      '280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8',
+      '2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b',
     );
     expect(terra.workloadFingerprint).toBe(luna.workloadFingerprint);
 
@@ -303,7 +306,7 @@ describe('credential-free narrative live cost preflight', () => {
 
     expect(runtime.workloadFingerprint).not.toBe(priorCeiling.workloadFingerprint);
     expect(priorCeiling.workloadFingerprint).toBe(
-      '5ec2a80a15349b8b3c7ed8e2a121274d26ac3b8f5bd28382348620b30c22b2e9',
+      '4ef953603347074196a231c257f0e06f61bfe6e624dc5c850e90c3134d37b6ed',
     );
   });
 

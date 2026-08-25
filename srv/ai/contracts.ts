@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ZodType } from 'zod';
+import type { AiValidationFailureStage } from './failure-execution-evidence.ts';
 
 export const AiProvider = Object.freeze({
   OPENAI: 'OPENAI',
@@ -31,6 +32,21 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonObject = { readonly [key: string]: JsonValue };
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
 
+export type StructuredAiOutputValidationFailureStage = Exclude<
+  AiValidationFailureStage,
+  'SCHEMA_CONSTRUCTION' | 'RESPONSE_JSON_PARSE'
+>;
+
+export type StructuredAiOutputValidationResult<TOutput> =
+  | {
+      readonly success: true;
+      readonly output: TOutput;
+    }
+  | {
+      readonly success: false;
+      readonly validationFailureStage: StructuredAiOutputValidationFailureStage;
+    };
+
 export interface StructuredAiRequest<TOutput> {
   taskType: AiTaskType;
   promptVersion: string;
@@ -38,7 +54,21 @@ export interface StructuredAiRequest<TOutput> {
   schemaName: string;
   instructions: string;
   input: JsonValue;
+  /**
+   * Full local output contract. The gateway revalidates adapter results with this schema so a
+   * custom adapter cannot bypass the product contract.
+   */
   outputSchema: ZodType<TOutput>;
+  /**
+   * Optional provider-visible transport contract. It may contain only constraints representable
+   * by the provider's strict JSON Schema subset. Legacy requests fall back to outputSchema.
+   */
+  providerOutputSchema?: ZodType;
+  /**
+   * Optional staged local validator for context-dependent or cross-field invariants. It returns
+   * only a controlled stage on failure and never exposes parser issues or rejected values.
+   */
+  validateOutput?: (output: unknown) => StructuredAiOutputValidationResult<TOutput>;
   maxOutputTokens?: number;
   /** Gateway-owned execution ID. A caller-supplied value is always overwritten by AiGateway. */
   aiRunId?: string;
@@ -46,6 +76,41 @@ export interface StructuredAiRequest<TOutput> {
   planningRunId?: string;
   /** Optional safe narrative subject association for privacy-safe operational telemetry only. */
   rankedOptionId?: string;
+}
+
+export function resolveStructuredAiProviderOutputSchema<TOutput>(
+  request: StructuredAiRequest<TOutput>,
+): ZodType {
+  return request.providerOutputSchema ?? request.outputSchema;
+}
+
+export function validateStructuredAiOutput<TOutput>(
+  request: StructuredAiRequest<TOutput>,
+  output: unknown,
+): StructuredAiOutputValidationResult<TOutput> {
+  if (request.providerOutputSchema === undefined) {
+    const local = request.outputSchema.safeParse(output);
+    if (!local.success) {
+      return { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };
+    }
+    const staged = request.validateOutput?.(local.data);
+    return staged === undefined || staged.success ? { success: true, output: local.data } : staged;
+  }
+  const transport = resolveStructuredAiProviderOutputSchema(request).safeParse(output);
+  if (!transport.success) {
+    return { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };
+  }
+  const staged = request.validateOutput?.(transport.data) ?? {
+    success: true as const,
+    output: transport.data,
+  };
+  if (!staged.success) return staged;
+  // The full local contract remains the final backstop after explicit transport and binding
+  // phases. A staged validator can classify stricter invariants but cannot bypass this schema.
+  const local = request.outputSchema.safeParse(transport.data);
+  return local.success
+    ? { success: true, output: local.data }
+    : { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };
 }
 
 export interface AiUsage {
@@ -57,9 +122,13 @@ export interface AiUsage {
   reasoningTokens?: number;
 }
 
+export const AI_REFUSAL_CATEGORY_VALUES = ['content_filter', 'model_refusal', 'unknown'] as const;
+
+export type AiRefusalCategory = (typeof AI_REFUSAL_CATEGORY_VALUES)[number];
+
 export interface AiRefusalState {
   refused: boolean;
-  category?: string;
+  category?: AiRefusalCategory;
 }
 
 export interface AiCallResult<TOutput> {
@@ -75,6 +144,7 @@ export interface AiCallResult<TOutput> {
   usage: AiUsage;
   latencyMs: number;
   providerRequestId?: string;
+  providerResponseId?: string;
   attempts: number;
   refusal: AiRefusalState;
 }

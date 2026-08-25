@@ -47,6 +47,7 @@ export {
   AI_FAILURE_REFUSAL_CATEGORY_VALUES,
   AI_PROVIDER_INCOMPLETE_REASON_VALUES,
   AI_PROVIDER_RESPONSE_STATUS_VALUES,
+  AI_VALIDATION_FAILURE_STAGE_VALUES,
   parseAiFailureExecutionEvidence,
 } from './failure-execution-evidence.ts';
 export type {
@@ -54,6 +55,7 @@ export type {
   AiFailureRefusalCategory,
   AiProviderIncompleteReason,
   AiProviderResponseStatus,
+  AiValidationFailureStage,
 } from './failure-execution-evidence.ts';
 export type {
   AiErrorCode,

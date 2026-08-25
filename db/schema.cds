@@ -308,6 +308,10 @@ entity AiRuns : cuid, managed {
   providerResponseId : String(250);
   providerResponseStatus : String(40);
   providerIncompleteReason : String(40);
+  // Nullable bez defaultu: tylko terminalny FAILED może zachować jawny, privacy-safe
+  // dowód próby providera oraz zamknięty etap lokalnej walidacji. Legacy rows pozostają null.
+  providerCallAttempted : Boolean;
+  validationFailureStage : String(40);
   refusal : Boolean not null default false;
   refusalCategory : String(80);
 

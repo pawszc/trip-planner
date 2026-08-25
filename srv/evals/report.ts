@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AiProvider, AiTaskType } from '../ai/contracts.ts';
 import { createInputFingerprint, type JsonValue } from '../ai/contracts.ts';
+import { AI_VALIDATION_FAILURE_STAGE_VALUES } from '../ai/failure-execution-evidence.ts';
 import { GROUNDED_OPTION_CONTEXT_VERSION } from '../narratives/grounded-option-types.ts';
 import { NARRATIVE_MODEL_VIEW_VERSION } from '../narratives/narrative-model-view.ts';
 import {
@@ -22,8 +23,10 @@ import {
   EvalContractError,
   NARRATIVE_QUALITY_DATASET_FINGERPRINT,
   NARRATIVE_QUALITY_DATASET_VERSION,
+  NARRATIVE_QUALITY_SENTINEL_CASE_IDS,
   validateNarrativeQualityDatasetContract,
   type NarrativeQualityDataset,
+  type NarrativeQualityDimension,
   type NarrativeQualityReasonCode,
 } from './dataset.ts';
 import {
@@ -50,7 +53,7 @@ import {
   type NarrativeE2eRequiredPropertyResult,
 } from './required-properties.ts';
 
-export const NARRATIVE_EVAL_REPORT_VERSION = 'narrative-quality-eval-report-v1';
+export const NARRATIVE_EVAL_REPORT_VERSION = 'narrative-quality-eval-report-v2';
 export const LATENCY_PERCENTILE_CONVENTION_VERSION = 'nearest-rank-ms-v1';
 
 const safeModel = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/);
@@ -113,6 +116,10 @@ const operationSchema = z
     attempts: z.number().int().min(1).max(56),
     refused: z.boolean(),
     refusalCategory: z.enum(['SAFETY', 'POLICY', 'UNKNOWN']).nullable(),
+    terminalAuditStatus: z.enum(['SUCCEEDED', 'FAILED']),
+    structuredOutputValid: z.boolean(),
+    validationFailureStage: z.enum(AI_VALIDATION_FAILURE_STAGE_VALUES).nullable(),
+    exactAuditLinkageValid: z.boolean(),
     estimatedCostUsdMicros: nonNegativeSafeInteger,
   })
   .strict()
@@ -138,6 +145,34 @@ const operationSchema = z
         message: 'Refusal category must agree with the normalized refusal state.',
       });
     }
+    if (
+      operation.terminalAuditStatus === 'SUCCEEDED' &&
+      (!operation.structuredOutputValid ||
+        operation.validationFailureStage !== null ||
+        !operation.exactAuditLinkageValid)
+    ) {
+      refinement.addIssue({
+        code: 'custom',
+        path: ['terminalAuditStatus'],
+        message: 'A successful operation requires valid output and exact audit linkage.',
+      });
+    }
+    if (
+      operation.terminalAuditStatus === 'FAILED' &&
+      (operation.structuredOutputValid ||
+        operation.validationFailureStage === null ||
+        operation.validationFailureStage === 'SCHEMA_CONSTRUCTION' ||
+        !operation.exactAuditLinkageValid ||
+        operation.refused ||
+        operation.taskType !== AiTaskType.JUDGE)
+    ) {
+      refinement.addIssue({
+        code: 'custom',
+        path: ['terminalAuditStatus'],
+        message:
+          'A reportable failed operation must be an exactly linked post-response validation failure.',
+      });
+    }
   });
 
 export type EvalOperationEvidence = z.infer<typeof operationSchema>;
@@ -159,11 +194,19 @@ export interface EvalCaseReportRow {
   readonly actualStage: 'PRECHECK' | 'JUDGE';
   readonly critical: boolean;
   readonly sentinel: boolean;
-  readonly expectedFailedDimensions: readonly string[];
-  readonly actualFailedDimensions: readonly string[];
+  readonly expectedFailedDimensions: readonly NarrativeQualityDimension[];
+  readonly actualFailedDimensions: readonly NarrativeQualityDimension[];
   readonly expectedReasonCodes: readonly NarrativeQualityReasonCode[];
   readonly actualReasonCodes: readonly NarrativeQualityReasonCode[];
   readonly strictJudgeOutputValid: boolean | null;
+}
+
+export interface EvalStabilityCaseReportRow {
+  readonly caseId: string;
+  readonly actualDecision: 'PUBLISH' | 'REJECT';
+  readonly actualFailedDimensions: readonly NarrativeQualityDimension[];
+  readonly actualReasonCodes: readonly NarrativeQualityReasonCode[];
+  readonly strictJudgeOutputValid: boolean;
 }
 
 export interface EvalOperationalSummary {
@@ -184,10 +227,18 @@ export interface EvalOperationalSummary {
 export interface EvalEndToEndCaseReportRow {
   readonly caseId: string;
   readonly expectedDecision: 'PUBLISH';
+  readonly generateLogicalCalls: number;
+  readonly judgeLogicalCalls: number;
+  readonly generatedSchemaValid: boolean;
+  readonly exactReferencesValid: boolean;
   readonly actualDecision: 'PUBLISH' | 'REJECT';
+  readonly judgeStructuredOutputValid: boolean | null;
   readonly requiredPropertyResults: readonly NarrativeE2eRequiredPropertyResult[];
+  readonly generateAuditSucceeded: boolean;
+  readonly judgeAuditSucceeded: boolean;
   /** In-memory bundle construction/linkage evidence only; this is not a persistence result. */
   readonly publicationBundleLinkageValidInMemory: boolean;
+  readonly deterministicStateUnchanged: boolean;
 }
 
 export interface NarrativeEvalReport {
@@ -203,6 +254,7 @@ export interface NarrativeEvalReport {
     readonly gates: SemanticGateResult;
   };
   readonly stability: {
+    readonly cases: readonly EvalStabilityCaseReportRow[];
     readonly metrics: StabilityMetrics;
     readonly gates: StabilityGateResult;
   };
@@ -336,6 +388,27 @@ export function buildPrivacySafeEvalReport(input: BuildEvalReportInput): Narrati
     input.repeatedSentinelOutcomes,
   );
   const stabilityGates = evaluateStabilityGates(stabilityMetrics);
+  const repeatedSentinelOutcomeById = new Map(
+    input.repeatedSentinelOutcomes.map((outcome) => [outcome.caseId, outcome]),
+  );
+  const stabilityCases = NARRATIVE_QUALITY_SENTINEL_CASE_IDS.map(
+    (caseId): EvalStabilityCaseReportRow => {
+      const outcome = repeatedSentinelOutcomeById.get(caseId);
+      if (outcome === undefined || outcome.strictJudgeOutputValid === null) {
+        throw new EvalContractError(
+          'INVALID_EVAL_INPUT',
+          'The report is missing an exact repeated sentinel outcome.',
+        );
+      }
+      return {
+        caseId,
+        actualDecision: outcome.actualDecision,
+        actualFailedDimensions: [...outcome.failedDimensions].sort(),
+        actualReasonCodes: [...outcome.reasonCodes].sort(),
+        strictJudgeOutputValid: outcome.strictJudgeOutputValid,
+      };
+    },
+  );
   const endToEndOutcomeById = new Map(
     input.endToEndOutcomes.map((outcome) => [outcome.caseId, outcome]),
   );
@@ -355,9 +428,17 @@ export function buildPrivacySafeEvalReport(input: BuildEvalReportInput): Narrati
     return {
       caseId: authored.id,
       expectedDecision: authored.expectedDecision,
+      generateLogicalCalls: outcome.generateLogicalCalls,
+      judgeLogicalCalls: outcome.judgeLogicalCalls,
+      generatedSchemaValid: outcome.generatedSchemaValid,
+      exactReferencesValid: outcome.exactReferencesValid,
       actualDecision: outcome.actualDecision,
+      judgeStructuredOutputValid: outcome.judgeStructuredOutputValid,
       requiredPropertyResults,
+      generateAuditSucceeded: outcome.generateAuditSucceeded,
+      judgeAuditSucceeded: outcome.judgeAuditSucceeded,
       publicationBundleLinkageValidInMemory: outcome.publicationBundleLinkageValidInMemory,
+      deterministicStateUnchanged: outcome.deterministicStateUnchanged,
     };
   });
   const endToEndMetrics = calculateEndToEndMetrics(input.dataset, input.endToEndOutcomes);
@@ -371,7 +452,7 @@ export function buildPrivacySafeEvalReport(input: BuildEvalReportInput): Narrati
     versions: versions.data,
     cases,
     semantic: { metrics: semanticMetrics, gates: semanticGates },
-    stability: { metrics: stabilityMetrics, gates: stabilityGates },
+    stability: { cases: stabilityCases, metrics: stabilityMetrics, gates: stabilityGates },
     endToEnd: {
       requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
       cases: endToEndCases,

@@ -1,8 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { loadAiConfig, type AiConfig } from '../../srv/ai/config.ts';
-import { AiTaskType, createInputFingerprint, type AiCallResult } from '../../srv/ai/contracts.ts';
+import {
+  AiProvider,
+  AiTaskType,
+  createInputFingerprint,
+  type AiCallResult,
+  type StructuredAiAdapter,
+} from '../../srv/ai/contracts.ts';
 import { AiError } from '../../srv/ai/errors.ts';
+import { AiGateway } from '../../srv/ai/ai-gateway.ts';
+import type { AiRunRecorder } from '../../srv/ai/telemetry.ts';
 import { NARRATIVE_LIVE_BASELINE_OPERATION_PLAN } from '../../srv/evals/baseline.ts';
 import {
   NARRATIVE_JUDGE_DIMENSIONS,
@@ -17,6 +25,7 @@ import {
   NARRATIVE_LIVE_EVAL_EXPECTED_JUDGE_CALLS,
   NARRATIVE_LIVE_EVAL_EXPECTED_LOGICAL_CALLS,
   NarrativeLiveEvalExecutionError,
+  NarrativeLiveEvalPostProcessingError,
   createNarrativeQualityLiveEvalPlan,
   runNarrativeQualityLiveEvaluation,
   toSafeNarrativeLiveEvalFailure,
@@ -144,6 +153,49 @@ function fakeResult<TOutput>(
     attempts: 1,
     refusal: { refused: false },
   };
+}
+
+function accountedInvalidJudgeError(
+  descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
+  validationFailureStage:
+    | 'RESPONSE_JSON_PARSE'
+    | 'TRANSPORT_SCHEMA_VALIDATION'
+    | 'CONTEXT_BINDING'
+    | 'DIMENSION_BINDING'
+    | 'FINDING_BINDING' = 'CONTEXT_BINDING',
+  durableFailedAuditLinked = true,
+): AiError {
+  return new AiError('INVALID_STRUCTURED_OUTPUT', 'Controlled invalid structured output.', {
+    provider: descriptor.profile.provider,
+    model: descriptor.profile.model,
+    retryable: false,
+    details: durableFailedAuditLinked ? { aiRunId: randomUUID() } : {},
+    executionEvidence: {
+      provider: descriptor.profile.provider,
+      configuredModel: descriptor.profile.model,
+      providerCallAttempted: true,
+      validationFailureStage,
+      responseModel: `${descriptor.profile.model}-response-v1`,
+      providerResponseStatus: 'COMPLETED',
+      providerRequestId: `req_${descriptor.plannedSequence}`,
+      providerResponseId: `resp_${descriptor.plannedSequence}`,
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 5,
+      },
+      attempts: 1,
+      latencyMs: 25,
+    },
+    cause: new Error(
+      'RAW_INVALID_OUTPUT_SENTINEL PROMPT_REPORT_SENTINEL CANDIDATE_REPORT_SENTINEL ' +
+        'CONTEXT_REPORT_SENTINEL https://private.example.test/report private@example.test ' +
+        'sk-proj-report-secret RAW_PROVIDER_REPORT_SENTINEL PROVIDER_STACK_SENTINEL',
+    ),
+  });
 }
 
 class SuccessfulOfflineExecutor implements NarrativeLiveEvalExecutor {
@@ -370,6 +422,397 @@ describe('narrative live-eval execution without provider calls', () => {
     expect(serialized).not.toContain('You write concise narrative blocks');
   });
 
+  it('preserves complete settled accounting when deterministic report construction fails', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    const executor = new SuccessfulOfflineExecutor();
+    let failure: unknown;
+    try {
+      await runNarrativeQualityLiveEvaluation({
+        env: enabledEnvironment,
+        config,
+        priceSnapshot: configuredPriceSnapshot(config),
+        createExecutor: async () => executor,
+        buildReport: () => {
+          throw Object.assign(new Error('RAW_POST_PROCESSING_SENTINEL'), {
+            code: 'POST_PROCESSING_FAILED',
+            stack: 'PRIVATE_POST_PROCESSING_STACK_SENTINEL',
+          });
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(NarrativeLiveEvalPostProcessingError);
+    expect(executor.calls).toHaveLength(NARRATIVE_LIVE_EVAL_EXPECTED_LOGICAL_CALLS);
+    const safeFailure = toSafeNarrativeLiveEvalFailure(failure);
+    expect(safeFailure).toMatchObject({
+      status: 'FAILED',
+      code: 'LIVE_EVAL_RUNNER_FAILED',
+      reportProduced: false,
+      providerCallAttempted: true,
+      attemptAccountingComplete: true,
+      completedLogicalCalls: NARRATIVE_LIVE_EVAL_EXPECTED_LOGICAL_CALLS,
+      underlyingCode: 'UNKNOWN',
+      knownCumulativeProviderAttempts: NARRATIVE_LIVE_EVAL_EXPECTED_LOGICAL_CALLS,
+    });
+    expect(safeFailure.knownCumulativeEstimatedCostUsdMicros).toBeGreaterThan(0);
+    expect(JSON.stringify(safeFailure)).not.toMatch(
+      /RAW_POST_PROCESSING_SENTINEL|PRIVATE_POST_PROCESSING_STACK_SENTINEL/,
+    );
+  });
+
+  it('continues after one completely accounted invalid primary JUDGE and produces a FAIL report', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    const successful = new SuccessfulOfflineExecutor();
+    const attemptedSequences: number[] = [];
+    const result = await runNarrativeQualityLiveEvaluation({
+      env: enabledEnvironment,
+      config,
+      priceSnapshot: configuredPriceSnapshot(config),
+      createExecutor: async () => ({
+        async call<TOutput>(descriptor: NarrativeLiveEvalCallDescriptor<TOutput>) {
+          attemptedSequences.push(descriptor.plannedSequence);
+          if (descriptor.caseId === 'P01' && descriptor.pass === 'PRIMARY') {
+            throw accountedInvalidJudgeError(
+              descriptor as NarrativeLiveEvalCallDescriptor<unknown>,
+              'CONTEXT_BINDING',
+            );
+          }
+          return successful.call(descriptor);
+        },
+      }),
+    });
+
+    expect(attemptedSequences).toHaveLength(46);
+    expect(attemptedSequences.slice(0, 2)).toEqual([1, 2]);
+    expect(result.primaryOutcomes[0]).toEqual({
+      caseId: 'P01',
+      actualDecision: 'REJECT',
+      actualStage: 'JUDGE',
+      failedDimensions: [],
+      reasonCodes: [],
+      strictJudgeOutputValid: false,
+    });
+    expect(result.report.semantic.metrics.strictJudgeOutputValidity).toMatchObject({
+      numerator: 29,
+      denominator: 30,
+    });
+    expect(result.report.semantic.gates.failures).toContain('STRICT_JUDGE_OUTPUT_VALIDITY');
+    expect(result.report.operations[0]).toMatchObject({
+      logicalCallSequence: 1,
+      caseId: 'P01',
+      terminalAuditStatus: 'FAILED',
+      structuredOutputValid: false,
+      validationFailureStage: 'CONTEXT_BINDING',
+      exactAuditLinkageValid: true,
+      attempts: 1,
+    });
+    expect(result.report.operations[1]).toMatchObject({
+      logicalCallSequence: 2,
+      terminalAuditStatus: 'SUCCEEDED',
+      structuredOutputValid: true,
+      validationFailureStage: null,
+      exactAuditLinkageValid: true,
+    });
+    expect(JSON.stringify(result.report)).not.toMatch(
+      /RAW_INVALID_OUTPUT_SENTINEL|PROMPT_REPORT_SENTINEL|CANDIDATE_REPORT_SENTINEL|CONTEXT_REPORT_SENTINEL|private\.example\.test|private@example\.test|sk-proj-report-secret|RAW_PROVIDER_REPORT_SENTINEL|PROVIDER_STACK_SENTINEL|aiRunId|req_1|resp_1/,
+    );
+  });
+
+  it('continues through accounted repeat and E2E JUDGE invalid outputs without inflating validity gates', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    const successful = new SuccessfulOfflineExecutor();
+    let calls = 0;
+    const result = await runNarrativeQualityLiveEvaluation({
+      env: enabledEnvironment,
+      config,
+      priceSnapshot: configuredPriceSnapshot(config),
+      createExecutor: async () => ({
+        async call<TOutput>(descriptor: NarrativeLiveEvalCallDescriptor<TOutput>) {
+          calls += 1;
+          if (descriptor.caseId === 'R01' && descriptor.pass === 'STABILITY_REPEAT') {
+            throw accountedInvalidJudgeError(
+              descriptor as NarrativeLiveEvalCallDescriptor<unknown>,
+              'DIMENSION_BINDING',
+            );
+          }
+          if (descriptor.caseId === 'E01' && descriptor.pass === 'END_TO_END_JUDGE') {
+            throw accountedInvalidJudgeError(
+              descriptor as NarrativeLiveEvalCallDescriptor<unknown>,
+              'FINDING_BINDING',
+            );
+          }
+          return successful.call(descriptor);
+        },
+      }),
+    });
+
+    expect(calls).toBe(46);
+    expect(result.report.stability.metrics.repeatJudgeOutputValidity).toMatchObject({
+      numerator: 7,
+      denominator: 8,
+    });
+    expect(result.report.stability.metrics.exactDecisionAgreement).toMatchObject({
+      numerator: 7,
+      denominator: 8,
+    });
+    expect(result.report.stability.gates.failures).toContain('REPEAT_JUDGE_OUTPUT_VALIDITY');
+    expect(result.report.endToEnd.metrics.judgeStructuredOutputValidity).toMatchObject({
+      numerator: 3,
+      denominator: 4,
+    });
+    expect(result.report.endToEnd.gates.failures).toContain('JUDGE_STRUCTURED_OUTPUT_VALIDITY');
+    expect(result.endToEndOutcomes[0]).toMatchObject({
+      caseId: 'E01',
+      actualDecision: 'REJECT',
+      judgeStructuredOutputValid: false,
+      judgeAuditSucceeded: false,
+      publicationBundleLinkageValidInMemory: false,
+    });
+  });
+
+  it('stops an otherwise accounted invalid JUDGE when durable FAILED audit linkage is absent', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    let calls = 0;
+    let failure: unknown;
+    try {
+      await runNarrativeQualityLiveEvaluation({
+        env: enabledEnvironment,
+        config,
+        priceSnapshot: configuredPriceSnapshot(config),
+        createExecutor: async () => ({
+          async call(descriptor) {
+            calls += 1;
+            throw accountedInvalidJudgeError(
+              descriptor as NarrativeLiveEvalCallDescriptor<unknown>,
+              'RESPONSE_JSON_PARSE',
+              false,
+            );
+          },
+        }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(calls).toBe(1);
+    expect(toSafeNarrativeLiveEvalFailure(failure)).toMatchObject({
+      status: 'FAILED',
+      reportProduced: false,
+      providerCallAttempted: true,
+      attemptAccountingComplete: true,
+      logicalCallSequence: 1,
+      completedLogicalCalls: 0,
+      underlyingCode: 'INVALID_STRUCTURED_OUTPUT',
+      validationFailureStage: 'RESPONSE_JSON_PARSE',
+      knownCumulativeProviderAttempts: 1,
+    });
+    expect(JSON.stringify(toSafeNarrativeLiveEvalFailure(failure))).not.toContain('aiRunId');
+  });
+
+  it('classifies schema construction as a complete zero-provider-attempt fatal failure', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    let calls = 0;
+    let failure: unknown;
+    try {
+      await runNarrativeQualityLiveEvaluation({
+        env: enabledEnvironment,
+        config,
+        priceSnapshot: configuredPriceSnapshot(config),
+        createExecutor: async () => ({
+          async call(descriptor) {
+            calls += 1;
+            throw new AiError(
+              'INVALID_STRUCTURED_OUTPUT',
+              'Controlled schema construction failure.',
+              {
+                provider: descriptor.profile.provider,
+                model: descriptor.profile.model,
+                details: { aiRunId: randomUUID() },
+                executionEvidence: {
+                  provider: descriptor.profile.provider,
+                  configuredModel: descriptor.profile.model,
+                  providerCallAttempted: false,
+                  validationFailureStage: 'SCHEMA_CONSTRUCTION',
+                  attempts: 0,
+                  latencyMs: 1,
+                },
+              },
+            );
+          },
+        }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(calls).toBe(1);
+    expect(toSafeNarrativeLiveEvalFailure(failure)).toMatchObject({
+      status: 'FAILED',
+      reportProduced: false,
+      providerCallAttempted: false,
+      attemptAccountingComplete: true,
+      logicalCallSequence: 1,
+      attempts: 0,
+      validationFailureStage: 'SCHEMA_CONSTRUCTION',
+      knownCumulativeProviderAttempts: 0,
+      knownCumulativeEstimatedCostUsdMicros: 0,
+    });
+  });
+
+  it('keeps a real gateway STARTED audit failure at complete zero-call accounting', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    let adapterCalls = 0;
+    let executorCalls = 0;
+    const adapter: StructuredAiAdapter = {
+      provider: AiProvider.OPENAI,
+      async call<TOutput>(): Promise<AiCallResult<TOutput>> {
+        adapterCalls += 1;
+        throw new Error('The adapter must remain unreachable.');
+      },
+    };
+    const recorder: AiRunRecorder = {
+      async record() {
+        throw new Error('RAW_STARTED_AUDIT_FAILURE_SENTINEL');
+      },
+    };
+    const gateway = new AiGateway(config, [adapter], recorder);
+    let failure: unknown;
+    try {
+      await runNarrativeQualityLiveEvaluation({
+        env: enabledEnvironment,
+        config,
+        priceSnapshot: configuredPriceSnapshot(config),
+        createExecutor: async () => ({
+          async call<TOutput>(descriptor: NarrativeLiveEvalCallDescriptor<TOutput>) {
+            executorCalls += 1;
+            return {
+              result: await gateway.call(descriptor.request),
+              auditSucceeded: true as const,
+            };
+          },
+        }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    const safeFailure = toSafeNarrativeLiveEvalFailure(failure);
+    expect(executorCalls).toBe(1);
+    expect(adapterCalls).toBe(0);
+    expect(safeFailure).toMatchObject({
+      status: 'FAILED',
+      reportProduced: false,
+      providerCallAttempted: false,
+      attemptAccountingComplete: true,
+      logicalCallSequence: 1,
+      completedLogicalCalls: 0,
+      underlyingCode: 'AI_AUDIT_FAILED',
+      provider: 'OPENAI',
+      configuredModel: 'gpt-5.6-luna',
+      attempts: 0,
+      knownCumulativeProviderAttempts: 0,
+      knownCumulativeEstimatedCostUsdMicros: 0,
+    });
+    expect(JSON.stringify(safeFailure)).not.toContain('RAW_STARTED_AUDIT_FAILURE_SENTINEL');
+  });
+
+  it('keeps pre-request accounting incomplete when failure evidence does not match the profile', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    let failure: unknown;
+    try {
+      await runNarrativeQualityLiveEvaluation({
+        env: enabledEnvironment,
+        config,
+        priceSnapshot: configuredPriceSnapshot(config),
+        createExecutor: async () => ({
+          async call(descriptor) {
+            throw new AiError(
+              'INVALID_STRUCTURED_OUTPUT',
+              'Controlled mismatched schema-construction evidence.',
+              {
+                provider: descriptor.profile.provider,
+                model: descriptor.profile.model,
+                executionEvidence: {
+                  provider: descriptor.profile.provider,
+                  configuredModel: `${descriptor.profile.model}-mismatch`,
+                  providerCallAttempted: false,
+                  validationFailureStage: 'SCHEMA_CONSTRUCTION',
+                  attempts: 0,
+                  latencyMs: 1,
+                },
+              },
+            );
+          },
+        }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(toSafeNarrativeLiveEvalFailure(failure)).toMatchObject({
+      status: 'FAILED',
+      reportProduced: false,
+      providerCallAttempted: false,
+      attemptAccountingComplete: false,
+      logicalCallSequence: 1,
+      attempts: 0,
+      knownCumulativeProviderAttempts: 0,
+      knownCumulativeEstimatedCostUsdMicros: 0,
+    });
+  });
+
+  it('stops a post-response invalid output when usage accounting is incomplete', async () => {
+    const config = loadAiConfig(enabledEnvironment);
+    let calls = 0;
+    let failure: unknown;
+    try {
+      await runNarrativeQualityLiveEvaluation({
+        env: enabledEnvironment,
+        config,
+        priceSnapshot: configuredPriceSnapshot(config),
+        createExecutor: async () => ({
+          async call(descriptor) {
+            calls += 1;
+            throw new AiError('INVALID_STRUCTURED_OUTPUT', 'Controlled missing usage.', {
+              provider: descriptor.profile.provider,
+              model: descriptor.profile.model,
+              details: { aiRunId: randomUUID() },
+              executionEvidence: {
+                provider: descriptor.profile.provider,
+                configuredModel: descriptor.profile.model,
+                providerCallAttempted: true,
+                validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+                responseModel: `${descriptor.profile.model}-response-v1`,
+                providerResponseStatus: 'COMPLETED',
+                providerRequestId: 'req_missing_usage',
+                providerResponseId: 'resp_missing_usage',
+                attempts: 1,
+                latencyMs: 5,
+              },
+            });
+          },
+        }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(calls).toBe(1);
+    expect(toSafeNarrativeLiveEvalFailure(failure)).toMatchObject({
+      status: 'FAILED',
+      reportProduced: false,
+      providerCallAttempted: true,
+      attemptAccountingComplete: false,
+      logicalCallSequence: 1,
+      completedLogicalCalls: 0,
+      validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+      knownCumulativeProviderAttempts: 0,
+      knownCumulativeEstimatedCostUsdMicros: 0,
+    });
+  });
+
   it('fails the E2E gate on an independent property despite an all-PASS JUDGE', async () => {
     const config = loadAiConfig(enabledEnvironment);
     const result = await runNarrativeQualityLiveEvaluation({
@@ -445,7 +888,7 @@ describe('narrative live-eval execution without provider calls', () => {
         status: 'FAILED',
         code: 'LIVE_EVAL_EXECUTION_FAILED',
         reportProduced: false,
-        providerCallMayHaveOccurred: true,
+        providerCallAttempted: true,
         attemptAccountingComplete: false,
         caseId: 'P01',
         taskType: 'JUDGE',
@@ -484,6 +927,7 @@ describe('narrative live-eval execution without provider calls', () => {
                 executionEvidence: {
                   provider: descriptor.profile.provider,
                   configuredModel: descriptor.profile.model,
+                  providerCallAttempted: true,
                   responseModel: `${descriptor.profile.model}-response-v1`,
                   providerResponseStatus: 'INCOMPLETE',
                   providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
@@ -517,7 +961,7 @@ describe('narrative live-eval execution without provider calls', () => {
       status: 'FAILED',
       code: 'LIVE_EVAL_EXECUTION_FAILED',
       reportProduced: false,
-      providerCallMayHaveOccurred: true,
+      providerCallAttempted: true,
       attemptAccountingComplete: true,
       caseId: 'P01',
       taskType: 'JUDGE',
@@ -529,6 +973,8 @@ describe('narrative live-eval execution without provider calls', () => {
       responseModel: 'gpt-5.6-luna-response-v1',
       providerResponseStatus: 'INCOMPLETE',
       providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      providerRequestId: 'req_live_runner',
+      providerResponseId: 'resp_live_runner',
       attempts: 1,
       usage: {
         inputTokens: 100,
@@ -601,7 +1047,9 @@ describe('narrative live-eval CLI boundary', () => {
       tokenCeilingVersion: 'utf8-wire-bytes-plus-4096-protocol-tokens-v1',
       costCeilingVersion: 'full-ceiling-each-token-class-v1',
       retryPolicyVersion: 'zero-retry-with-terminal-failure-accounting-v2',
-      workloadFingerprint: '280e6dba83aebdca5b32776956de7af95b7e4b3a69b1a37058cd3aa980f9bdf8',
+      executionContractVersion: 'narrative-quality-live-execution-v2',
+      failureAccountingVersion: 'post-response-failure-accounting-v3',
+      workloadFingerprint: '2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b',
       plannedLogicalCalls: 46,
       plannedMaximumAttempts: 46,
       plannedMaximumCostUsdMicros: expect.any(Number),
@@ -648,8 +1096,11 @@ describe('narrative live-eval CLI boundary', () => {
       'PROMPT_STDOUT_SENTINEL',
       'CANDIDATE_STDOUT_SENTINEL',
       'RAW_PROVIDER_STDOUT_SENTINEL',
+      'CONTEXT_STDOUT_SENTINEL',
       'https://private.example.test/source',
+      'private@example.test',
       'EXTERNAL_ITEM_STDOUT_SENTINEL',
+      'PROVIDER_STACK_SENTINEL',
     ];
 
     const exitCode = await runNarrativeQualityLiveEvalScript(
@@ -666,6 +1117,7 @@ describe('narrative live-eval CLI boundary', () => {
               executionEvidence: {
                 provider: descriptor.profile.provider,
                 configuredModel: descriptor.profile.model,
+                providerCallAttempted: true,
                 responseModel: `${descriptor.profile.model}-response-v1`,
                 providerResponseStatus: 'INCOMPLETE',
                 providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
@@ -696,7 +1148,7 @@ describe('narrative live-eval CLI boundary', () => {
       underlyingCode: 'INCOMPLETE_MODEL_OUTPUT',
       logicalCallSequence: 1,
       completedLogicalCalls: 0,
-      providerCallMayHaveOccurred: true,
+      providerCallAttempted: true,
       provider: 'OPENAI',
       configuredModel: 'gpt-5.6-luna',
       responseModel: 'gpt-5.6-luna-response-v1',
@@ -751,7 +1203,7 @@ describe('narrative live-eval CLI boundary', () => {
         status: 'FAILED',
         code: 'LIVE_EVAL_BLOCKED',
         reportProduced: false,
-        providerCallMayHaveOccurred: false,
+        providerCallAttempted: false,
         attemptAccountingComplete: true,
       },
     ]);

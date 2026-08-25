@@ -267,7 +267,23 @@ describe('Anthropic Messages adapter', () => {
         config(),
         responseFactory({ stopReason: 'refusal', refusalCategory: 'general_harms' }),
       ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
-    ).rejects.toMatchObject({ code: 'MODEL_REFUSAL', details: { category: 'general_harms' } });
+    ).rejects.toMatchObject({ code: 'MODEL_REFUSAL', details: { category: 'model_refusal' } });
+  });
+
+  it('maps an unknown refusal category to UNKNOWN without echoing provider text', async () => {
+    const rawCategory = 'RAW_PROVIDER_REFUSAL_SENTINEL';
+    let error: AiError | undefined;
+    try {
+      await new AnthropicMessagesAdapter(
+        config(),
+        responseFactory({ stopReason: 'refusal', refusalCategory: rawCategory }),
+      ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC));
+    } catch (caught) {
+      if (caught instanceof AiError) error = caught;
+    }
+
+    expect(error).toMatchObject({ code: 'MODEL_REFUSAL', details: { category: 'unknown' } });
+    expect(JSON.stringify(error?.toSafeJSON())).not.toContain(rawCategory);
   });
 
   it.each([
@@ -322,7 +338,7 @@ describe('Anthropic Messages adapter', () => {
       ).call(createLiveSmokeRequest(AiProvider.ANTHROPIC)),
     ).rejects.toMatchObject({
       code: 'INVALID_STRUCTURED_OUTPUT',
-      details: { stopReason: 'future_stop_reason' },
+      details: { stopReason: 'UNKNOWN' },
     });
   });
 
@@ -569,5 +585,73 @@ describe('official Anthropic SDK transport', () => {
       tools: [],
     });
     expect(requestBody).not.toHaveProperty('output_format');
+  });
+
+  it('forces SDK logging off even when ambient ANTHROPIC_LOG requests debug output', async () => {
+    vi.stubEnv('ANTHROPIC_LOG', 'debug');
+    const consoleSpies = [
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    ];
+    try {
+      const client = createAnthropicSdkClient({
+        apiKey: 'anthropic-test-credential',
+        timeoutMs: 30_000,
+        maxRetries: 0,
+        fetchImplementation: async () =>
+          new Response(
+            JSON.stringify({
+              id: 'msg_log_test',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-sonnet-5',
+              content: [
+                {
+                  type: 'text',
+                  text: '{"raw":"RAW_ANTHROPIC_SDK_LOG_SENTINEL"}',
+                  citations: null,
+                },
+              ],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              stop_details: null,
+              container: null,
+              usage: {
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_creation: null,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                inference_geo: null,
+                output_tokens_details: { thinking_tokens: 0 },
+                server_tool_use: null,
+                service_tier: 'standard',
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json', 'request-id': 'req_log_test' },
+            },
+          ),
+      });
+
+      await client.execute({
+        model: 'claude-sonnet-5',
+        instructions: 'PROMPT_ANTHROPIC_SDK_LOG_SENTINEL',
+        input: 'CANDIDATE_ANTHROPIC_SDK_LOG_SENTINEL private@example.test',
+        outputSchema: liveSmokeSchema,
+        maxOutputTokens: 128,
+        effort: 'low',
+        thinking: 'disabled',
+        tools: [],
+      });
+
+      for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of consoleSpies) spy.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 });

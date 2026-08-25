@@ -147,12 +147,15 @@ zgody, preflightu oraz limitów 48 logicznych wywołań, 56 prób i USD 3.00. Ru
 dokładnie 46 wywołań i wymaga `AI_MAX_RETRIES=0`. Credential-free
 `npm run eval:live:preflight` oblicza ten sam plan: zaakceptowany runtime Luna/2048 ma ceiling
 1,185,201 USD micros i 1,814,799 micros zapasu do capu, a Terra/2048 pozostaje wyłącznie
-comparison scenario ponad capem. Dwa osobno autoryzowane one-shot baseline zatrzymały się
-fail-closed przed raportem jakości; nie wykonano rerunu. Model profile contract ma wersję
-`narrative-quality-model-profile-v2`, AI pozostaje domyślnie wyłączone, a faza pozostaje w
-`REVIEW`. Ten offline fix nie autoryzuje kolejnego baseline. Nigdy nie commituj `.env` ani
-kluczy. Pełny kontrakt, konfiguracja, bezpieczeństwo i ograniczenia są opisane w
-`docs/ai-gateway.md`.
+comparison scenario ponad capem. Trzy osobno autoryzowane one-shot baseline zatrzymały się
+fail-closed przed raportem jakości; trzeci zatrzymał się na pierwszym `P01/JUDGE` z
+`INVALID_STRUCTURED_OUTPUT`. Nie wykonano rerunu,
+continuation, smoke testu ani diagnostycznego requestu. Wersjonowana korekta offline rozdziela
+statyczny transport schema od lokalnych bindingów i pozwala raportować wyłącznie kompletnie
+rozliczone post-response invalid JUDGE jako fail-closed `REJECT`; nie autoryzuje kolejnego
+baseline. Model profile contract ma wersję `narrative-quality-model-profile-v2`, AI pozostaje
+domyślnie wyłączone, a faza pozostaje w `REVIEW`. Nigdy nie commituj `.env` ani kluczy. Pełny
+kontrakt, konfiguracja, bezpieczeństwo i ograniczenia są opisane w `docs/ai-gateway.md`.
 
 ## API
 

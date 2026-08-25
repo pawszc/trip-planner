@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   EvalContractError,
   NARRATIVE_QUALITY_DIMENSIONS,
@@ -11,8 +12,10 @@ import {
   type NarrativeQualityReasonCode,
 } from './dataset.ts';
 import {
+  NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
+  NARRATIVE_E2E_REQUIRED_PROPERTY_FAILURE_CODES,
+  NARRATIVE_E2E_REQUIRED_PROPERTY_IDS,
   validateNarrativeE2eRequiredPropertyResults,
-  type NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
   type NarrativeE2eRequiredPropertyResult,
 } from './required-properties.ts';
 
@@ -60,6 +63,28 @@ export interface SemanticCaseOutcome {
   readonly reasonCodes: readonly NarrativeQualityReasonCode[];
   /** null means PRECHECK made zero JUDGE calls. */
   readonly strictJudgeOutputValid: boolean | null;
+}
+
+const semanticCaseOutcomeSchema = z
+  .object({
+    caseId: z.string(),
+    actualDecision: z.enum(['PUBLISH', 'REJECT']),
+    actualStage: z.enum(['PRECHECK', 'JUDGE']),
+    failedDimensions: z.array(z.enum(NARRATIVE_QUALITY_DIMENSIONS)),
+    reasonCodes: z.array(z.enum(NARRATIVE_QUALITY_REASON_CODES)),
+    strictJudgeOutputValid: z.boolean().nullable(),
+  })
+  .strict();
+
+function parseSemanticCaseOutcome(input: unknown): SemanticCaseOutcome {
+  const parsed = semanticCaseOutcomeSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new EvalContractError(
+      'INVALID_EVAL_INPUT',
+      'Semantic outcome evidence failed its closed runtime schema.',
+    );
+  }
+  return parsed.data;
 }
 
 export interface SemanticQualityMetrics {
@@ -176,7 +201,8 @@ export function indexSemanticOutcomes(
   validateNarrativeQualityDatasetContract(dataset);
   const expectedIds = dataset.cases.map(({ id }) => id);
   const byId = new Map<string, SemanticCaseOutcome>();
-  for (const outcome of outcomes) {
+  for (const input of outcomes) {
+    const outcome = parseSemanticCaseOutcome(input);
     if (byId.has(outcome.caseId) || !expectedIds.includes(outcome.caseId)) {
       throw new EvalContractError(
         'INVALID_EVAL_INPUT',
@@ -196,6 +222,10 @@ export function indexSemanticOutcomes(
     if (
       (outcome.actualStage === 'PRECHECK' && outcome.strictJudgeOutputValid !== null) ||
       (outcome.actualStage === 'JUDGE' && outcome.strictJudgeOutputValid === null) ||
+      (outcome.strictJudgeOutputValid === false &&
+        (outcome.actualDecision !== 'REJECT' ||
+          outcome.failedDimensions.length !== 0 ||
+          outcome.reasonCodes.length !== 0)) ||
       (outcome.actualDecision === 'PUBLISH' &&
         (outcome.actualStage !== 'JUDGE' ||
           outcome.failedDimensions.length !== 0 ||
@@ -357,6 +387,7 @@ export function evaluateSemanticGates(metrics: SemanticQualityMetrics): Semantic
 
 export interface StabilityMetrics {
   readonly sentinelCount: 8;
+  readonly repeatJudgeOutputValidity: MetricRatio;
   readonly exactDecisionAgreement: MetricRatio;
   readonly criticalFalseAcceptsAcrossRuns: number;
   readonly disagreements: readonly string[];
@@ -364,7 +395,9 @@ export interface StabilityMetrics {
 
 export interface StabilityGateResult {
   readonly passed: boolean;
-  readonly failures: readonly ('DECISION_AGREEMENT' | 'CRITICAL_FALSE_ACCEPT')[];
+  readonly failures: readonly (
+    'REPEAT_JUDGE_OUTPUT_VALIDITY' | 'DECISION_AGREEMENT' | 'CRITICAL_FALSE_ACCEPT'
+  )[];
 }
 
 export function calculateStabilityMetrics(
@@ -375,11 +408,21 @@ export function calculateStabilityMetrics(
   const primary = indexSemanticOutcomes(dataset, primaryOutcomes);
   const expectedSentinels = new Set<string>(NARRATIVE_QUALITY_SENTINEL_CASE_IDS);
   const repeated = new Map<string, SemanticCaseOutcome>();
-  for (const outcome of repeatedSentinelOutcomes) {
+  for (const input of repeatedSentinelOutcomes) {
+    const outcome = parseSemanticCaseOutcome(input);
     if (
       repeated.has(outcome.caseId) ||
       !expectedSentinels.has(outcome.caseId) ||
-      outcome.strictJudgeOutputValid === null
+      outcome.actualStage !== 'JUDGE' ||
+      outcome.strictJudgeOutputValid === null ||
+      (outcome.strictJudgeOutputValid === false &&
+        (outcome.actualDecision !== 'REJECT' ||
+          outcome.failedDimensions.length !== 0 ||
+          outcome.reasonCodes.length !== 0)) ||
+      (outcome.actualDecision === 'PUBLISH' &&
+        (outcome.strictJudgeOutputValid !== true ||
+          outcome.failedDimensions.length !== 0 ||
+          outcome.reasonCodes.length !== 0))
     ) {
       throw new EvalContractError(
         'INVALID_EVAL_INPUT',
@@ -407,11 +450,21 @@ export function calculateStabilityMetrics(
 
   const disagreements: string[] = [];
   let criticalFalseAcceptsAcrossRuns = 0;
+  let validRepeatedJudgeOutputs = 0;
   for (const caseId of NARRATIVE_QUALITY_SENTINEL_CASE_IDS) {
     const authored = dataset.cases.find((candidate) => candidate.id === caseId)!;
     const first = primary.get(caseId)!;
     const second = repeated.get(caseId)!;
-    if (first.actualDecision !== second.actualDecision) disagreements.push(caseId);
+    if (second.strictJudgeOutputValid === true) validRepeatedJudgeOutputs += 1;
+    // An invalid output is never evidence of agreement, even when its fail-closed REJECT label
+    // happens to equal the other pass. The separate validity gate makes the cause explicit.
+    if (
+      first.strictJudgeOutputValid !== true ||
+      second.strictJudgeOutputValid !== true ||
+      first.actualDecision !== second.actualDecision
+    ) {
+      disagreements.push(caseId);
+    }
     if (authored.expected.critical) {
       if (first.actualDecision === 'PUBLISH') criticalFalseAcceptsAcrossRuns += 1;
       if (second.actualDecision === 'PUBLISH') criticalFalseAcceptsAcrossRuns += 1;
@@ -419,6 +472,7 @@ export function calculateStabilityMetrics(
   }
   return {
     sentinelCount: 8,
+    repeatJudgeOutputValidity: ratio(validRepeatedJudgeOutputs, 8),
     exactDecisionAgreement: ratio(8 - disagreements.length, 8),
     criticalFalseAcceptsAcrossRuns,
     disagreements,
@@ -427,6 +481,8 @@ export function calculateStabilityMetrics(
 
 export function evaluateStabilityGates(metrics: StabilityMetrics): StabilityGateResult {
   const failures: StabilityGateResult['failures'][number][] = [];
+  if (!ratioAtLeast(metrics.repeatJudgeOutputValidity, { numerator: 1, denominator: 1 }))
+    failures.push('REPEAT_JUDGE_OUTPUT_VALIDITY');
   if (!ratioAtLeast(metrics.exactDecisionAgreement, { numerator: 7, denominator: 8 }))
     failures.push('DECISION_AGREEMENT');
   if (metrics.criticalFalseAcceptsAcrossRuns !== 0) failures.push('CRITICAL_FALSE_ACCEPT');
@@ -440,6 +496,8 @@ export interface EndToEndCaseOutcome {
   readonly generatedSchemaValid: boolean;
   readonly exactReferencesValid: boolean;
   readonly actualDecision: NarrativeDecision;
+  /** null means the candidate was rejected before the E2E JUDGE call. */
+  readonly judgeStructuredOutputValid: boolean | null;
   readonly requiredPropertyCatalogVersion: typeof NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION;
   readonly requiredPropertyResults: readonly NarrativeE2eRequiredPropertyResult[];
   readonly generateAuditSucceeded: boolean;
@@ -449,12 +507,50 @@ export interface EndToEndCaseOutcome {
   readonly deterministicStateUnchanged: boolean;
 }
 
+const endToEndCaseOutcomeSchema = z
+  .object({
+    caseId: z.string(),
+    generateLogicalCalls: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    judgeLogicalCalls: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    generatedSchemaValid: z.boolean(),
+    exactReferencesValid: z.boolean(),
+    actualDecision: z.enum(['PUBLISH', 'REJECT']),
+    judgeStructuredOutputValid: z.boolean().nullable(),
+    requiredPropertyCatalogVersion: z.literal(NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION),
+    requiredPropertyResults: z.array(
+      z
+        .object({
+          propertyId: z.enum(NARRATIVE_E2E_REQUIRED_PROPERTY_IDS),
+          passed: z.boolean(),
+          failureCode: z.enum(NARRATIVE_E2E_REQUIRED_PROPERTY_FAILURE_CODES).nullable(),
+        })
+        .strict(),
+    ),
+    generateAuditSucceeded: z.boolean(),
+    judgeAuditSucceeded: z.boolean(),
+    publicationBundleLinkageValidInMemory: z.boolean(),
+    deterministicStateUnchanged: z.boolean(),
+  })
+  .strict();
+
+function parseEndToEndCaseOutcome(input: unknown): EndToEndCaseOutcome {
+  const parsed = endToEndCaseOutcomeSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new EvalContractError(
+      'INVALID_EVAL_INPUT',
+      'End-to-end outcome evidence failed its closed runtime schema.',
+    );
+  }
+  return parsed.data;
+}
+
 export interface EndToEndMetrics {
   readonly caseCount: 4;
   readonly generateLogicalCalls: number;
   readonly judgeLogicalCalls: number;
   readonly locallyValidCandidates: MetricRatio;
   readonly published: MetricRatio;
+  readonly judgeStructuredOutputValidity: MetricRatio;
   readonly requiredPropertiesPassed: MetricRatio;
   readonly casesWithRequiredPropertyFailures: number;
   readonly publishedWithRequiredPropertyFailures: number;
@@ -467,6 +563,7 @@ export interface EndToEndGateResult {
   readonly failures: readonly (
     | 'LOCAL_VALIDITY'
     | 'LOGICAL_CALL_COUNTS'
+    | 'JUDGE_STRUCTURED_OUTPUT_VALIDITY'
     | 'PUBLICATION_COUNT'
     | 'REQUIRED_PROPERTY_FAILURE'
     | 'AUDIT_OR_PUBLICATION_BUNDLE_LINKAGE_IN_MEMORY'
@@ -481,7 +578,8 @@ export function calculateEndToEndMetrics(
   validateNarrativeQualityDatasetContract(dataset);
   const expectedIds = dataset.endToEndCases.map(({ id }) => id);
   const byId = new Map<string, EndToEndCaseOutcome>();
-  for (const outcome of outcomes) {
+  for (const input of outcomes) {
+    const outcome = parseEndToEndCaseOutcome(input);
     if (byId.has(outcome.caseId) || !expectedIds.includes(outcome.caseId)) {
       throw new EvalContractError(
         'INVALID_EVAL_INPUT',
@@ -496,11 +594,25 @@ export function calculateEndToEndMetrics(
   const ordered = expectedIds.map((id) => byId.get(id)!);
   if (
     ordered.some(
-      ({ generateLogicalCalls, judgeLogicalCalls }) =>
+      ({
+        generateLogicalCalls,
+        judgeLogicalCalls,
+        judgeStructuredOutputValid,
+        actualDecision,
+        judgeAuditSucceeded,
+        publicationBundleLinkageValidInMemory,
+      }) =>
         !Number.isSafeInteger(generateLogicalCalls) ||
         generateLogicalCalls < 0 ||
         !Number.isSafeInteger(judgeLogicalCalls) ||
-        judgeLogicalCalls < 0,
+        judgeLogicalCalls < 0 ||
+        (judgeLogicalCalls === 0 && (judgeStructuredOutputValid !== null || judgeAuditSucceeded)) ||
+        (judgeLogicalCalls > 0 && judgeStructuredOutputValid === null) ||
+        (judgeStructuredOutputValid === false &&
+          (actualDecision !== 'REJECT' ||
+            judgeAuditSucceeded ||
+            publicationBundleLinkageValidInMemory)) ||
+        (actualDecision === 'PUBLISH' && judgeStructuredOutputValid !== true),
     )
   ) {
     throw new EvalContractError(
@@ -537,6 +649,11 @@ export function calculateEndToEndMetrics(
       4,
     ),
     published: ratio(published.length, 4),
+    judgeStructuredOutputValidity: ratio(
+      ordered.filter(({ judgeStructuredOutputValid }) => judgeStructuredOutputValid === true)
+        .length,
+      4,
+    ),
     requiredPropertiesPassed: ratio(
       flattenedRequiredPropertyResults.filter(({ passed }) => passed).length,
       flattenedRequiredPropertyResults.length,
@@ -564,6 +681,8 @@ export function evaluateEndToEndGates(metrics: EndToEndMetrics): EndToEndGateRes
   if (metrics.generateLogicalCalls !== 4 || metrics.judgeLogicalCalls !== 4)
     failures.push('LOGICAL_CALL_COUNTS');
   if (metrics.locallyValidCandidates.numerator !== 4) failures.push('LOCAL_VALIDITY');
+  if (!ratioAtLeast(metrics.judgeStructuredOutputValidity, { numerator: 1, denominator: 1 }))
+    failures.push('JUDGE_STRUCTURED_OUTPUT_VALIDITY');
   if (!ratioAtLeast(metrics.published, { numerator: 3, denominator: 4 }))
     failures.push('PUBLICATION_COUNT');
   if (

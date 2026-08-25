@@ -1,6 +1,6 @@
 # Przepływ AI
 
-## Stan Fazy 3B3 (`REVIEW — TWO LIVE BASELINES STOPPED SAFELY / OUTPUT-BUDGET FIX IN REVIEW`)
+## Stan Fazy 3B3 (`REVIEW — THREE LIVE BASELINES STOPPED SAFELY / PARSE-EVIDENCE FIX IN REVIEW`)
 
 Faza 3B3 rozszerza pierwszy jawny use case produktu, bound action
 `RankedOptions.generateNarrative()`, o fail-closed bramkę jakości. Akcja opisuje pojedynczą
@@ -19,14 +19,18 @@ override w requestcie produktu.
 2. Wybiera pełny profil zadania i adapter tego providera.
 3. Tworzy SHA-256 fingerprint dokładnego wejścia requestu oraz UUID `aiRunId`.
 4. Asynchroniczny recorder utrwala `STARTED` w krótkiej transakcji CAP.
-5. Dopiero po sukcesie `STARTED` adapter wykonuje request bez otwartej transakcji bazy.
-6. Adapter lokalnie waliduje structured output i zwraca oba identyfikatory modelu.
-7. Gateway ponownie waliduje output oraz provider, configured model, task, wersje,
+5. Dopiero po sukcesie `STARTED` adapter konstruuje provider schema i wykonuje request bez
+   otwartej transakcji bazy.
+6. Adapter zachowuje allowlistowane response metadata przed `JSON.parse`, transport schema i
+   jawnymi context/dimension/finding bindingami; raw output istnieje tylko przejściowo w pamięci.
+7. Gateway ponownie uruchamia kontrolowany lokalny validator oraz sprawdza provider, configured
+   model, task, wersje,
    fingerprint, UUID i response model.
 8. Recorder aktualizuje ten sam rekord do `SUCCEEDED`; dopiero wtedy output może wrócić.
 9. Po błędzie adaptera recorder aktualizuje ten sam rekord do `FAILED`; jeśli terminalna
    odpowiedź dostarczyła bezpieczne metadata, zapisuje response model/status/reason/IDs,
-   usage, attempts i latency. Dopiero wtedy wraca znormalizowany błąd z zachowanym evidence.
+   usage, attempts, latency, `providerCallAttempted` i zamknięty `validationFailureStage`.
+   Dopiero wtedy wraca znormalizowany błąd z zachowanym evidence i durable linkage.
 
 Na SQLite ten lifecycle nie może zaczynać się wewnątrz rozpoczętej transakcji DB requestu,
 bo niezależny audit czekałby na jedyne połączenie trzymane przez outer request. Store
@@ -54,10 +58,13 @@ schedulera. Narracje są danymi produktu i nie mają mandatory association do `A
 
 Terminalny kontrakt OpenAI rozróżnia `INCOMPLETE / MAX_OUTPUT_TOKENS` jako non-retryable
 `INCOMPLETE_MODEL_OUTPUT`, `INCOMPLETE / CONTENT_FILTER` jako `MODEL_REFUSAL`, completed bez
-parsed outputu jako `EMPTY_MODEL_OUTPUT`, a failed/cancelled/queued/in-progress/unknown jako
-fail-closed `PROVIDER_ERROR`. `AiFailureExecutionEvidence` jest zamknięte i nie ma miejsca
-na prompt, input, output, provider body, raw message, cause lub stack. Nie ma continuation,
-auto-resume ani retry.
+output textu jako `EMPTY_MODEL_OUTPUT`, a failed/cancelled/queued/in-progress/unknown jako
+fail-closed `PROVIDER_ERROR`. Dla `COMPLETED` klasyfikuje malformed JSON oraz transport,
+context, dimension i finding binding bez analizy tekstu błędu. `AiFailureExecutionEvidence`
+jest zamknięte i nie ma miejsca na prompt, input, output, provider body, raw message, cause lub
+stack. Produkt nie ma continuation, auto-resume ani retry; syntetyczny runner może jedynie
+przejść do następnej zaplanowanej operacji po kompletnie rozliczonym invalid `JUDGE` z exact
+durable `FAILED` linkage, a report i wszystkie validity gates pozostają fail-closed.
 
 ## Quality-gated narrative w Fazie 3B3
 
@@ -135,7 +142,12 @@ a realny zapis/linkage jest testowany na produkcyjnym CAP/SQLite. Faza nie wykon
 próby 18 jest niepełny. Drugi osobno autoryzowany one-shot baseline z source
 `a4785502c6fe01e978dea1a85aa8d90ff66b90a6` zatrzymał się na 23/46 (`R12`, `JUDGE`,
 `INCOMPLETE_MODEL_OUTPUT`, `INCOMPLETE/MAX_OUTPUT_TOKENS`); accounting jest kompletny dla 23
-prób i 45,732 USD micros. W obu runach nie osiągnięto `GENERATE`, nie powstał report ani
-accepted manifest i nie było rerunu. Offline fix przypina Luna/low/2048 jako runtime JUDGE,
-podnosi wyłącznie `narrative-quality-model-profile-v2` i wykonuje zero provider calls za USD 0.
-AI pozostaje wyłączone, faza pozostaje w `REVIEW`, a kolejny baseline wymaga nowej zgody.
+prób i 45,732 USD micros. Trzeci osobno autoryzowany one-shot baseline z source
+`abf0f4b258c5950381e597b0192580527d71953f` zatrzymał się na `P01 / JUDGE / 1/46` z
+`INVALID_STRUCTURED_OUTPUT`, jednym `FAILED` `AiRun` i niepełnym accountingiem; zero known
+attempts/cost było tylko settled subtotalem. W żadnym runie nie powstał report ani accepted
+manifest i nie było rerunu. Corrective offline Draft PR podnosi JUDGE schema v2, execution v2,
+failure accounting v3, report v2 i accepted manifest v2; dataset, prompt, rubryka, publication
+policy, profile Luna/low/2048, zero retry i caps pozostają zamrożone. Wykonuje zero provider
+calls za USD 0. AI pozostaje wyłączone, faza pozostaje w `REVIEW`, a kolejny baseline wymaga
+nowej zgody.

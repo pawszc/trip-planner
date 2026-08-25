@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { zodTextFormat } from 'openai/helpers/zod';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   canonicalizeJson,
   createInputFingerprint,
@@ -14,18 +15,23 @@ import {
 } from '../../srv/narratives/grounded-option-context.ts';
 import {
   NARRATIVE_JUDGE_DIMENSIONS,
+  NARRATIVE_JUDGE_DIMENSION_STATUSES,
   NARRATIVE_JUDGE_INPUT_MAX_BYTES,
   NARRATIVE_JUDGE_PROMPT_VERSION,
   NARRATIVE_JUDGE_REASON_CODES,
   NARRATIVE_JUDGE_REASON_DIMENSIONS,
   NARRATIVE_JUDGE_REASON_SEVERITIES,
+  NARRATIVE_JUDGE_SEVERITIES,
   NARRATIVE_JUDGE_SCHEMA_NAME,
   NARRATIVE_JUDGE_SCHEMA_VERSION,
+  NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES,
+  NARRATIVE_JUDGE_TRANSPORT_SCHEMA,
   NARRATIVE_QUALITY_RUBRIC_CONTRACT,
   NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
   createNarrativeJudgeInput,
   createNarrativeJudgeRequest,
   parseNarrativeJudgeOutput,
+  validateNarrativeJudgeOutput,
   type NarrativeJudgeDimension,
   type NarrativeJudgeInput,
   type NarrativeJudgeOutput,
@@ -179,7 +185,7 @@ function goldenRubric(): unknown {
 }
 
 describe('narrative quality contract version binding', () => {
-  it('increments only the model profile contract for the Luna 2048 runtime profile', () => {
+  it('binds the Luna profile and versioned static JUDGE transport schema', () => {
     expect(versions()).toEqual({
       groundedContextVersion: 'grounded-option-context-v1',
       modelViewVersion: 'narrative-model-view-v1',
@@ -188,7 +194,7 @@ describe('narrative quality contract version binding', () => {
       generatePromptVersion: 'grounded-option-narrative-prompt-v2',
       generateSchemaVersion: 'grounded-option-narrative-schema-v1',
       judgePromptVersion: 'narrative-quality-judge-prompt-v1',
-      judgeSchemaVersion: 'narrative-quality-judge-schema-v1',
+      judgeSchemaVersion: 'narrative-quality-judge-schema-v2',
       rubricVersion: 'narrative-quality-rubric-v1',
       datasetVersion: 'narrative-quality-v1',
       publicationPolicyVersion: 'narrative-publication-policy-v1',
@@ -596,18 +602,127 @@ describe('strict narrative JUDGE contract', () => {
     expect(Buffer.byteLength(canonicalizeJson(request.input), 'utf8')).toBeLessThanOrEqual(
       NARRATIVE_JUDGE_INPUT_MAX_BYTES,
     );
-    expect(zodTextFormat(request.outputSchema, NARRATIVE_JUDGE_SCHEMA_NAME)).toMatchObject({
-      type: 'json_schema',
-      strict: true,
-    });
+    expect(zodTextFormat(request.providerOutputSchema!, NARRATIVE_JUDGE_SCHEMA_NAME)).toMatchObject(
+      {
+        type: 'json_schema',
+        strict: true,
+      },
+    );
     expect(zodOutputFormat(request.outputSchema)).toMatchObject({ type: 'json_schema' });
+  });
+
+  it('keeps the v2 static provider schema equal to the full local schema representation', () => {
+    const request = createNarrativeJudgeRequest(qualityContext());
+    const providerFormat = zodTextFormat(request.providerOutputSchema!, request.schemaName);
+    const fullLocalFormat = zodTextFormat(request.outputSchema, request.schemaName);
+    const grounded = context();
+    const generateRequest = createOptionNarrativeRequest(
+      grounded,
+      buildNarrativeModelView(grounded),
+    );
+    const generateFormat = zodTextFormat(generateRequest.outputSchema, generateRequest.schemaName);
+
+    expect(canonicalizeJson(providerFormat.schema as JsonValue)).toBe(
+      canonicalizeJson(fullLocalFormat.schema as JsonValue),
+    );
+    expect(request.providerOutputSchema).toBe(NARRATIVE_JUDGE_TRANSPORT_SCHEMA);
+    expect(generateFormat.schema).toMatchObject({
+      properties: {
+        blocks: { maxItems: NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES },
+      },
+    });
+    expect(providerFormat.schema).toMatchObject({
+      properties: {
+        dimensions: { minItems: 1, maxItems: NARRATIVE_JUDGE_DIMENSIONS.length },
+        findings: {
+          items: {
+            properties: {
+              blockSequences: {
+                maxItems: NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES,
+                items: { maximum: NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES },
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('pins the exact versioned provider-schema delta from the one-block v1 contract', () => {
+    const quality = qualityContext();
+    const request = createNarrativeJudgeRequest(quality);
+    const providerFormat = zodTextFormat(request.providerOutputSchema!, request.schemaName);
+    const v2Schema = providerFormat.schema as JsonValue;
+    const legacyV1ProviderSchema = z
+      .object({
+        qualityContextFingerprint: z.string().regex(/^[0-9a-f]{64}$/u),
+        narrativeFingerprint: z.string().regex(/^[0-9a-f]{64}$/u),
+        dimensions: z
+          .array(
+            z
+              .object({
+                dimension: z.enum(NARRATIVE_JUDGE_DIMENSIONS),
+                status: z.enum(NARRATIVE_JUDGE_DIMENSION_STATUSES),
+              })
+              .strict(),
+          )
+          .length(NARRATIVE_JUDGE_DIMENSIONS.length),
+        findings: z
+          .array(
+            z
+              .object({
+                reasonCode: z.enum(NARRATIVE_JUDGE_REASON_CODES),
+                severity: z.enum(NARRATIVE_JUDGE_SEVERITIES),
+                blockSequences: z
+                  .array(z.number().int().min(1).max(quality.narrative.blocks.length))
+                  .min(1)
+                  .max(quality.narrative.blocks.length),
+                factIds: z.array(z.string().regex(/^fact_[0-9a-f]{64}$/u)).max(32),
+              })
+              .strict(),
+          )
+          .max(64),
+      })
+      .strict();
+    const v1Schema = zodTextFormat(legacyV1ProviderSchema, request.schemaName).schema as JsonValue;
+    const v1MigratedByDocumentedDeltas = structuredClone(v1Schema) as unknown as {
+      properties: {
+        dimensions: { minItems: number };
+        findings: {
+          items: {
+            properties: {
+              blockSequences: { maxItems: number; items: { maximum: number } };
+            };
+          };
+        };
+      };
+    };
+
+    expect(quality.narrative.blocks).toHaveLength(1);
+    v1MigratedByDocumentedDeltas.properties.dimensions.minItems = 1;
+    v1MigratedByDocumentedDeltas.properties.findings.items.properties.blockSequences.maxItems =
+      NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES;
+    v1MigratedByDocumentedDeltas.properties.findings.items.properties.blockSequences.items.maximum =
+      NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES;
+
+    expect(createInputFingerprint(v2Schema)).toBe(
+      '41d51c394515d10a194165b21e7350d54f62403271db38ca5ed3349d160a6429',
+    );
+    expect(createInputFingerprint(v1Schema)).toBe(
+      '2f5e8d0edafa7566445925a30f371377cc331ddb11fa95f5a2445e5c0157df14',
+    );
+    expect(canonicalizeJson(v1MigratedByDocumentedDeltas as unknown as JsonValue)).toBe(
+      canonicalizeJson(v2Schema),
+    );
   });
 
   it('freezes the exact eight dimensions and closed nineteen-code catalog', () => {
     expect(NARRATIVE_JUDGE_DIMENSIONS).toHaveLength(8);
     expect(new Set(NARRATIVE_JUDGE_DIMENSIONS).size).toBe(8);
+    expect(NARRATIVE_JUDGE_DIMENSION_STATUSES).toEqual(['PASS', 'FAIL']);
     expect(NARRATIVE_JUDGE_REASON_CODES).toHaveLength(19);
     expect(new Set(NARRATIVE_JUDGE_REASON_CODES).size).toBe(19);
+    expect(NARRATIVE_JUDGE_SEVERITIES).toEqual(['MAJOR', 'CRITICAL']);
   });
 
   it('matches the complete checked-in golden rubric JSON and its pinned fingerprint', () => {
@@ -743,6 +858,57 @@ describe('strict narrative JUDGE contract', () => {
       ],
     };
     expect(parseNarrativeJudgeOutput(withFinding, quality)).toEqual(withFinding);
+  });
+
+  it('classifies each explicit local validation phase without inspecting Zod messages', () => {
+    const quality = qualityContext();
+    const base = allPassOutput(quality);
+    const stage = (output: unknown) => {
+      const result = validateNarrativeJudgeOutput(output, quality);
+      expect(result.success).toBe(false);
+      return result.success ? 'UNEXPECTED_SUCCESS' : result.validationFailureStage;
+    };
+
+    expect(stage({})).toBe('TRANSPORT_SCHEMA_VALIDATION');
+    expect(stage({ ...base, qualityContextFingerprint: 'f'.repeat(64) })).toBe('CONTEXT_BINDING');
+    expect(stage({ ...base, narrativeFingerprint: 'e'.repeat(64) })).toBe('CONTEXT_BINDING');
+    expect(stage({ ...base, dimensions: base.dimensions.slice(0, 7) })).toBe('DIMENSION_BINDING');
+    expect(
+      stage({
+        ...base,
+        dimensions: base.dimensions.map((result, index) =>
+          index === 7 ? { ...result, dimension: 'FACTUAL_ENTAILMENT' } : result,
+        ),
+      }),
+    ).toBe('DIMENSION_BINDING');
+
+    const factualFailure = failDimension(base, 'FACTUAL_ENTAILMENT');
+    const finding = {
+      reasonCode: 'UNSUPPORTED_CLAIM' as const,
+      severity: 'MAJOR' as const,
+      blockSequences: [1],
+      factIds: [quality.modelView.facts[0]!.factId],
+    };
+    expect(stage({ ...factualFailure, findings: [{ ...finding, severity: 'CRITICAL' }] })).toBe(
+      'FINDING_BINDING',
+    );
+    expect(
+      stage({
+        ...factualFailure,
+        findings: [{ ...finding, factIds: [`fact_${'f'.repeat(64)}`] }],
+      }),
+    ).toBe('FINDING_BINDING');
+    expect(stage({ ...factualFailure, findings: [{ ...finding, blockSequences: [2] }] })).toBe(
+      'FINDING_BINDING',
+    );
+    expect(stage({ ...factualFailure, findings: [] })).toBe('FINDING_BINDING');
+
+    expect(stage({ ...factualFailure, findings: [{ ...finding, severity: 'WARNING' }] })).toBe(
+      'TRANSPORT_SCHEMA_VALIDATION',
+    );
+    expect(
+      stage({ ...factualFailure, findings: [{ ...finding, factIds: ['fact_invalid'] }] }),
+    ).toBe('TRANSPORT_SCHEMA_VALIDATION');
   });
 
   it.each([

@@ -180,6 +180,7 @@ describe('persistent AI run recorder', () => {
       providerResponseId: 'resp-safe',
       providerResponseStatus: 'INCOMPLETE',
       providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+      providerCallAttempted: true,
       refusal: { refused: false },
       errorCode: 'INCOMPLETE_MODEL_OUTPUT',
       retryable: false,
@@ -206,6 +207,7 @@ describe('persistent AI run recorder', () => {
           providerResponseId: 'resp-safe',
           providerResponseStatus: 'INCOMPLETE',
           providerIncompleteReason: 'MAX_OUTPUT_TOKENS',
+          providerCallAttempted: true,
           refusal: { refused: false },
           errorCode: 'INCOMPLETE_MODEL_OUTPUT',
           retryable: false,
@@ -213,6 +215,107 @@ describe('persistent AI run recorder', () => {
       },
     ]);
     expect(JSON.stringify(store.failed)).not.toContain('raw');
+  });
+
+  it('persists exact pre-request zero-call evidence and a closed post-response stage', async () => {
+    const store = new RecordingStore();
+    const recorder = new PersistentAiRunRecorder(store, 30);
+
+    await recorder.record({
+      ...startedEvent(),
+      status: 'FAILED',
+      completedAt: '2026-08-12T10:00:00.010Z',
+      latencyMs: 10,
+      attempts: 0,
+      providerCallAttempted: false,
+      validationFailureStage: 'SCHEMA_CONSTRUCTION',
+      errorCode: 'INVALID_STRUCTURED_OUTPUT',
+      retryable: false,
+    });
+    await recorder.record({
+      ...startedEvent({ aiRunId: '00000000-0000-4000-8000-000000000021' }),
+      status: 'FAILED',
+      completedAt: '2026-08-12T10:00:01.000Z',
+      responseModel: 'gpt-5.6-luna-snapshot',
+      providerResponseStatus: 'COMPLETED',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 1,
+      },
+      latencyMs: 100,
+      attempts: 1,
+      providerCallAttempted: true,
+      validationFailureStage: 'FINDING_BINDING',
+      errorCode: 'INVALID_STRUCTURED_OUTPUT',
+      retryable: false,
+    });
+
+    expect(store.failed[0]?.update).toMatchObject({
+      attempts: 0,
+      providerCallAttempted: false,
+      validationFailureStage: 'SCHEMA_CONSTRUCTION',
+    });
+    expect(store.failed[0]?.update).not.toHaveProperty('usage');
+    expect(store.failed[1]?.update).toMatchObject({
+      attempts: 1,
+      providerCallAttempted: true,
+      validationFailureStage: 'FINDING_BINDING',
+      providerResponseStatus: 'COMPLETED',
+    });
+  });
+
+  it('rejects contradictory provider-call and validation-stage audit evidence', async () => {
+    const recorder = new PersistentAiRunRecorder(new RecordingStore(), 30);
+
+    await expect(
+      recorder.record({
+        ...startedEvent(),
+        status: 'FAILED',
+        completedAt: '2026-08-12T10:00:01.000Z',
+        attempts: 1,
+        providerCallAttempted: false,
+        errorCode: 'INVALID_STRUCTURED_OUTPUT',
+        retryable: false,
+      }),
+    ).rejects.toMatchObject({ code: 'AI_AUDIT_FAILED', details: { field: 'attempts' } });
+    await expect(
+      recorder.record({
+        ...startedEvent(),
+        status: 'FAILED',
+        completedAt: '2026-08-12T10:00:01.000Z',
+        attempts: 1,
+        providerCallAttempted: true,
+        providerResponseStatus: 'INCOMPLETE',
+        validationFailureStage: 'RESPONSE_JSON_PARSE',
+        errorCode: 'INVALID_STRUCTURED_OUTPUT',
+        retryable: false,
+      }),
+    ).rejects.toMatchObject({
+      code: 'AI_AUDIT_FAILED',
+      details: { field: 'validationFailureStage' },
+    });
+  });
+
+  it('rejects a non-allowlisted refusal category before persistence', async () => {
+    const store = new RecordingStore();
+    const recorder = new PersistentAiRunRecorder(store, 30);
+    const rawCategory = 'RAW_PROVIDER_REFUSAL_SENTINEL';
+
+    await expect(
+      recorder.record({
+        ...startedEvent(),
+        status: 'FAILED',
+        completedAt: '2026-08-12T10:00:01.000Z',
+        refusal: { refused: true, category: rawCategory },
+        errorCode: 'MODEL_REFUSAL',
+        retryable: false,
+      } as unknown as AiRunTelemetryEvent),
+    ).rejects.toMatchObject({ code: 'AI_AUDIT_FAILED', details: { field: 'refusal' } });
+    expect(JSON.stringify(store.failed)).not.toContain(rawCategory);
   });
 
   it('drops unexpected raw payload fields instead of mapping them to persistence', async () => {

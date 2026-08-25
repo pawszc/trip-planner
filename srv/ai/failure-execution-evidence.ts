@@ -1,4 +1,9 @@
-import { AiProvider, type AiUsage } from './contracts.ts';
+import {
+  AI_REFUSAL_CATEGORY_VALUES,
+  AiProvider,
+  type AiRefusalCategory,
+  type AiUsage,
+} from './contracts.ts';
 
 export const AI_PROVIDER_RESPONSE_STATUS_VALUES = [
   'COMPLETED',
@@ -20,17 +25,26 @@ export const AI_PROVIDER_INCOMPLETE_REASON_VALUES = [
 
 export type AiProviderIncompleteReason = (typeof AI_PROVIDER_INCOMPLETE_REASON_VALUES)[number];
 
-export const AI_FAILURE_REFUSAL_CATEGORY_VALUES = [
-  'content_filter',
-  'model_refusal',
-  'unknown',
+export const AI_FAILURE_REFUSAL_CATEGORY_VALUES = AI_REFUSAL_CATEGORY_VALUES;
+
+export type AiFailureRefusalCategory = AiRefusalCategory;
+
+export const AI_VALIDATION_FAILURE_STAGE_VALUES = [
+  'SCHEMA_CONSTRUCTION',
+  'RESPONSE_JSON_PARSE',
+  'TRANSPORT_SCHEMA_VALIDATION',
+  'CONTEXT_BINDING',
+  'DIMENSION_BINDING',
+  'FINDING_BINDING',
 ] as const;
 
-export type AiFailureRefusalCategory = (typeof AI_FAILURE_REFUSAL_CATEGORY_VALUES)[number];
+export type AiValidationFailureStage = (typeof AI_VALIDATION_FAILURE_STAGE_VALUES)[number];
 
 export interface AiFailureExecutionEvidence {
   readonly provider: AiProvider;
   readonly configuredModel: string;
+  readonly providerCallAttempted: boolean;
+  readonly validationFailureStage?: AiValidationFailureStage;
   readonly responseModel?: string;
   readonly providerResponseStatus?: AiProviderResponseStatus;
   readonly providerIncompleteReason?: AiProviderIncompleteReason;
@@ -45,6 +59,8 @@ export interface AiFailureExecutionEvidence {
 const EVIDENCE_KEYS = new Set([
   'provider',
   'configuredModel',
+  'providerCallAttempted',
+  'validationFailureStage',
   'responseModel',
   'providerResponseStatus',
   'providerIncompleteReason',
@@ -124,8 +140,8 @@ function optionalClosedValue<T extends string>(
 }
 
 /**
- * Runtime-enforced allowlist for terminal provider metadata. Unknown fields and raw content are
- * rejected instead of being copied into errors, telemetry or persistence.
+ * Runtime-enforced allowlist for pre-request and terminal provider execution evidence. Unknown
+ * fields and raw content are rejected instead of being copied into errors, telemetry or persistence.
  */
 export function parseAiFailureExecutionEvidence(value: unknown): AiFailureExecutionEvidence {
   if (!isRecord(value)) {
@@ -139,6 +155,15 @@ export function parseAiFailureExecutionEvidence(value: unknown): AiFailureExecut
   if (configuredModel === undefined) {
     throw new TypeError('AI failure execution evidence configuredModel is required.');
   }
+  if (typeof value.providerCallAttempted !== 'boolean') {
+    throw new TypeError('AI failure execution evidence providerCallAttempted is required.');
+  }
+  const providerCallAttempted = value.providerCallAttempted;
+  const validationFailureStage = optionalClosedValue(
+    value.validationFailureStage,
+    AI_VALIDATION_FAILURE_STAGE_VALUES,
+    'validationFailureStage',
+  );
   const responseModel = optionalPattern(value.responseModel, MODEL_PATTERN, 'responseModel');
   const providerRequestId = optionalPattern(
     value.providerRequestId,
@@ -176,9 +201,45 @@ export function parseAiFailureExecutionEvidence(value: unknown): AiFailureExecut
   const latencyMs =
     value.latencyMs === undefined ? undefined : requireSafeInteger(value.latencyMs, 'latencyMs');
 
+  if (attempts === undefined || (providerCallAttempted ? attempts < 1 : attempts !== 0)) {
+    throw new TypeError(
+      'AI failure execution evidence attempts do not match providerCallAttempted.',
+    );
+  }
+  if (
+    !providerCallAttempted &&
+    (responseModel !== undefined ||
+      providerResponseStatus !== undefined ||
+      providerIncompleteReason !== undefined ||
+      providerRequestId !== undefined ||
+      providerResponseId !== undefined ||
+      usage !== undefined ||
+      refusalCategory !== undefined)
+  ) {
+    throw new TypeError(
+      'AI failure execution evidence without a provider call contains response metadata.',
+    );
+  }
+  if (validationFailureStage === 'SCHEMA_CONSTRUCTION' && providerCallAttempted) {
+    throw new TypeError(
+      'AI failure execution evidence schema construction cannot follow a provider call.',
+    );
+  }
+  if (
+    validationFailureStage !== undefined &&
+    validationFailureStage !== 'SCHEMA_CONSTRUCTION' &&
+    (!providerCallAttempted || providerResponseStatus !== 'COMPLETED')
+  ) {
+    throw new TypeError(
+      'AI failure execution evidence post-response validation requires a completed provider response.',
+    );
+  }
+
   return Object.freeze({
     provider: value.provider,
     configuredModel,
+    providerCallAttempted,
+    ...(validationFailureStage === undefined ? {} : { validationFailureStage }),
     ...(responseModel === undefined ? {} : { responseModel }),
     ...(providerResponseStatus === undefined ? {} : { providerResponseStatus }),
     ...(providerIncompleteReason === undefined ? {} : { providerIncompleteReason }),

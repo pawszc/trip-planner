@@ -590,16 +590,53 @@ export function validateNarrativeE2eRequiredPropertyResults(input: {
     );
   }
   const propertyIds = parsePropertyIds(input.requiredPropertyIds);
+  const results = (input.results as readonly unknown[]).map((candidate) => {
+    if (
+      typeof candidate !== 'object' ||
+      candidate === null ||
+      Array.isArray(candidate) ||
+      Object.keys(candidate).length !== 3 ||
+      !Object.hasOwn(candidate, 'propertyId') ||
+      !Object.hasOwn(candidate, 'passed') ||
+      !Object.hasOwn(candidate, 'failureCode')
+    ) {
+      throw new EvalContractError(
+        'INVALID_EVAL_INPUT',
+        'E2E required-property evidence failed its closed runtime schema.',
+      );
+    }
+    const { propertyId, passed, failureCode } = candidate as Record<string, unknown>;
+    if (
+      typeof propertyId !== 'string' ||
+      !NARRATIVE_E2E_REQUIRED_PROPERTY_IDS.includes(propertyId as NarrativeE2eRequiredPropertyId) ||
+      typeof passed !== 'boolean' ||
+      (failureCode !== null &&
+        (typeof failureCode !== 'string' ||
+          !NARRATIVE_E2E_REQUIRED_PROPERTY_FAILURE_CODES.includes(
+            failureCode as NarrativeE2eRequiredPropertyFailureCode,
+          )))
+    ) {
+      throw new EvalContractError(
+        'INVALID_EVAL_INPUT',
+        'E2E required-property evidence failed its closed runtime schema.',
+      );
+    }
+    return {
+      propertyId: propertyId as NarrativeE2eRequiredPropertyId,
+      passed,
+      failureCode: failureCode as NarrativeE2eRequiredPropertyFailureCode | null,
+    };
+  });
   if (
-    input.results.length !== propertyIds.length ||
-    input.results.some(({ propertyId }, index) => propertyId !== propertyIds[index])
+    results.length !== propertyIds.length ||
+    results.some(({ propertyId }, index) => propertyId !== propertyIds[index])
   ) {
     throw new EvalContractError(
       'INVALID_EVAL_INPUT',
       'E2E required-property evidence must contain the exact ordered required set.',
     );
   }
-  for (const result of input.results) {
+  for (const result of results) {
     const allowedFailureCodes = FAILURE_CODES_BY_PROPERTY[
       result.propertyId
     ] as readonly NarrativeE2eRequiredPropertyFailureCode[];
@@ -613,5 +650,5 @@ export function validateNarrativeE2eRequiredPropertyResults(input: {
       );
     }
   }
-  return input.results;
+  return results;
 }
