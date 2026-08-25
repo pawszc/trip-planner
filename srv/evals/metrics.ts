@@ -496,6 +496,8 @@ export interface EndToEndCaseOutcome {
   readonly generatedSchemaValid: boolean;
   readonly exactReferencesValid: boolean;
   readonly actualDecision: NarrativeDecision;
+  readonly actualFailedDimensions: readonly NarrativeQualityDimension[];
+  readonly actualReasonCodes: readonly NarrativeQualityReasonCode[];
   /** null means the candidate was rejected before the E2E JUDGE call. */
   readonly judgeStructuredOutputValid: boolean | null;
   readonly requiredPropertyCatalogVersion: typeof NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION;
@@ -515,6 +517,8 @@ const endToEndCaseOutcomeSchema = z
     generatedSchemaValid: z.boolean(),
     exactReferencesValid: z.boolean(),
     actualDecision: z.enum(['PUBLISH', 'REJECT']),
+    actualFailedDimensions: z.array(z.enum(NARRATIVE_QUALITY_DIMENSIONS)),
+    actualReasonCodes: z.array(z.enum(NARRATIVE_QUALITY_REASON_CODES)),
     judgeStructuredOutputValid: z.boolean().nullable(),
     requiredPropertyCatalogVersion: z.literal(NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION),
     requiredPropertyResults: z.array(
@@ -542,6 +546,24 @@ function parseEndToEndCaseOutcome(input: unknown): EndToEndCaseOutcome {
     );
   }
   return parsed.data;
+}
+
+function assertSortedUniqueCatalogValues<T extends string>(
+  label: string,
+  values: readonly T[],
+  catalog: readonly T[],
+): void {
+  const sorted = [...values].sort();
+  if (
+    new Set(values).size !== values.length ||
+    values.some((value) => !catalog.includes(value)) ||
+    sorted.some((value, index) => value !== values[index])
+  ) {
+    throw new EvalContractError(
+      'INVALID_EVAL_INPUT',
+      `${label} must use sorted, unique catalog values.`,
+    );
+  }
 }
 
 export interface EndToEndMetrics {
@@ -586,6 +608,16 @@ export function calculateEndToEndMetrics(
         'End-to-end outcomes must contain each exact E2E case once.',
       );
     }
+    assertSortedUniqueCatalogValues(
+      `End-to-end failed dimensions for ${outcome.caseId}`,
+      outcome.actualFailedDimensions,
+      NARRATIVE_QUALITY_DIMENSIONS,
+    );
+    assertSortedUniqueCatalogValues(
+      `End-to-end reason codes for ${outcome.caseId}`,
+      outcome.actualReasonCodes,
+      NARRATIVE_QUALITY_REASON_CODES,
+    );
     byId.set(outcome.caseId, outcome);
   }
   if (byId.size !== 4) {
@@ -599,6 +631,8 @@ export function calculateEndToEndMetrics(
         judgeLogicalCalls,
         judgeStructuredOutputValid,
         actualDecision,
+        actualFailedDimensions,
+        actualReasonCodes,
         judgeAuditSucceeded,
         publicationBundleLinkageValidInMemory,
       }) =>
@@ -606,18 +640,32 @@ export function calculateEndToEndMetrics(
         generateLogicalCalls < 0 ||
         !Number.isSafeInteger(judgeLogicalCalls) ||
         judgeLogicalCalls < 0 ||
-        (judgeLogicalCalls === 0 && (judgeStructuredOutputValid !== null || judgeAuditSucceeded)) ||
+        (judgeLogicalCalls === 0 &&
+          (judgeStructuredOutputValid !== null ||
+            judgeAuditSucceeded ||
+            actualDecision !== 'REJECT' ||
+            actualFailedDimensions.length === 0 ||
+            actualReasonCodes.length === 0)) ||
         (judgeLogicalCalls > 0 && judgeStructuredOutputValid === null) ||
         (judgeStructuredOutputValid === false &&
           (actualDecision !== 'REJECT' ||
+            actualFailedDimensions.length !== 0 ||
+            actualReasonCodes.length !== 0 ||
             judgeAuditSucceeded ||
             publicationBundleLinkageValidInMemory)) ||
+        (judgeStructuredOutputValid === true &&
+          (!judgeAuditSucceeded ||
+            (actualDecision === 'PUBLISH' &&
+              (actualFailedDimensions.length !== 0 || actualReasonCodes.length !== 0)) ||
+            (actualDecision === 'REJECT' &&
+              (actualFailedDimensions.length === 0 || actualReasonCodes.length === 0)))) ||
+        (actualDecision === 'REJECT' && publicationBundleLinkageValidInMemory) ||
         (actualDecision === 'PUBLISH' && judgeStructuredOutputValid !== true),
     )
   ) {
     throw new EvalContractError(
       'INVALID_EVAL_INPUT',
-      'End-to-end logical call counts must be non-negative safe integers.',
+      'End-to-end call, decision, audit and semantic evidence is inconsistent.',
     );
   }
   const published = ordered.filter(({ actualDecision }) => actualDecision === 'PUBLISH');

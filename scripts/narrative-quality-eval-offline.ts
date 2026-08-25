@@ -3,6 +3,7 @@ import {
   resolveNarrativeQualityDataset,
   type ResolvedNarrativeQualityCase,
 } from '../srv/evals/dataset.ts';
+import { auditNarrativeQualityDatasetRubricConsistency } from '../srv/evals/contract-audit.ts';
 import {
   runDeterministicContractReplay,
   type OfflineNarrativeEvalAdapter,
@@ -12,7 +13,7 @@ import {
   NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
   type NarrativeE2eRequiredPropertyId,
 } from '../srv/evals/required-properties.ts';
-import { resolveSyntheticNarrativeQualityFixture } from '../srv/evals/synthetic-fixtures.ts';
+import { resolveSyntheticNarrativeQualityFixture } from '../srv/evals/synthetic-fixtures-v2.ts';
 
 /**
  * Credential-free contract evaluation. The adapter replays frozen expected evidence against the
@@ -37,6 +38,8 @@ const deterministicContractAdapter: OfflineNarrativeEvalAdapter = {
       generatedSchemaValid: true,
       exactReferencesValid: true,
       actualDecision: 'PUBLISH' as const,
+      actualFailedDimensions: [],
+      actualReasonCodes: [],
       judgeStructuredOutputValid: true,
       requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
       requiredPropertyResults: qualityCase.authored.requiredProperties.map((propertyId) => ({
@@ -53,6 +56,7 @@ const deterministicContractAdapter: OfflineNarrativeEvalAdapter = {
 };
 
 const dataset = loadNarrativeQualityDataset();
+const contractAudit = auditNarrativeQualityDatasetRubricConsistency(dataset);
 const resolvedDataset = resolveNarrativeQualityDataset(
   dataset,
   resolveSyntheticNarrativeQualityFixture,
@@ -81,6 +85,7 @@ console.log(
     modelQualityMeasured: false,
     datasetVersion: result.report.datasetVersion,
     datasetFingerprint: result.report.datasetFingerprint,
+    contractAudit,
     reportFingerprint: result.report.reportFingerprint,
     semanticCases: result.primaryOutcomes.length,
     sentinelRepeats: result.repeatedSentinelOutcomes.length,

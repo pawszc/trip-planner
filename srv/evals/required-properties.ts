@@ -22,7 +22,7 @@ import {
 import { EvalContractError } from './dataset.ts';
 
 export const NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION =
-  'narrative-e2e-required-properties-v1';
+  'narrative-e2e-required-properties-v2';
 
 export const NARRATIVE_E2E_REQUIRED_PROPERTY_IDS = [
   'strict-schema',
@@ -170,10 +170,10 @@ const EXPECTED_DESTINATION_CODE_BY_CASE = Object.freeze({
 } as const satisfies Record<NarrativeE2eRequiredPropertyCaseId, string>);
 
 export const NARRATIVE_E2E_REQUIRED_PROPERTY_CONTEXT_FINGERPRINTS = Object.freeze({
-  E01: 'e05005e458adfb5904ebeb671e0004b58afa6c4b1672724be884f20a6f0e9809',
-  E02: '86108c5ced248ff2c2c639e0310ad192021838c386f9cab23c8c4c405f3f7ddf',
-  E03: '5b879a28ef65891dbcbf713666edaf4c7b61fac09eed6cda8c5eef83a670bc2c',
-  E04: 'b4778f10bae0ba2faab97640da720760701fff33f145fe29c0eb41ce41f6e23e',
+  E01: 'e130ff7fadb39d63ef347b2b9938f8ad23b220b29fd24c3094eb842cfdc67cf9',
+  E02: '3c3e04ea8991a5074eae82a849ba283fb5f146f2728372b8fb6351a0f0702da5',
+  E03: '75c1e10ba92ab2719ad452690b95c1b2e6324c862e623424f571c82c344b2bd4',
+  E04: '14f0b2ae52ec2155b2da1365177ed8d55ad30ca2e3d948c1899e2aff53276356',
 } as const satisfies Record<NarrativeE2eRequiredPropertyCaseId, string>);
 
 const EXPECTED_STATUS_FACT_KEYS = Object.freeze({
@@ -236,7 +236,7 @@ const FIXTURE_DISCLOSURE_PATTERN =
 const FIXTURE_REAL_OFFER_PATTERN =
   /(?:\b(?:real(?:\s+current)?\s+offer|actual\s+offer|current(?:ly)?\s+(?:available|bookable|offer)|available\s+now|guaranteed\s+(?:offer|availability))\b|rzeczywist\p{L}*\s+ofert\p{L}*|aktualn\p{L}*\s+ofert\p{L}*|dostępn\p{L}*\s+teraz|gwarantowan\p{L}*\s+dostępność)/iu;
 const CACHED_SAFE_NEGATION_PATTERN =
-  /\b(?:not|isn't|is not|nie jest|nie są|brak)\s+(?:live|real[- ]?time|currently available|available now|guaranteed|gwarantowan\p{L}*|na żywo|w czasie rzeczywistym|aktualnie dostępn\p{L}*)\b/giu;
+  /(?:\b(?:not|isn't|is not|nie jest|nie są|brak)\s+(?:live|real[- ]?time|currently available|available now|guaranteed|gwarantowan\p{L}*|na żywo|w czasie rzeczywistym|aktualnie dostępn\p{L}*)\b|\b(?:is\s+)?not\s+a\s+current\s+live\s+offer\b|\bdoes\s+not\s+represent\s+current\s+live\s+availability\b)/giu;
 const CACHED_LIVE_CLAIM_PATTERN =
   /\b(?:live|real[- ]?time|currently available|available now|bookable now|guaranteed(?: availability)?|confirmed availability|na żywo|w czasie rzeczywistym|aktualnie dostępn\p{L}*|dostępn\p{L}* teraz|gwarantowan\p{L}* dostępność|potwierdzon\p{L}* dostępność)\b/iu;
 const UNKNOWN_DISCLOSURE_PATTERN =
@@ -482,7 +482,7 @@ function parsePropertyIds(
   ) {
     throw new EvalContractError(
       'INVALID_EVAL_INPUT',
-      'E2E required properties must use unique IDs from the executable v1 catalog.',
+      'E2E required properties must use unique IDs from the executable v2 catalog.',
     );
   }
   return propertyIds as readonly NarrativeE2eRequiredPropertyId[];
