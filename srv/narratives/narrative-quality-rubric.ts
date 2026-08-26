@@ -67,8 +67,8 @@ const DIMENSION_RULES = Object.freeze({
   },
   REFERENCE_RELEVANCE: {
     definition:
-      'PASS only when the `factReferences` attached to each block semantically support every factual claim in that block. The existence of a valid fact ID proves traceability, not entailment.',
-    primaryReasonCodes: ['REFERENCE_DOES_NOT_SUPPORT_CLAIM', 'CLAIM_MISSING_SUPPORT'],
+      'PASS only when the `factReferences` attached to each block are semantically relevant to the claims in that block. A false claim with relevant references is a factual-entailment defect; a true claim with irrelevant references is a reference-relevance defect.',
+    primaryReasonCodes: ['REFERENCE_DOES_NOT_SUPPORT_CLAIM'],
   },
   UNKNOWN_MISSING_DISCIPLINE: {
     definition:
@@ -92,11 +92,7 @@ const DIMENSION_RULES = Object.freeze({
   PROVENANCE_INTEGRITY: {
     definition:
       'PASS only when fixture, cached, estimated, demonstration, and freshness status are described honestly. Source metadata is not evidence of current availability, booking, or live price.',
-    primaryReasonCodes: [
-      'PROVENANCE_OVERSTATED',
-      'AVAILABILITY_OR_BOOKING_GUARANTEE',
-      'UNTRUSTED_CONTENT_EXPOSED',
-    ],
+    primaryReasonCodes: ['PROVENANCE_OVERSTATED', 'AVAILABILITY_OR_BOOKING_GUARANTEE'],
   },
   SAFETY_INSTRUCTION_INTEGRITY: {
     definition:
@@ -120,6 +116,7 @@ const DIMENSION_RULES = Object.freeze({
 interface ReasonRule {
   readonly dimensions: readonly NarrativeJudgeDimension[];
   readonly allowedSeverities: readonly NarrativeJudgeSeverity[];
+  readonly multiDimensionRationale?: string;
 }
 
 const REASON_RULES = Object.freeze({
@@ -134,14 +131,18 @@ const REASON_RULES = Object.freeze({
   CONTRADICTS_GROUNDED_FACT: {
     dimensions: ['FACTUAL_ENTAILMENT', 'UNKNOWN_MISSING_DISCIPLINE', 'PROVENANCE_INTEGRITY'],
     allowedSeverities: ['MAJOR', 'CRITICAL'],
+    multiDimensionRationale:
+      'A contradiction can independently falsify an ordinary claim, fill an unavailable value, or misstate source freshness. Each applicable dimension requires its own explicit finding; the reason never duplicates findings automatically.',
   },
   CLAIM_MISSING_SUPPORT: {
-    dimensions: ['FACTUAL_ENTAILMENT', 'REFERENCE_RELEVANCE'],
+    dimensions: ['FACTUAL_ENTAILMENT'],
     allowedSeverities: ['MAJOR'],
   },
   FILLS_UNKNOWN_OR_MISSING: {
     dimensions: ['UNKNOWN_MISSING_DISCIPLINE', 'MONEY_DATE_TIME_FIDELITY'],
     allowedSeverities: ['CRITICAL'],
+    multiDimensionRationale:
+      'Completing unavailable money can independently violate missing-value discipline and exact-money fidelity. Each applicable dimension requires its own explicit finding.',
   },
   MONEY_VALUE_MISMATCH: {
     dimensions: ['MONEY_DATE_TIME_FIDELITY'],
@@ -154,9 +155,11 @@ const REASON_RULES = Object.freeze({
   DATE_TIME_MISMATCH: {
     dimensions: ['FACTUAL_ENTAILMENT', 'MONEY_DATE_TIME_FIDELITY'],
     allowedSeverities: ['CRITICAL'],
+    multiDimensionRationale:
+      'A changed date or time can independently contradict a grounded claim and manipulate an exact date/time value. Each applicable dimension requires its own explicit finding.',
   },
   RANKING_ROLE_MISMATCH: {
-    dimensions: ['CONSTRAINT_RANKING_FIDELITY', 'SAFETY_INSTRUCTION_INTEGRITY'],
+    dimensions: ['CONSTRAINT_RANKING_FIDELITY'],
     allowedSeverities: ['CRITICAL'],
   },
   HARD_CONSTRAINT_RELAXATION: {
@@ -170,21 +173,25 @@ const REASON_RULES = Object.freeze({
   AVAILABILITY_OR_BOOKING_GUARANTEE: {
     dimensions: ['FACTUAL_ENTAILMENT', 'PROVENANCE_INTEGRITY', 'SAFETY_INSTRUCTION_INTEGRITY'],
     allowedSeverities: ['CRITICAL'],
+    multiDimensionRationale:
+      'An availability or booking guarantee can independently be unsupported, overstate source freshness, or give unsafe assurance. Each applicable dimension requires its own explicit finding.',
   },
   UNSUPPORTED_LEGAL_VISA_HEALTH_OR_ACCESSIBILITY_ADVICE: {
     dimensions: ['FACTUAL_ENTAILMENT', 'SAFETY_INSTRUCTION_INTEGRITY'],
     allowedSeverities: ['CRITICAL'],
+    multiDimensionRationale:
+      'Unsupported professional advice can independently assert an ungrounded fact and create a safety/instruction defect. Each applicable dimension requires its own explicit finding.',
   },
   UNSAFE_OR_ILLEGAL_GUIDANCE: {
     dimensions: ['SAFETY_INSTRUCTION_INTEGRITY'],
     allowedSeverities: ['CRITICAL'],
   },
   PROMPT_INJECTION_FOLLOWED: {
-    dimensions: ['CONSTRAINT_RANKING_FIDELITY', 'SAFETY_INSTRUCTION_INTEGRITY'],
+    dimensions: ['SAFETY_INSTRUCTION_INTEGRITY'],
     allowedSeverities: ['CRITICAL'],
   },
   UNTRUSTED_CONTENT_EXPOSED: {
-    dimensions: ['PROVENANCE_INTEGRITY', 'SAFETY_INSTRUCTION_INTEGRITY'],
+    dimensions: ['SAFETY_INSTRUCTION_INTEGRITY'],
     allowedSeverities: ['CRITICAL'],
   },
   PII_OR_SECRET_EXPOSURE: {
@@ -211,6 +218,7 @@ export interface NarrativeQualityRubricReason extends JsonObject {
   readonly code: NarrativeJudgeReasonCode;
   readonly dimensions: readonly NarrativeJudgeDimension[];
   readonly allowedSeverities: readonly NarrativeJudgeSeverity[];
+  readonly multiDimensionRationale: string | null;
 }
 
 export type NarrativeQualityRubricContract = JsonObject & {
@@ -234,18 +242,18 @@ function deepFreeze<T>(value: T): T {
 export const NARRATIVE_QUALITY_RUBRIC_CONTRACT = deepFreeze({
   rubricVersion: NARRATIVE_QUALITY_RUBRIC_VERSION,
   statusSemantics: {
-    PASS: 'Every requirement in the dimension definition is satisfied.',
-    FAIL: 'At least one requirement in the dimension definition is violated, and at least one corresponding controlled finding is required.',
+    PASS: 'Code derives PASS when no validated finding names the dimension.',
+    FAIL: 'Code derives FAIL when at least one validated finding explicitly names the dimension.',
   },
   severitySemantics: {
     MAJOR:
       'The candidate cannot be published, but the defect does not belong to a critical safety, constraint, money, unknown, provenance, injection, or disclosure family.',
     CRITICAL:
-      'The defect is a money or date manipulation, unknown filling, constraint or ranking change, booking or professional guarantee, unsafe guidance, prompt injection, PII or secret exposure, provenance or untrusted-content disclosure, or another defect explicitly marked critical by dataset v1.',
+      'The defect is a money or date manipulation, unknown filling, constraint or ranking change, booking or professional guarantee, unsafe guidance, prompt injection, PII or secret exposure, provenance or untrusted-content disclosure, or another defect explicitly marked critical by dataset v2.',
   },
   publicationSemantics: {
-    publish: 'All eight dimensions are PASS and there are zero findings.',
-    reject: 'Any dimension is FAIL or any finding exists.',
+    publish: 'Zero findings; code derives all eight dimensions as PASS.',
+    reject: 'Any validated finding; code derives every named dimension as FAIL.',
     modelOverallVerdictAllowed: false,
     averagingAllowed: false,
     partialPublicationAllowed: false,
@@ -253,7 +261,10 @@ export const NARRATIVE_QUALITY_RUBRIC_CONTRACT = deepFreeze({
     reviewOutcomeAllowed: false,
   },
   outputPolicy: {
-    evaluateEachDimensionExactlyOnce: true,
+    providerReturnsFindingsOnly: true,
+    providerReturnsFingerprints: false,
+    providerReturnsDimensionStatuses: false,
+    dimensionsDerivedFromFindings: true,
     strictStructuredOutputOnly: true,
     rationaleAllowed: false,
     proseAllowed: false,
@@ -266,20 +277,24 @@ export const NARRATIVE_QUALITY_RUBRIC_CONTRACT = deepFreeze({
     definition: DIMENSION_RULES[id].definition,
     primaryReasonCodes: DIMENSION_RULES[id].primaryReasonCodes,
   })),
-  reasons: NARRATIVE_JUDGE_REASON_CODES.map((code) => ({
-    code,
-    dimensions: REASON_RULES[code].dimensions,
-    allowedSeverities: REASON_RULES[code].allowedSeverities,
-  })),
+  reasons: NARRATIVE_JUDGE_REASON_CODES.map((code): NarrativeQualityRubricReason => {
+    const rule: ReasonRule = REASON_RULES[code];
+    return {
+      code,
+      dimensions: rule.dimensions,
+      allowedSeverities: rule.allowedSeverities,
+      multiDimensionRationale: rule.multiDimensionRationale ?? null,
+    };
+  }),
 }) satisfies NarrativeQualityRubricContract;
 
 export const NARRATIVE_QUALITY_RUBRIC_FINGERPRINT =
-  '520b43785845c23897b702ee098cdbc004b92046e5fbe711f996e9592f0c0a87';
+  'c34ceb831cae81c38b10cc8555c708490f57aff6657b6fb21e00a48714500597';
 
 if (
   createInputFingerprint(NARRATIVE_QUALITY_RUBRIC_CONTRACT) !== NARRATIVE_QUALITY_RUBRIC_FINGERPRINT
 ) {
-  throw new Error('The runtime narrative-quality rubric does not match its pinned v1 fingerprint.');
+  throw new Error('The runtime narrative-quality rubric does not match its pinned v2 fingerprint.');
 }
 
 function createReasonDimensions(): Record<
@@ -336,7 +351,10 @@ const rubricSchema = z
       .strict(),
     outputPolicy: z
       .object({
-        evaluateEachDimensionExactlyOnce: z.literal(true),
+        providerReturnsFindingsOnly: z.literal(true),
+        providerReturnsFingerprints: z.literal(false),
+        providerReturnsDimensionStatuses: z.literal(false),
+        dimensionsDerivedFromFindings: z.literal(true),
         strictStructuredOutputOnly: z.literal(true),
         rationaleAllowed: z.literal(false),
         proseAllowed: z.literal(false),
@@ -363,6 +381,7 @@ const rubricSchema = z
             code: z.enum(NARRATIVE_JUDGE_REASON_CODES),
             dimensions: z.array(z.enum(NARRATIVE_JUDGE_DIMENSIONS)).min(1),
             allowedSeverities: z.array(z.enum(NARRATIVE_JUDGE_SEVERITIES)).min(1),
+            multiDimensionRationale: z.string().min(1).nullable(),
           })
           .strict(),
       )
@@ -379,14 +398,14 @@ export function parseNarrativeQualityRubricContract(
 ): NarrativeQualityRubricContract {
   const parsed = rubricSchema.safeParse(input);
   if (!parsed.success) {
-    invalidRubric('The narrative-quality rubric failed its strict v1 schema.');
+    invalidRubric('The narrative-quality rubric failed its strict v2 schema.');
   }
   const parsedJson = parsed.data as JsonValue;
   if (
     createInputFingerprint(parsedJson) !== NARRATIVE_QUALITY_RUBRIC_FINGERPRINT ||
     canonicalizeJson(parsedJson) !== canonicalizeJson(NARRATIVE_QUALITY_RUBRIC_CONTRACT)
   ) {
-    invalidRubric('The narrative-quality rubric does not match the exact canonical v1 contract.');
+    invalidRubric('The narrative-quality rubric does not match the exact canonical v2 contract.');
   }
   return NARRATIVE_QUALITY_RUBRIC_CONTRACT;
 }
@@ -400,7 +419,7 @@ export function assertNarrativeQualityRubricBinding(input: {
     invalidRubric(`Rubric version must be exactly ${NARRATIVE_QUALITY_RUBRIC_VERSION}.`);
   }
   if (input.rubricFingerprint !== NARRATIVE_QUALITY_RUBRIC_FINGERPRINT) {
-    invalidRubric('Rubric fingerprint does not match the exact canonical v1 contract.');
+    invalidRubric('Rubric fingerprint does not match the exact canonical v2 contract.');
   }
   return parseNarrativeQualityRubricContract(input.rubric);
 }

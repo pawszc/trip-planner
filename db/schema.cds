@@ -166,6 +166,17 @@ type NarrativeReviewDimensionResult : String(8) enum {
   FAIL;
 }
 
+type NarrativeReviewDimension : String(48) enum {
+  FACTUAL_ENTAILMENT;
+  REFERENCE_RELEVANCE;
+  UNKNOWN_MISSING_DISCIPLINE;
+  CONSTRAINT_RANKING_FIDELITY;
+  MONEY_DATE_TIME_FIDELITY;
+  PROVENANCE_INTEGRITY;
+  SAFETY_INSTRUCTION_INTEGRITY;
+  RELEVANCE_AND_BLOCK_KIND;
+}
+
 type NarrativeReviewFindingSeverity : String(16) enum {
   MAJOR;
   CRITICAL;
@@ -338,6 +349,8 @@ entity NarrativeRuns : cuid, managed {
   judgeAiRunId : UUID;
   modelViewVersion : String(120);
   modelViewFingerprint : String(64);
+  generationViewVersion : String(120);
+  finalizationVersion : String(120);
   narrativeFingerprint : String(64);
   qualityContextVersion : String(120);
   qualityContextFingerprint : String(64);
@@ -369,6 +382,9 @@ entity NarrativeReviewRuns : cuid, managed {
   contextFingerprint : String(64) not null;
   modelViewVersion : String(120) not null;
   modelViewFingerprint : String(64) not null;
+  // Nullable/no-default fields preserve already persisted v1 reviews; every new review sets them.
+  generationViewVersion : String(120);
+  finalizationVersion : String(120);
   narrativeFingerprint : String(64);
   qualityContextVersion : String(120) not null;
   qualityContextFingerprint : String(64);
@@ -409,14 +425,16 @@ entity NarrativeReviewRuns : cuid, managed {
   completedAt : Timestamp not null;
 }
 
-// Każdy finding jest osobnym rekordem. Listy zawierają wyłącznie kanonicznie
-// posortowane liczby sekwencji i lokalne factId; nigdy rationale ani treść modelu.
+// Każdy finding jest osobnym rekordem z jawnym wymiarem. Listy zawierają wyłącznie
+// kanoniczne liczby sekwencji i lokalne factId; nigdy rationale ani treść modelu.
 @assert.unique.reviewFindingSequence: [narrativeReviewRun, sequence]
 entity NarrativeReviewFindings : cuid, managed {
   narrativeReviewRun : Association to one NarrativeReviewRuns not null;
   planningRun : Association to one PlanningRuns not null;
   rankedOption : Association to one RankedOptions not null;
   sequence : Integer not null;
+  // Nullable only so historical v1/v2 rows remain readable; every new builder row sets it.
+  dimension : NarrativeReviewDimension;
   reasonCode : NarrativeReviewFindingCode not null;
   severity : NarrativeReviewFindingSeverity not null;
   blockSequences : String(80) not null;

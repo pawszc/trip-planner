@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { zodTextFormat } from 'openai/helpers/zod';
-import { AiTaskType } from '../../srv/ai/contracts.ts';
+import { AiTaskType, createInputFingerprint } from '../../srv/ai/contracts.ts';
 import {
   buildGroundedOptionContext,
   type GroundedOptionContextInput,
 } from '../../srv/narratives/grounded-option-context.ts';
 import { buildNarrativePersistenceBundle } from '../../srv/narratives/narrative-persistence.ts';
+import { buildNarrativeGenerationView } from '../../srv/narratives/narrative-generation-view.ts';
+import { finalizeNarrativeOutput } from '../../srv/narratives/narrative-finalization.ts';
 import { buildNarrativeModelView } from '../../srv/narratives/narrative-model-view.ts';
 import {
   OPTION_NARRATIVE_PROMPT_VERSION,
@@ -14,6 +16,7 @@ import {
   OPTION_NARRATIVE_SCHEMA_VERSION,
   createOptionNarrativeOutputSchema,
   createOptionNarrativeRequest,
+  optionNarrativeProviderOutputSchema,
   parseOptionNarrativeOutput,
 } from '../../srv/narratives/option-narrative.ts';
 import { groundedOptionContextInput } from '../fixtures/grounded-option.ts';
@@ -57,7 +60,7 @@ function makeIncompleteBudget(input: GroundedOptionContextInput): void {
 describe('grounded option narrative contract', () => {
   it('creates a versioned GENERATE request without any routing override', () => {
     const context = groundedContext();
-    const modelView = buildNarrativeModelView(context);
+    const generationView = buildNarrativeGenerationView(context);
     const request = createOptionNarrativeRequest(context);
 
     expect(request).toMatchObject({
@@ -65,12 +68,11 @@ describe('grounded option narrative contract', () => {
       promptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
       schemaVersion: OPTION_NARRATIVE_SCHEMA_VERSION,
       schemaName: OPTION_NARRATIVE_SCHEMA_NAME,
-      input: modelView,
+      input: generationView,
       planningRunId: context.planningRun.id,
     });
-    expect(request.input).not.toHaveProperty('sourceSnapshots.0.sourceUrl');
-    expect(request.input).not.toHaveProperty('sourceSnapshots.0.externalItemId');
-    expect(request.input).not.toHaveProperty('sourceSnapshots.0.provider');
+    expect(request.input).not.toHaveProperty('sourceSnapshots');
+    expect(generationView.facts.every((fact) => fact.status === 'KNOWN')).toBe(true);
     expect(request).not.toHaveProperty('provider');
     expect(request).not.toHaveProperty('model');
     expect(request).not.toHaveProperty('effort');
@@ -83,13 +85,20 @@ describe('grounded option narrative contract', () => {
   it('converts the same strict context-aware schema for both configured provider SDKs offline', () => {
     const context = groundedContext();
     const schema = createOptionNarrativeOutputSchema(context);
+    const request = createOptionNarrativeRequest(context);
 
-    expect(zodTextFormat(schema, OPTION_NARRATIVE_SCHEMA_NAME)).toMatchObject({
+    expect(request.providerOutputSchema).toBe(optionNarrativeProviderOutputSchema);
+    expect(
+      zodTextFormat(request.providerOutputSchema!, OPTION_NARRATIVE_SCHEMA_NAME),
+    ).toMatchObject({
       type: 'json_schema',
       name: OPTION_NARRATIVE_SCHEMA_NAME,
       strict: true,
     });
-    expect(zodOutputFormat(schema)).toMatchObject({ type: 'json_schema' });
+    expect(zodOutputFormat(request.providerOutputSchema!)).toMatchObject({ type: 'json_schema' });
+    expect(schema.safeParse({ contextFingerprint: context.fingerprint, blocks: [] }).success).toBe(
+      false,
+    );
   });
 
   it('accepts strict blocks whose non-empty references resolve in the exact context', () => {
@@ -229,26 +238,33 @@ describe('grounded option narrative contract', () => {
 
   it('persists only a fully revalidated output with exact planning, option, and AI linkage', () => {
     const context = groundedContext();
-    const firstFact = context.facts[0];
-    const secondFact = context.facts[1];
+    const modelView = buildNarrativeModelView(context);
+    const generationView = buildNarrativeGenerationView(context, modelView);
+    const firstFact = generationView.facts[0];
+    const secondFact = generationView.facts[1];
     if (firstFact === undefined || secondFact === undefined)
       throw new Error('Missing fixture facts.');
     let generated = 0;
     const generateId = () => `50000000-0000-4000-8000-${String(++generated).padStart(12, '0')}`;
     const aiRunId = '60000000-0000-4000-8000-000000000001';
 
+    const output = finalizeNarrativeOutput({
+      context,
+      modelView,
+      generationView,
+      providerBlocks: [
+        {
+          kind: 'SUMMARY',
+          text: 'Ugruntowane podsumowanie.',
+          factReferences: [firstFact.factId, secondFact.factId],
+        },
+      ],
+    });
     const bundle = buildNarrativePersistenceBundle({
       context,
-      output: {
-        contextFingerprint: context.fingerprint,
-        blocks: [
-          {
-            kind: 'SUMMARY',
-            text: 'Ugruntowane podsumowanie.',
-            factReferences: [firstFact.factId, secondFact.factId],
-          },
-        ],
-      },
+      modelView,
+      generationView,
+      output,
       aiRunId,
       completedAt: '2026-08-13T12:00:00.000Z',
       generateId,
@@ -273,14 +289,98 @@ describe('grounded option narrative contract', () => {
       contextFingerprint: context.fingerprint,
       promptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
       schemaVersion: OPTION_NARRATIVE_SCHEMA_VERSION,
-      blockCount: 1,
+      blockCount: output.blocks.length,
     });
-    expect(bundle.optionNarratives).toHaveLength(1);
-    expect(bundle.factReferences).toMatchObject([
+    expect(bundle.narrativeFingerprint).toBe(createInputFingerprint(output));
+    expect(bundle.optionNarratives).toHaveLength(output.blocks.length);
+    expect(
+      bundle.factReferences.filter(
+        ({ optionNarrative_ID }) => optionNarrative_ID === bundle.optionNarratives[0]?.ID,
+      ),
+    ).toMatchObject([
       { sequence: 1, factId: firstFact.factId },
       { sequence: 2, factId: secondFact.factId },
     ]);
     expect(bundle.optionNarratives[0]).not.toHaveProperty('aiRun_ID');
     expect(bundle.factReferences.every((reference) => !('aiRun_ID' in reference))).toBe(true);
+  });
+
+  it('rejects a tampered deterministic tail before materializing persistence rows', () => {
+    const context = groundedContext();
+    const modelView = buildNarrativeModelView(context);
+    const generationView = buildNarrativeGenerationView(context, modelView);
+    const fact = generationView.facts[0];
+    if (fact === undefined) throw new Error('Missing generation fact.');
+    const output = structuredClone(
+      finalizeNarrativeOutput({
+        context,
+        modelView,
+        generationView,
+        providerBlocks: [
+          { kind: 'SUMMARY', text: 'Exact provider prefix.', factReferences: [fact.factId] },
+        ],
+      }),
+    );
+    const tail = output.blocks.at(-1);
+    if (tail === undefined || output.blocks.length < 2) {
+      throw new Error('Fixture must require a deterministic finalization tail.');
+    }
+    tail.text = `${tail.text} Tampered.`;
+
+    expect(() =>
+      buildNarrativePersistenceBundle({
+        context,
+        modelView,
+        generationView,
+        output,
+        aiRunId: '60000000-0000-4000-8000-000000000001',
+        completedAt: '2026-08-13T12:00:00.000Z',
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_PERSISTENCE' }));
+  });
+
+  it('rejects canonical model-view and generation-view tampering despite intact scalar lineage', () => {
+    const context = groundedContext();
+    const modelView = buildNarrativeModelView(context);
+    const generationView = buildNarrativeGenerationView(context, modelView);
+    const fact = generationView.facts[0];
+    if (fact === undefined) throw new Error('Missing generation fact.');
+    const output = finalizeNarrativeOutput({
+      context,
+      modelView,
+      generationView,
+      providerBlocks: [
+        { kind: 'SUMMARY', text: 'Exact provider prefix.', factReferences: [fact.factId] },
+      ],
+    });
+    const tamperedModelView = {
+      ...modelView,
+      rankedOption: { ...modelView.rankedOption, rank: context.rankedOption.rank + 1 },
+    };
+    const tamperedGenerationView = {
+      ...generationView,
+      rankedOption: { ...generationView.rankedOption, rank: context.rankedOption.rank + 1 },
+    };
+    const persistenceInput = {
+      context,
+      output,
+      aiRunId: '60000000-0000-4000-8000-000000000001',
+      completedAt: '2026-08-13T12:00:00.000Z',
+    } as const;
+
+    expect(() =>
+      buildNarrativePersistenceBundle({
+        ...persistenceInput,
+        modelView: tamperedModelView,
+        generationView,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_PERSISTENCE' }));
+    expect(() =>
+      buildNarrativePersistenceBundle({
+        ...persistenceInput,
+        modelView,
+        generationView: tamperedGenerationView,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_PERSISTENCE' }));
   });
 });

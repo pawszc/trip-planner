@@ -2,14 +2,15 @@ import { readFileSync } from 'node:fs';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { zodTextFormat } from 'openai/helpers/zod';
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 import {
   canonicalizeJson,
   createInputFingerprint,
+  type JsonObject,
   type JsonValue,
 } from '../../srv/ai/contracts.ts';
 import {
   buildGroundedOptionContext,
+  type GroundedFact,
   type GroundedOptionContext,
   type GroundedOptionContextInput,
 } from '../../srv/narratives/grounded-option-context.ts';
@@ -30,12 +31,20 @@ import {
   NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
   createNarrativeJudgeInput,
   createNarrativeJudgeRequest,
+  deriveNarrativeJudgeDimensions,
   parseNarrativeJudgeOutput,
+  validateNarrativeJudgeContextBinding,
+  validateNarrativeJudgeDimensionBinding,
   validateNarrativeJudgeOutput,
   type NarrativeJudgeDimension,
   type NarrativeJudgeInput,
   type NarrativeJudgeOutput,
 } from '../../srv/narratives/narrative-judge.ts';
+import { NARRATIVE_FINALIZATION_VERSION } from '../../srv/narratives/narrative-finalization.ts';
+import {
+  NARRATIVE_GENERATION_VIEW_VERSION,
+  buildNarrativeGenerationView,
+} from '../../srv/narratives/narrative-generation-view.ts';
 import {
   NARRATIVE_MODEL_VIEW_MAX_BYTES,
   NARRATIVE_MODEL_VIEW_VERSION,
@@ -102,6 +111,8 @@ function versions(groundedContextVersion = 'grounded-option-context-v1') {
   return {
     groundedContextVersion,
     modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
+    generationViewVersion: NARRATIVE_GENERATION_VIEW_VERSION,
+    finalizationVersion: NARRATIVE_FINALIZATION_VERSION,
     qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
     constraintSnapshotVersion: NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
     generatePromptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
@@ -180,7 +191,7 @@ function collectObjectKeys(value: unknown): readonly string[] {
 
 function goldenRubric(): unknown {
   return JSON.parse(
-    readFileSync(new URL('../../evals/rubrics/narrative-quality-v1.json', import.meta.url), 'utf8'),
+    readFileSync(new URL('../../evals/rubrics/narrative-quality-v2.json', import.meta.url), 'utf8'),
   ) as unknown;
 }
 
@@ -189,19 +200,270 @@ describe('narrative quality contract version binding', () => {
     expect(versions()).toEqual({
       groundedContextVersion: 'grounded-option-context-v1',
       modelViewVersion: 'narrative-model-view-v1',
-      qualityContextVersion: 'narrative-quality-context-v1',
+      generationViewVersion: 'narrative-generation-view-v1',
+      finalizationVersion: 'narrative-finalization-v1',
+      qualityContextVersion: 'narrative-quality-context-v2',
       constraintSnapshotVersion: 'narrative-constraint-snapshot-v1',
-      generatePromptVersion: 'grounded-option-narrative-prompt-v2',
-      generateSchemaVersion: 'grounded-option-narrative-schema-v1',
-      judgePromptVersion: 'narrative-quality-judge-prompt-v1',
-      judgeSchemaVersion: 'narrative-quality-judge-schema-v2',
-      rubricVersion: 'narrative-quality-rubric-v1',
-      datasetVersion: 'narrative-quality-v1',
-      publicationPolicyVersion: 'narrative-publication-policy-v1',
-      safetyPrecheckVersion: 'narrative-safety-precheck-v1',
+      generatePromptVersion: 'grounded-option-narrative-prompt-v3',
+      generateSchemaVersion: 'grounded-option-narrative-schema-v2',
+      judgePromptVersion: 'narrative-quality-judge-prompt-v2',
+      judgeSchemaVersion: 'narrative-quality-judge-schema-v3',
+      rubricVersion: 'narrative-quality-rubric-v2',
+      datasetVersion: 'narrative-quality-v2',
+      publicationPolicyVersion: 'narrative-publication-policy-v2',
+      safetyPrecheckVersion: 'narrative-safety-precheck-v2',
       modelProfileVersion: 'narrative-quality-model-profile-v2',
       priceCatalogVersion: 'narrative-quality-price-catalog-v1',
     });
+  });
+});
+
+describe('narrative-generation-view-v1 structural projection', () => {
+  it('projects the exact closed value shape for every supported generation fact key', () => {
+    const expectedValueKeys = {
+      'option.selection': ['rank', 'role'],
+      'option.destination': ['city', 'code', 'countryCode'],
+      'option.transport': [
+        'effectiveTimeAtDestinationMinutes',
+        'maximumConnections',
+        'mode',
+        'outboundArrivalAt',
+        'outboundDepartureAt',
+        'outboundTravelMinutes',
+        'returnArrivalAt',
+        'returnDepartureAt',
+        'returnTravelMinutes',
+      ],
+      'option.accommodation': ['centralityScore', 'checkInDate', 'checkOutDate', 'name', 'nights'],
+      'option.budget.summary': [
+        'budgetLimitDisplay',
+        'budgetLimitMinor',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'costPerPersonDisplay',
+        'costPerPersonMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'remainingBudgetDisplay',
+        'remainingBudgetMinor',
+        'totalAmountDisplay',
+        'totalAmountMinor',
+        'unknownCategoryCount',
+      ],
+      'option.budget.category.TRANSPORT': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.ACCOMMODATION': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.LOCAL_TRANSPORT': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.FOOD': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.ATTRACTIONS': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.ADDITIONAL_FEES': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.budget.category.BUFFER': [
+        'amountDisplay',
+        'amountMinor',
+        'category',
+        'classification',
+        'confirmedAmountDisplay',
+        'confirmedAmountMinor',
+        'currency',
+        'currencyContractVersion',
+        'estimatedAmountDisplay',
+        'estimatedAmountMinor',
+        'moneyDisplayVersion',
+        'priceType',
+      ],
+      'option.score': [
+        'accommodationLocation',
+        'budgetFit',
+        'dataCompleteness',
+        'effectiveTime',
+        'preferenceFit',
+        'priceConfidence',
+        'total',
+        'travelTime',
+      ],
+    } as const;
+    const view = buildNarrativeGenerationView(context());
+
+    expect(view.facts.map(({ key }) => key).sort()).toEqual(Object.keys(expectedValueKeys).sort());
+    for (const fact of view.facts) {
+      const expected = expectedValueKeys[fact.key as keyof typeof expectedValueKeys];
+      expect(expected).toBeDefined();
+      expect(fact.value).not.toBeNull();
+      expect(Array.isArray(fact.value)).toBe(false);
+      expect(typeof fact.value).toBe('object');
+      expect(Object.keys(fact.value as JsonObject).sort()).toEqual([...expected].sort());
+    }
+  });
+
+  it('A: allows external ID 1 alongside the independently grounded numeric rank 1', () => {
+    const input = contextInput();
+    input.sourceSnapshots[0]!.externalItemId = '1';
+    const view = buildNarrativeGenerationView(buildGroundedOptionContext(input));
+
+    expect(view.rankedOption.rank).toBe(1);
+    expect(view.facts.find(({ key }) => key === 'option.selection')?.value).toMatchObject({
+      rank: 1,
+    });
+  });
+
+  it('B: allows source provider TRAIN alongside the independently grounded transport mode', () => {
+    const input = contextInput();
+    input.sourceSnapshots[0]!.provider = 'TRAIN';
+    const view = buildNarrativeGenerationView(buildGroundedOptionContext(input));
+
+    expect(view.facts.find(({ key }) => key === 'option.transport')?.value).toMatchObject({
+      mode: 'TRAIN',
+    });
+  });
+
+  it('C: allows external ID PRG alongside the independently grounded destination code', () => {
+    const input = contextInput();
+    input.sourceSnapshots[0]!.externalItemId = 'PRG';
+    const view = buildNarrativeGenerationView(buildGroundedOptionContext(input));
+
+    expect(view.facts.find(({ key }) => key === 'option.destination')?.value).toMatchObject({
+      code: 'PRG',
+    });
+  });
+
+  it.each(['X', 'XY', 'XYZ'])(
+    'D: allows short source ID %s alongside an independently grounded exact city literal',
+    (identifier) => {
+      const input = contextInput();
+      input.sourceSnapshots[0]!.externalItemId = identifier;
+      input.rankedOption.destinationCity = identifier;
+      const view = buildNarrativeGenerationView(buildGroundedOptionContext(input));
+
+      expect(view.facts.find(({ key }) => key === 'option.destination')?.value).toMatchObject({
+        city: identifier,
+      });
+    },
+  );
+
+  it('E: ignores short source substrings that occur inside a fingerprint or fact ID', () => {
+    const grounded = structuredClone(context());
+    const destination = factByKey(grounded, 'option.destination');
+    const source = grounded.sourceSnapshots[0] as {
+      externalItemId: string;
+      provider: string;
+    };
+    source.externalItemId = grounded.fingerprint.slice(0, 1);
+    source.provider = destination.factId.slice(5, 8);
+
+    const view = buildNarrativeGenerationView(grounded);
+
+    expect(view.groundedContextFingerprint).toBe(grounded.fingerprint);
+    expect(view.facts.find(({ key }) => key === destination.key)?.factId).toBe(destination.factId);
+  });
+
+  it('fails closed for a KNOWN fact key outside the closed provider catalog', () => {
+    const grounded = structuredClone(context());
+    (grounded.facts as GroundedFact[]).push({
+      factId: `fact_${'f'.repeat(64)}`,
+      key: 'option.unsupported-provider-fact',
+      status: 'KNOWN',
+      value: { highConfidenceSentinel: 'MUST_NOT_REACH_GENERATE' },
+      sourceSnapshotIds: [],
+      internalDerivation: null,
+    });
+
+    expect(() => buildNarrativeGenerationView(grounded)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_NARRATIVE_GENERATION_VIEW' }),
+    );
+  });
+
+  it('fails closed when a supported fact gains an extra source-only field', () => {
+    const grounded = structuredClone(context());
+    const destination = factByKey(grounded, 'option.destination');
+    if (destination.value === null || typeof destination.value !== 'object') {
+      throw new Error('Destination fixture value is not an object.');
+    }
+    (destination.value as Record<string, JsonValue>).sourceSnapshotId =
+      'HIGH_CONFIDENCE_SOURCE_SENTINEL';
+
+    expect(() => buildNarrativeGenerationView(grounded)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_NARRATIVE_GENERATION_VIEW' }),
+    );
   });
 });
 
@@ -589,6 +851,13 @@ describe('strict narrative JUDGE contract', () => {
     expect(request.instructions).toContain('Do not repair');
     expect(request.instructions).toContain('using only the supplied full, versioned rubric');
     expect(request.instructions).toContain('Do not define, add, remove, reinterpret, or replace');
+    expect(request.instructions).toContain(
+      'false or contradicted claim with semantically relevant',
+    );
+    expect(request.instructions).toContain('true claim whose references do not support');
+    expect(request.instructions).toContain('safe candidate is not defective');
+    expect(request.instructions).toContain('PROVENANCE_INTEGRITY');
+    expect(request.instructions).not.toMatch(/\b(?:P03|R19|E04)\b/u);
     expect(input).toMatchObject({
       qualityContextFingerprint: quality.fingerprint,
       narrativeFingerprint: quality.narrativeFingerprint,
@@ -611,32 +880,22 @@ describe('strict narrative JUDGE contract', () => {
     expect(zodOutputFormat(request.outputSchema)).toMatchObject({ type: 'json_schema' });
   });
 
-  it('keeps the v2 static provider schema equal to the full local schema representation', () => {
+  it('exposes findings only to the provider and keeps binding fields local', () => {
     const request = createNarrativeJudgeRequest(qualityContext());
     const providerFormat = zodTextFormat(request.providerOutputSchema!, request.schemaName);
     const fullLocalFormat = zodTextFormat(request.outputSchema, request.schemaName);
-    const grounded = context();
-    const generateRequest = createOptionNarrativeRequest(
-      grounded,
-      buildNarrativeModelView(grounded),
-    );
-    const generateFormat = zodTextFormat(generateRequest.outputSchema, generateRequest.schemaName);
 
-    expect(canonicalizeJson(providerFormat.schema as JsonValue)).toBe(
+    expect(canonicalizeJson(providerFormat.schema as JsonValue)).not.toBe(
       canonicalizeJson(fullLocalFormat.schema as JsonValue),
     );
     expect(request.providerOutputSchema).toBe(NARRATIVE_JUDGE_TRANSPORT_SCHEMA);
-    expect(generateFormat.schema).toMatchObject({
-      properties: {
-        blocks: { maxItems: NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES },
-      },
-    });
     expect(providerFormat.schema).toMatchObject({
+      required: ['findings'],
       properties: {
-        dimensions: { minItems: 1, maxItems: NARRATIVE_JUDGE_DIMENSIONS.length },
         findings: {
           items: {
             properties: {
+              dimension: { enum: NARRATIVE_JUDGE_DIMENSIONS },
               blockSequences: {
                 maxItems: NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES,
                 items: { maximum: NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES },
@@ -646,73 +905,24 @@ describe('strict narrative JUDGE contract', () => {
         },
       },
     });
+    expect(Object.keys((providerFormat.schema as { properties: object }).properties)).toEqual([
+      'findings',
+    ]);
+    expect(fullLocalFormat.schema).toMatchObject({
+      properties: {
+        qualityContextFingerprint: expect.any(Object),
+        narrativeFingerprint: expect.any(Object),
+        dimensions: { minItems: 8, maxItems: 8 },
+        findings: expect.any(Object),
+      },
+    });
   });
 
-  it('pins the exact versioned provider-schema delta from the one-block v1 contract', () => {
-    const quality = qualityContext();
-    const request = createNarrativeJudgeRequest(quality);
+  it('pins the exact findings-only v3 provider schema fingerprint', () => {
+    const request = createNarrativeJudgeRequest(qualityContext());
     const providerFormat = zodTextFormat(request.providerOutputSchema!, request.schemaName);
-    const v2Schema = providerFormat.schema as JsonValue;
-    const legacyV1ProviderSchema = z
-      .object({
-        qualityContextFingerprint: z.string().regex(/^[0-9a-f]{64}$/u),
-        narrativeFingerprint: z.string().regex(/^[0-9a-f]{64}$/u),
-        dimensions: z
-          .array(
-            z
-              .object({
-                dimension: z.enum(NARRATIVE_JUDGE_DIMENSIONS),
-                status: z.enum(NARRATIVE_JUDGE_DIMENSION_STATUSES),
-              })
-              .strict(),
-          )
-          .length(NARRATIVE_JUDGE_DIMENSIONS.length),
-        findings: z
-          .array(
-            z
-              .object({
-                reasonCode: z.enum(NARRATIVE_JUDGE_REASON_CODES),
-                severity: z.enum(NARRATIVE_JUDGE_SEVERITIES),
-                blockSequences: z
-                  .array(z.number().int().min(1).max(quality.narrative.blocks.length))
-                  .min(1)
-                  .max(quality.narrative.blocks.length),
-                factIds: z.array(z.string().regex(/^fact_[0-9a-f]{64}$/u)).max(32),
-              })
-              .strict(),
-          )
-          .max(64),
-      })
-      .strict();
-    const v1Schema = zodTextFormat(legacyV1ProviderSchema, request.schemaName).schema as JsonValue;
-    const v1MigratedByDocumentedDeltas = structuredClone(v1Schema) as unknown as {
-      properties: {
-        dimensions: { minItems: number };
-        findings: {
-          items: {
-            properties: {
-              blockSequences: { maxItems: number; items: { maximum: number } };
-            };
-          };
-        };
-      };
-    };
-
-    expect(quality.narrative.blocks).toHaveLength(1);
-    v1MigratedByDocumentedDeltas.properties.dimensions.minItems = 1;
-    v1MigratedByDocumentedDeltas.properties.findings.items.properties.blockSequences.maxItems =
-      NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES;
-    v1MigratedByDocumentedDeltas.properties.findings.items.properties.blockSequences.items.maximum =
-      NARRATIVE_JUDGE_TRANSPORT_MAX_BLOCK_SEQUENCES;
-
-    expect(createInputFingerprint(v2Schema)).toBe(
-      '41d51c394515d10a194165b21e7350d54f62403271db38ca5ed3349d160a6429',
-    );
-    expect(createInputFingerprint(v1Schema)).toBe(
-      '2f5e8d0edafa7566445925a30f371377cc331ddb11fa95f5a2445e5c0157df14',
-    );
-    expect(canonicalizeJson(v1MigratedByDocumentedDeltas as unknown as JsonValue)).toBe(
-      canonicalizeJson(v2Schema),
+    expect(createInputFingerprint(providerFormat.schema as JsonValue)).toBe(
+      '3bb16d6856068ee42b58abe9e5d6ac236b74923e5be6eab4da988b14651901f5',
     );
   });
 
@@ -740,13 +950,16 @@ describe('strict narrative JUDGE contract', () => {
     expect(parsed.statusSemantics.PASS).toEqual(expect.any(String));
     expect(parsed.statusSemantics.FAIL).toEqual(expect.any(String));
     expect(parsed.publicationSemantics).toMatchObject({
-      publish: 'All eight dimensions are PASS and there are zero findings.',
-      reject: 'Any dimension is FAIL or any finding exists.',
+      publish: 'Zero findings; code derives all eight dimensions as PASS.',
+      reject: 'Any validated finding; code derives every named dimension as FAIL.',
       modelOverallVerdictAllowed: false,
       rewriteOrRepairAllowed: false,
     });
     expect(parsed.outputPolicy).toMatchObject({
-      evaluateEachDimensionExactlyOnce: true,
+      providerReturnsFindingsOnly: true,
+      providerReturnsFingerprints: false,
+      providerReturnsDimensionStatuses: false,
+      dimensionsDerivedFromFindings: true,
       strictStructuredOutputOnly: true,
       rationaleAllowed: false,
       proseAllowed: false,
@@ -772,6 +985,9 @@ describe('strict narrative JUDGE contract', () => {
       expect(
         reason.allowedSeverities.every((severity) => ['MAJOR', 'CRITICAL'].includes(severity)),
       ).toBe(true);
+      expect(reason.multiDimensionRationale).toEqual(
+        reason.dimensions.length > 1 ? expect.stringContaining('explicit finding') : null,
+      );
     }
     expect(Object.keys(NARRATIVE_JUDGE_REASON_DIMENSIONS).sort()).toEqual(
       [...NARRATIVE_JUDGE_REASON_CODES].sort(),
@@ -814,7 +1030,7 @@ describe('strict narrative JUDGE contract', () => {
     ).toThrowError(expect.objectContaining({ code: 'INVALID_NARRATIVE_QUALITY_RUBRIC' }));
     expect(() =>
       createNarrativeJudgeInput(quality, {
-        rubricVersion: 'narrative-quality-rubric-v2',
+        rubricVersion: 'narrative-quality-rubric-v3',
         rubricFingerprint: NARRATIVE_QUALITY_RUBRIC_FINGERPRINT,
         rubric: NARRATIVE_QUALITY_RUBRIC_CONTRACT,
       }),
@@ -839,17 +1055,89 @@ describe('strict narrative JUDGE contract', () => {
     );
   });
 
-  it('accepts exact all-pass and controlled failing results', () => {
+  it('injects exact local fingerprints and derives all eight statuses from findings', () => {
     const quality = qualityContext();
-    expect(parseNarrativeJudgeOutput(allPassOutput(quality), quality)).toEqual(
-      allPassOutput(quality),
-    );
+    const publish = validateNarrativeJudgeOutput({ findings: [] }, quality);
+    expect(publish.success).toBe(true);
+    if (!publish.success) throw new Error('Expected an all-pass local JUDGE result.');
+    expect(publish.output).toEqual(allPassOutput(quality));
+    expect(parseNarrativeJudgeOutput(publish.output, quality)).toEqual(publish.output);
 
-    const failing = failDimension(allPassOutput(quality), 'MONEY_DATE_TIME_FIDELITY');
+    const findings = [
+      {
+        dimension: 'FACTUAL_ENTAILMENT' as const,
+        reasonCode: 'UNSUPPORTED_CLAIM' as const,
+        severity: 'MAJOR' as const,
+        blockSequences: [1],
+        factIds: [],
+      },
+      {
+        dimension: 'MONEY_DATE_TIME_FIDELITY' as const,
+        reasonCode: 'MONEY_VALUE_MISMATCH' as const,
+        severity: 'CRITICAL' as const,
+        blockSequences: [1],
+        factIds: [quality.modelView.facts[0]!.factId],
+      },
+    ];
+    const reject = validateNarrativeJudgeOutput({ findings }, quality);
+    expect(reject.success).toBe(true);
+    if (!reject.success) throw new Error('Expected a controlled local JUDGE rejection.');
+    expect(reject.output).toEqual({
+      qualityContextFingerprint: quality.fingerprint,
+      narrativeFingerprint: quality.narrativeFingerprint,
+      dimensions: deriveNarrativeJudgeDimensions(findings),
+      findings,
+    });
+    expect(
+      reject.output.dimensions
+        .filter(({ status }) => status === 'FAIL')
+        .map(({ dimension }) => dimension),
+    ).toEqual(['FACTUAL_ENTAILMENT', 'MONEY_DATE_TIME_FIDELITY']);
+  });
+
+  it('keeps factual/reference and provenance/safety reason boundaries independent', () => {
+    expect(NARRATIVE_JUDGE_REASON_DIMENSIONS.UNSUPPORTED_CLAIM).toEqual(['FACTUAL_ENTAILMENT']);
+    expect(NARRATIVE_JUDGE_REASON_DIMENSIONS.CLAIM_MISSING_SUPPORT).toEqual(['FACTUAL_ENTAILMENT']);
+    expect(NARRATIVE_JUDGE_REASON_DIMENSIONS.REFERENCE_DOES_NOT_SUPPORT_CLAIM).toEqual([
+      'REFERENCE_RELEVANCE',
+    ]);
+    expect(NARRATIVE_JUDGE_REASON_DIMENSIONS.PROVENANCE_OVERSTATED).toEqual([
+      'PROVENANCE_INTEGRITY',
+    ]);
+    expect(NARRATIVE_JUDGE_REASON_DIMENSIONS.PROMPT_INJECTION_FOLLOWED).toEqual([
+      'SAFETY_INSTRUCTION_INTEGRITY',
+    ]);
+    expect(NARRATIVE_JUDGE_REASON_DIMENSIONS.UNTRUSTED_CONTENT_EXPOSED).toEqual([
+      'SAFETY_INSTRUCTION_INTEGRITY',
+    ]);
+  });
+
+  it('rejects duplicate semantic findings even when severity differs', () => {
+    const quality = qualityContext();
+    const finding = {
+      dimension: 'FACTUAL_ENTAILMENT' as const,
+      reasonCode: 'CONTRADICTS_GROUNDED_FACT' as const,
+      severity: 'MAJOR' as const,
+      blockSequences: [1],
+      factIds: [quality.modelView.facts[0]!.factId],
+    };
+    expect(
+      validateNarrativeJudgeOutput(
+        {
+          findings: [finding, { ...finding, severity: 'CRITICAL' }],
+        },
+        quality,
+      ),
+    ).toEqual({ success: false, validationFailureStage: 'FINDING_BINDING' });
+  });
+
+  it('accepts exact locally bound controlled output only after provider binding', () => {
+    const quality = qualityContext();
     const withFinding: NarrativeJudgeOutput = {
-      ...failing,
+      ...failDimension(allPassOutput(quality), 'MONEY_DATE_TIME_FIDELITY'),
       findings: [
         {
+          dimension: 'MONEY_DATE_TIME_FIDELITY',
           reasonCode: 'MONEY_VALUE_MISMATCH',
           severity: 'CRITICAL',
           blockSequences: [1],
@@ -862,7 +1150,7 @@ describe('strict narrative JUDGE contract', () => {
 
   it('classifies each explicit local validation phase without inspecting Zod messages', () => {
     const quality = qualityContext();
-    const base = allPassOutput(quality);
+    const base = { findings: [] };
     const stage = (output: unknown) => {
       const result = validateNarrativeJudgeOutput(output, quality);
       expect(result.success).toBe(false);
@@ -870,45 +1158,57 @@ describe('strict narrative JUDGE contract', () => {
     };
 
     expect(stage({})).toBe('TRANSPORT_SCHEMA_VALIDATION');
-    expect(stage({ ...base, qualityContextFingerprint: 'f'.repeat(64) })).toBe('CONTEXT_BINDING');
-    expect(stage({ ...base, narrativeFingerprint: 'e'.repeat(64) })).toBe('CONTEXT_BINDING');
-    expect(stage({ ...base, dimensions: base.dimensions.slice(0, 7) })).toBe('DIMENSION_BINDING');
-    expect(
-      stage({
-        ...base,
-        dimensions: base.dimensions.map((result, index) =>
-          index === 7 ? { ...result, dimension: 'FACTUAL_ENTAILMENT' } : result,
-        ),
-      }),
-    ).toBe('DIMENSION_BINDING');
-
-    const factualFailure = failDimension(base, 'FACTUAL_ENTAILMENT');
+    expect(stage({ ...base, qualityContextFingerprint: 'f'.repeat(64) })).toBe(
+      'TRANSPORT_SCHEMA_VALIDATION',
+    );
+    expect(stage({ ...base, dimensions: [] })).toBe('TRANSPORT_SCHEMA_VALIDATION');
     const finding = {
+      dimension: 'FACTUAL_ENTAILMENT' as const,
       reasonCode: 'UNSUPPORTED_CLAIM' as const,
       severity: 'MAJOR' as const,
       blockSequences: [1],
       factIds: [quality.modelView.facts[0]!.factId],
     };
-    expect(stage({ ...factualFailure, findings: [{ ...finding, severity: 'CRITICAL' }] })).toBe(
-      'FINDING_BINDING',
-    );
     expect(
       stage({
-        ...factualFailure,
+        findings: [{ ...finding, dimension: 'REFERENCE_RELEVANCE' }],
+      }),
+    ).toBe('DIMENSION_BINDING');
+    expect(stage({ findings: [{ ...finding, severity: 'CRITICAL' }] })).toBe('FINDING_BINDING');
+    expect(
+      stage({
         findings: [{ ...finding, factIds: [`fact_${'f'.repeat(64)}`] }],
       }),
     ).toBe('FINDING_BINDING');
-    expect(stage({ ...factualFailure, findings: [{ ...finding, blockSequences: [2] }] })).toBe(
-      'FINDING_BINDING',
-    );
-    expect(stage({ ...factualFailure, findings: [] })).toBe('FINDING_BINDING');
-
-    expect(stage({ ...factualFailure, findings: [{ ...finding, severity: 'WARNING' }] })).toBe(
+    expect(stage({ findings: [{ ...finding, blockSequences: [2] }] })).toBe('FINDING_BINDING');
+    expect(stage({ findings: [{ ...finding, severity: 'WARNING' }] })).toBe(
       'TRANSPORT_SCHEMA_VALIDATION',
     );
-    expect(
-      stage({ ...factualFailure, findings: [{ ...finding, factIds: ['fact_invalid'] }] }),
-    ).toBe('TRANSPORT_SCHEMA_VALIDATION');
+    expect(stage({ findings: [{ ...finding, factIds: ['fact_invalid'] }] })).toBe(
+      'TRANSPORT_SCHEMA_VALIDATION',
+    );
+
+    const bound = validateNarrativeJudgeOutput(base, quality);
+    expect(bound.success).toBe(true);
+    if (!bound.success) throw new Error('Expected local JUDGE binding.');
+    const contextFailure = validateNarrativeJudgeContextBinding(
+      { ...bound.output, qualityContextFingerprint: 'f'.repeat(64) },
+      quality,
+    );
+    expect(contextFailure).toEqual({
+      success: false,
+      validationFailureStage: 'CONTEXT_BINDING',
+    });
+    const dimensionFailure = validateNarrativeJudgeDimensionBinding({
+      ...bound.output,
+      dimensions: bound.output.dimensions.map((result, index) =>
+        index === 0 ? { ...result, status: 'FAIL' as const } : result,
+      ),
+    });
+    expect(dimensionFailure).toEqual({
+      success: false,
+      validationFailureStage: 'DIMENSION_BINDING',
+    });
   });
 
   it.each([
@@ -924,7 +1224,7 @@ describe('strict narrative JUDGE contract', () => {
         parseNarrativeJudgeOutput(
           {
             ...output,
-            findings: [{ reasonCode, severity, blockSequences: [1], factIds: [] }],
+            findings: [{ dimension, reasonCode, severity, blockSequences: [1], factIds: [] }],
           },
           quality,
         ),
@@ -982,6 +1282,7 @@ describe('strict narrative JUDGE contract', () => {
     const quality = qualityContext();
     const factId = quality.modelView.facts[0]!.factId;
     const baseFinding: Record<string, unknown> = {
+      dimension: 'FACTUAL_ENTAILMENT',
       reasonCode: 'UNSUPPORTED_CLAIM',
       severity: 'MAJOR',
       blockSequences: [1],
@@ -1048,6 +1349,7 @@ describe('code-owned narrative publication policy', () => {
           ...allPass,
           findings: [
             {
+              dimension: 'FACTUAL_ENTAILMENT',
               reasonCode: 'UNSUPPORTED_CLAIM',
               severity,
               blockSequences: [1],

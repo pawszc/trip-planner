@@ -1,5 +1,5 @@
 import { loadNarrativeQualityDataset, type NarrativeQualityCase } from '../../srv/evals/dataset.ts';
-import { resolveSyntheticNarrativeQualityFixture } from '../../srv/evals/synthetic-fixtures.ts';
+import { resolveSyntheticNarrativeQualityFixture } from '../../srv/evals/synthetic-fixtures-v2.ts';
 import type { EndToEndCaseOutcome, SemanticCaseOutcome } from '../../srv/evals/metrics.ts';
 import { NARRATIVE_EVAL_CONTRACT_VERSIONS } from '../../srv/evals/report.ts';
 import {
@@ -34,6 +34,8 @@ export function passingEndToEndOutcome(caseId: string): EndToEndCaseOutcome {
     generatedSchemaValid: true,
     exactReferencesValid: true,
     actualDecision: 'PUBLISH',
+    actualFailedDimensions: [],
+    actualReasonCodes: [],
     judgeStructuredOutputValid: true,
     requiredPropertyCatalogVersion: NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION,
     requiredPropertyResults: authored.requiredProperties.map((propertyId) => ({

@@ -24,6 +24,10 @@ import type {
 } from '../contracts.ts';
 import { AiError, createMissingCredentialsError, normalizeProviderFailure } from '../errors.ts';
 import type { ProviderFailureMetadata } from '../errors.ts';
+import {
+  parseAiFailureExecutionEvidence,
+  type AiFailureExecutionEvidence,
+} from '../failure-execution-evidence.ts';
 
 const CREDENTIAL_ENVIRONMENT_VARIABLE = 'ANTHROPIC_API_KEY';
 
@@ -216,6 +220,35 @@ function incompleteOutputMessage(stopReason: StopReason | null): string {
   return 'Anthropic structured output did not finish with end_turn.';
 }
 
+function completedExecutionEvidence(
+  response: AnthropicStructuredResponse,
+  configuredModel: string,
+  latencyMs: number,
+  validationFailureStage?: AiFailureExecutionEvidence['validationFailureStage'],
+): AiFailureExecutionEvidence {
+  return parseAiFailureExecutionEvidence({
+    provider: AiProvider.ANTHROPIC,
+    configuredModel,
+    providerCallAttempted: true,
+    ...(validationFailureStage === undefined ? {} : { validationFailureStage }),
+    responseModel: response.model,
+    providerResponseStatus: 'COMPLETED',
+    ...(response.providerRequestId === undefined
+      ? {}
+      : { providerRequestId: response.providerRequestId }),
+    usage: {
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      totalTokens: response.usage.totalTokens,
+      cacheReadTokens: response.usage.cacheReadTokens ?? 0,
+      cacheWriteTokens: response.usage.cacheWriteTokens ?? 0,
+      reasoningTokens: response.usage.reasoningTokens ?? 0,
+    },
+    attempts: response.attempts,
+    latencyMs,
+  });
+}
+
 export class AnthropicMessagesAdapter implements StructuredAiAdapter {
   readonly provider = AiProvider.ANTHROPIC;
   private readonly config: AiConfig;
@@ -290,6 +323,7 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
         thinking: 'disabled',
         tools: [],
       });
+      const latencyMs = Math.max(0, Math.round(this.now() - startedAt));
 
       const stopReason = normalizeStopReason(response.stopReason);
       if (stopReason === 'refusal') {
@@ -339,6 +373,12 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
         throw new AiError('INVALID_STRUCTURED_OUTPUT', 'Anthropic output was not valid JSON.', {
           provider: this.provider,
           model: profile.model,
+          executionEvidence: completedExecutionEvidence(
+            response,
+            profile.model,
+            latencyMs,
+            'RESPONSE_JSON_PARSE',
+          ),
         });
       }
       const locallyValidated = validateStructuredAiOutput(request, parsed);
@@ -350,6 +390,12 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
             provider: this.provider,
             model: profile.model,
             details: { validationFailureStage: locallyValidated.validationFailureStage },
+            executionEvidence: completedExecutionEvidence(
+              response,
+              profile.model,
+              latencyMs,
+              locallyValidated.validationFailureStage,
+            ),
           },
         );
       }
@@ -371,7 +417,7 @@ export class AnthropicMessagesAdapter implements StructuredAiAdapter {
         schemaVersion: request.schemaVersion,
         inputFingerprint,
         usage: response.usage,
-        latencyMs: Math.max(0, Math.round(this.now() - startedAt)),
+        latencyMs,
         attempts: response.attempts,
         refusal: { refused: false },
         ...(response.providerRequestId === undefined

@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   AiTaskType,
+  validateBoundStructuredAiOutput,
   validateStructuredAiOutput,
   type StructuredAiRequest,
 } from '../../srv/ai/contracts.ts';
 
 function request(
   validateOutput: StructuredAiRequest<{ ok: true }>['validateOutput'],
+  validateBoundOutput?: StructuredAiRequest<{ ok: true }>['validateBoundOutput'],
 ): StructuredAiRequest<{ ok: true }> {
   return {
     taskType: AiTaskType.JUDGE,
@@ -18,6 +20,7 @@ function request(
     input: {},
     outputSchema: z.object({ ok: z.literal(true) }).strict(),
     ...(validateOutput === undefined ? {} : { validateOutput }),
+    ...(validateBoundOutput === undefined ? {} : { validateBoundOutput }),
   };
 }
 
@@ -53,6 +56,30 @@ describe('structured AI output validation composition', () => {
     });
   });
 
+  it('separates provider transport binding from the gateway final-output backstop', () => {
+    const findingsOnlyTransport = {
+      ...request(() => ({ success: true, output: { ok: true } })),
+      providerOutputSchema: z.object({ findings: z.array(z.never()) }).strict(),
+    };
+
+    expect(validateStructuredAiOutput(findingsOnlyTransport, { findings: [] })).toEqual({
+      success: true,
+      output: { ok: true },
+    });
+    expect(validateStructuredAiOutput(findingsOnlyTransport, { ok: true })).toEqual({
+      success: false,
+      validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+    });
+    expect(validateBoundStructuredAiOutput(findingsOnlyTransport, { ok: true })).toEqual({
+      success: true,
+      output: { ok: true },
+    });
+    expect(validateBoundStructuredAiOutput(findingsOnlyTransport, { findings: [] })).toEqual({
+      success: false,
+      validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION',
+    });
+  });
+
   it('preserves a controlled staged classification when both validators reject', () => {
     const contextFailure = request(() => ({
       success: false,
@@ -61,6 +88,24 @@ describe('structured AI output validation composition', () => {
     expect(validateStructuredAiOutput(contextFailure, { ok: true })).toEqual({
       success: false,
       validationFailureStage: 'CONTEXT_BINDING',
+    });
+  });
+
+  it('preserves a request-local bound-output classification at the gateway backstop', () => {
+    let observedInput: unknown;
+    const finalizationFailure = request(undefined, (_output, requestInput) => {
+      observedInput = requestInput;
+      return { success: false, validationFailureStage: 'NARRATIVE_FINALIZATION' };
+    });
+
+    expect(validateBoundStructuredAiOutput(finalizationFailure, { ok: true })).toEqual({
+      success: false,
+      validationFailureStage: 'NARRATIVE_FINALIZATION',
+    });
+    expect(observedInput).toEqual(finalizationFailure.input);
+    expect(validateStructuredAiOutput(finalizationFailure, { ok: true })).toEqual({
+      success: true,
+      output: { ok: true },
     });
   });
 });

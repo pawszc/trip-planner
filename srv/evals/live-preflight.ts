@@ -27,7 +27,7 @@ import {
 } from './live-plan.ts';
 import { formatUsdMicrosDecimal, sumUsdMicros, type AiPriceSnapshot } from './price-snapshot.ts';
 import { NARRATIVE_EVAL_CONTRACT_VERSIONS } from './report.ts';
-import { resolveSyntheticNarrativeQualityFixture } from './synthetic-fixtures.ts';
+import { resolveSyntheticNarrativeQualityFixture } from './synthetic-fixtures-v2.ts';
 
 export interface NarrativeLiveEvalProfileCostCeiling {
   readonly provider: 'OPENAI' | 'ANTHROPIC';

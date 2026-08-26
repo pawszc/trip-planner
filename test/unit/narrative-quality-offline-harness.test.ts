@@ -58,6 +58,8 @@ function inMemoryAdapter(log: string[] = []): OfflineNarrativeEvalAdapter {
         generatedSchemaValid: result.generatedSchemaValid,
         exactReferencesValid: result.exactReferencesValid,
         actualDecision: result.actualDecision,
+        actualFailedDimensions: result.actualFailedDimensions,
+        actualReasonCodes: result.actualReasonCodes,
         judgeStructuredOutputValid: result.judgeStructuredOutputValid,
         requiredPropertyCatalogVersion: result.requiredPropertyCatalogVersion,
         requiredPropertyResults: result.requiredPropertyResults,
@@ -181,12 +183,42 @@ describe('deterministic offline narrative eval harness', () => {
     expect(result.report.semantic.gates.passed).toBe(true);
     expect(result.report.stability.gates.passed).toBe(true);
     expect(result.report.endToEnd.gates.passed).toBe(true);
+    expect(result.report.reportVersion).toBe('narrative-quality-eval-report-v3');
+    expect(
+      result.report.endToEnd.cases.map(
+        ({ actualFailedDimensions, actualReasonCodes, judgeStructuredOutputValid }) => ({
+          actualFailedDimensions,
+          actualReasonCodes,
+          judgeStructuredOutputValid,
+        }),
+      ),
+    ).toEqual(
+      Array.from({ length: 4 }, () => ({
+        actualFailedDimensions: [],
+        actualReasonCodes: [],
+        judgeStructuredOutputValid: true,
+      })),
+    );
     expect(result.report.operationalSummary).toMatchObject({
       logicalCalls: 0,
       providerAttempts: 0,
       estimatedCostUsdMicros: 0,
     });
     verifyEvalReportFingerprint(result.report);
+    const fingerprintTamperedReport = {
+      ...result.report,
+      endToEnd: {
+        ...result.report.endToEnd,
+        cases: result.report.endToEnd.cases.map((row) =>
+          row.caseId === 'E01'
+            ? { ...row, actualReasonCodes: ['UNSUPPORTED_CLAIM'] as const }
+            : row,
+        ),
+      },
+    };
+    expect(() => verifyEvalReportFingerprint(fingerprintTamperedReport)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }),
+    );
   });
 
   it('produces byte-stable privacy-safe reports and never includes authored narrative content', async () => {
@@ -228,6 +260,107 @@ describe('deterministic offline narrative eval harness', () => {
     expect(serialized).not.toContain('rawOutput');
   });
 
+  it('canonically reports all four E2E decision and structured-output paths', async () => {
+    const dataset = frozenNarrativeQualityDataset();
+    const adapter = inMemoryAdapter();
+    adapter.evaluateEndToEndCase = async (qualityCase) => {
+      const outcome = passingEndToEndOutcome(qualityCase.authored.id);
+      if (qualityCase.authored.id === 'E02') {
+        return {
+          ...outcome,
+          actualDecision: 'REJECT' as const,
+          actualFailedDimensions: ['FACTUAL_ENTAILMENT'] as const,
+          actualReasonCodes: ['UNSUPPORTED_CLAIM'] as const,
+          publicationBundleLinkageValidInMemory: false,
+        };
+      }
+      if (qualityCase.authored.id === 'E03') {
+        return {
+          ...outcome,
+          actualDecision: 'REJECT' as const,
+          actualFailedDimensions: [],
+          actualReasonCodes: [],
+          judgeStructuredOutputValid: false,
+          judgeAuditSucceeded: false,
+          publicationBundleLinkageValidInMemory: false,
+        };
+      }
+      if (qualityCase.authored.id === 'E04') {
+        return {
+          ...outcome,
+          judgeLogicalCalls: 0,
+          actualDecision: 'REJECT' as const,
+          actualFailedDimensions: ['SAFETY_INSTRUCTION_INTEGRITY'] as const,
+          actualReasonCodes: ['UNTRUSTED_CONTENT_EXPOSED'] as const,
+          judgeStructuredOutputValid: null,
+          judgeAuditSucceeded: false,
+          publicationBundleLinkageValidInMemory: false,
+        };
+      }
+      return outcome;
+    };
+
+    const { report } = await runDeterministicContractReplay({
+      resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
+      versions: evalContractVersions,
+      adapter,
+    });
+
+    expect(
+      report.endToEnd.cases.map(
+        ({
+          caseId,
+          actualDecision,
+          actualFailedDimensions,
+          actualReasonCodes,
+          judgeStructuredOutputValid,
+          judgeLogicalCalls,
+        }) => ({
+          caseId,
+          actualDecision,
+          actualFailedDimensions,
+          actualReasonCodes,
+          judgeStructuredOutputValid,
+          judgeLogicalCalls,
+        }),
+      ),
+    ).toEqual([
+      {
+        caseId: 'E01',
+        actualDecision: 'PUBLISH',
+        actualFailedDimensions: [],
+        actualReasonCodes: [],
+        judgeStructuredOutputValid: true,
+        judgeLogicalCalls: 1,
+      },
+      {
+        caseId: 'E02',
+        actualDecision: 'REJECT',
+        actualFailedDimensions: ['FACTUAL_ENTAILMENT'],
+        actualReasonCodes: ['UNSUPPORTED_CLAIM'],
+        judgeStructuredOutputValid: true,
+        judgeLogicalCalls: 1,
+      },
+      {
+        caseId: 'E03',
+        actualDecision: 'REJECT',
+        actualFailedDimensions: [],
+        actualReasonCodes: [],
+        judgeStructuredOutputValid: false,
+        judgeLogicalCalls: 1,
+      },
+      {
+        caseId: 'E04',
+        actualDecision: 'REJECT',
+        actualFailedDimensions: ['SAFETY_INSTRUCTION_INTEGRITY'],
+        actualReasonCodes: ['UNTRUSTED_CONTENT_EXPOSED'],
+        judgeStructuredOutputValid: null,
+        judgeLogicalCalls: 0,
+      },
+    ]);
+    verifyEvalReportFingerprint(report);
+  });
+
   it('validates an exact passing baseline manifest and rejects any model/profile drift', async () => {
     const dataset = frozenNarrativeQualityDataset();
     const { report } = await runDeterministicContractReplay({
@@ -240,8 +373,8 @@ describe('deterministic offline narrative eval harness', () => {
       manifestVersion: NARRATIVE_QUALITY_BASELINE_MANIFEST_VERSION,
       baselineId: 'narrative-quality-baseline-test-v1',
       accepted: true,
-      reportVersion: 'narrative-quality-eval-report-v2',
-      datasetVersion: 'narrative-quality-v1',
+      reportVersion: 'narrative-quality-eval-report-v3',
+      datasetVersion: report.datasetVersion,
       datasetFingerprintBasisVersion: 'parsed-canonical-json-sha256-v1',
       datasetFingerprint: report.datasetFingerprint,
       dimensionMacroF1ConventionVersion: 'dimension-fail-positive-empty-agreement-one-v1',
@@ -271,11 +404,103 @@ describe('deterministic offline narrative eval harness', () => {
       baselineId: manifest.baselineId,
       reportFingerprint: report.reportFingerprint,
     });
+    expect(manifest.manifestVersion).toBe('narrative-quality-baseline-manifest-v3');
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, manifestVersion: 'narrative-quality-baseline-manifest-v2' },
+        report,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
     const { reportFingerprint: currentReportFingerprint, ...currentReportBasis } = report;
     expect(currentReportFingerprint).toBe(manifest.reportFingerprint);
+
+    const rejectingEndToEndAdapter = inMemoryAdapter();
+    rejectingEndToEndAdapter.evaluateEndToEndCase = async (qualityCase) => {
+      const outcome = passingEndToEndOutcome(qualityCase.authored.id);
+      return qualityCase.authored.id === 'E01'
+        ? {
+            ...outcome,
+            actualDecision: 'REJECT' as const,
+            actualFailedDimensions: ['FACTUAL_ENTAILMENT'] as const,
+            actualReasonCodes: ['UNSUPPORTED_CLAIM'] as const,
+            publicationBundleLinkageValidInMemory: false,
+          }
+        : outcome;
+    };
+    const { report: validRejectReport } = await runDeterministicContractReplay({
+      resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
+      versions: evalContractVersions,
+      adapter: rejectingEndToEndAdapter,
+      operations: baselineOperations,
+    });
+    expect(validRejectReport.endToEnd.gates.passed).toBe(true);
+    expect(validRejectReport.endToEnd.cases[0]).toMatchObject({
+      actualDecision: 'REJECT',
+      actualFailedDimensions: ['FACTUAL_ENTAILMENT'],
+      actualReasonCodes: ['UNSUPPORTED_CLAIM'],
+      judgeStructuredOutputValid: true,
+    });
+    expect(
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, reportFingerprint: validRejectReport.reportFingerprint },
+        report: validRejectReport,
+      }),
+    ).toMatchObject({ reportFingerprint: validRejectReport.reportFingerprint });
+
+    const { reportFingerprint: validRejectFingerprint, ...validRejectBasis } = validRejectReport;
+    expect(validRejectFingerprint).toBeTruthy();
+    const staleEndToEndEvidenceBasis = {
+      ...validRejectBasis,
+      endToEnd: {
+        ...validRejectReport.endToEnd,
+        cases: validRejectReport.endToEnd.cases.map((row) =>
+          row.caseId === 'E01' ? { ...row, actualReasonCodes: [] } : row,
+        ),
+      },
+    };
+    const staleEndToEndEvidenceReport = {
+      ...staleEndToEndEvidenceBasis,
+      reportFingerprint: createInputFingerprint(staleEndToEndEvidenceBasis as unknown as JsonValue),
+    } as NarrativeEvalReport;
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: {
+          ...manifest,
+          reportFingerprint: staleEndToEndEvidenceReport.reportFingerprint,
+        },
+        report: staleEndToEndEvidenceReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
+
+    const failingEndToEndAdapter = inMemoryAdapter();
+    failingEndToEndAdapter.evaluateEndToEndCase = async (qualityCase) => {
+      const outcome = passingEndToEndOutcome(qualityCase.authored.id);
+      return qualityCase.authored.id === 'E01' || qualityCase.authored.id === 'E02'
+        ? {
+            ...outcome,
+            actualDecision: 'REJECT' as const,
+            actualFailedDimensions: ['FACTUAL_ENTAILMENT'] as const,
+            actualReasonCodes: ['UNSUPPORTED_CLAIM'] as const,
+            publicationBundleLinkageValidInMemory: false,
+          }
+        : outcome;
+    };
+    const { report: nonPassingReport } = await runDeterministicContractReplay({
+      resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
+      versions: evalContractVersions,
+      adapter: failingEndToEndAdapter,
+      operations: baselineOperations,
+    });
+    expect(nonPassingReport.endToEnd.gates.passed).toBe(false);
+    expect(() =>
+      validateNarrativeQualityBaseline({
+        manifest: { ...manifest, reportFingerprint: nonPassingReport.reportFingerprint },
+        report: nonPassingReport,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_EVAL_INPUT' }));
     const staleReportBasis = {
       ...currentReportBasis,
-      reportVersion: 'narrative-quality-eval-report-v1',
+      reportVersion: 'narrative-quality-eval-report-v2',
     };
     const staleReport = {
       ...staleReportBasis,
@@ -493,6 +718,38 @@ describe('deterministic offline narrative eval harness', () => {
         versions: evalContractVersions,
         adapter: inMemoryAdapter(),
         operations: [unsafeOperation],
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_EVAL_INPUT' });
+  });
+
+  it('rejects raw or non-catalog E2E evidence before a report can be produced', async () => {
+    const dataset = frozenNarrativeQualityDataset();
+    const rawAdapter = inMemoryAdapter();
+    rawAdapter.evaluateEndToEndCase = async (qualityCase) =>
+      ({
+        ...passingEndToEndOutcome(qualityCase.authored.id),
+        rawNarrative: dataset.cases[0]!.candidate.blocks[0]!.text,
+      }) as never;
+
+    await expect(
+      runDeterministicContractReplay({
+        resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
+        versions: evalContractVersions,
+        adapter: rawAdapter,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_EVAL_INPUT' });
+
+    const nonCatalogAdapter = inMemoryAdapter();
+    nonCatalogAdapter.evaluateEndToEndCase = async (qualityCase) =>
+      ({
+        ...passingEndToEndOutcome(qualityCase.authored.id),
+        actualReasonCodes: ['RAW_PROVIDER_REPORT_SENTINEL'],
+      }) as never;
+    await expect(
+      runDeterministicContractReplay({
+        resolvedDataset: resolveNarrativeQualityDataset(dataset, syntheticGroundedFixtureResolver),
+        versions: evalContractVersions,
+        adapter: nonCatalogAdapter,
       }),
     ).rejects.toMatchObject({ code: 'INVALID_EVAL_INPUT' });
   });

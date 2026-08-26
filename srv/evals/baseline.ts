@@ -29,7 +29,10 @@ import {
 } from './price-snapshot.ts';
 import { NARRATIVE_E2E_REQUIRED_PROPERTY_CATALOG_VERSION } from './required-properties.ts';
 
-export const NARRATIVE_QUALITY_BASELINE_MANIFEST_VERSION = 'narrative-quality-baseline-manifest-v2';
+/** Historical identifier retained for readers of already-produced v2 evidence. */
+export const NARRATIVE_QUALITY_BASELINE_MANIFEST_VERSION_V2 =
+  'narrative-quality-baseline-manifest-v2';
+export const NARRATIVE_QUALITY_BASELINE_MANIFEST_VERSION = 'narrative-quality-baseline-manifest-v3';
 
 const fingerprint = z.string().regex(/^[0-9a-f]{64}$/);
 const safeIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/);
@@ -228,6 +231,8 @@ function rebuildReportFromAllowlistedEvidence(report: NarrativeEvalReport): Narr
       generatedSchemaValid: row.generatedSchemaValid,
       exactReferencesValid: row.exactReferencesValid,
       actualDecision: row.actualDecision,
+      actualFailedDimensions: row.actualFailedDimensions,
+      actualReasonCodes: row.actualReasonCodes,
       judgeStructuredOutputValid: row.judgeStructuredOutputValid,
       requiredPropertyCatalogVersion: report.endToEnd.requiredPropertyCatalogVersion,
       requiredPropertyResults: row.requiredPropertyResults,

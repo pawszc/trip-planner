@@ -8,6 +8,7 @@ import type {
 } from '../domain/candidate.ts';
 import { calculateBudgetBreakdown, estimateLocalCosts } from './budget.ts';
 import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.ts';
+import { calculateEffectiveTimeAtDestinationMinutes } from './effective-time.ts';
 
 export interface CandidateBuilderInput {
   context: PlanningContext;
@@ -27,15 +28,6 @@ export interface CandidateBuilderResult {
 
 function stableBy<T>(items: readonly T[], key: (item: T) => string): readonly T[] {
   return [...items].sort((left, right) => key(left).localeCompare(key(right), 'en'));
-}
-
-function effectiveMinutes(transport: TransportOption): number {
-  const arrival = Date.parse(transport.outbound.arrivalAt);
-  const departure = Date.parse(transport.return.departureAt);
-  if (!Number.isFinite(arrival) || !Number.isFinite(departure) || departure < arrival) {
-    return 0;
-  }
-  return Math.floor((departure - arrival) / 60_000);
 }
 
 export function buildCandidates(input: CandidateBuilderInput): CandidateBuilderResult {
@@ -84,7 +76,10 @@ export function buildCandidates(input: CandidateBuilderInput): CandidateBuilderR
           stay,
           places: destinationPlaces,
           localCostEstimates,
-          effectiveTimeAtDestinationMinutes: effectiveMinutes(transport),
+          effectiveTimeAtDestinationMinutes: calculateEffectiveTimeAtDestinationMinutes(
+            transport.outbound.arrivalAt,
+            transport.return.departureAt,
+          ),
         };
         candidates.push({
           ...candidateBase,

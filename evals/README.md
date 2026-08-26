@@ -14,7 +14,7 @@ twardych reguł, persistence, arytmetyki domenowej ani osobnego live baseline.
 
 Standardowy `verify` wykonuje przed replayem `npm run eval:schema:check`. Komenda generuje
 JSON Schema z runtime Zod i porównuje jego canonical form oraz fingerprint z frozen
-`schemas/narrative-quality-v1.schema.json`; nie aktualizuje golden artifact automatycznie.
+`schemas/narrative-quality-v2.schema.json`; nie aktualizuje golden artifact automatycznie.
 
 Live E2E wykonuje zamknięty, wersjonowany katalog deterministic `requiredProperties` na
 exact candidate/context/model view/constraint snapshot. Te oracle nie korzystają z decyzji,
@@ -23,17 +23,26 @@ dowodem przejścia. Raport zawiera tylko allowlistowane property IDs, wynik i ko
 failure code. Pole `publicationBundleLinkageValidInMemory` dowodzi wyłącznie spójności bundle
 w pamięci; realny zapis i odczyt jest osobno testowany na produkcyjnych writerach CAP/SQLite.
 
+Aktualny dataset/fixture v2 zachowuje tracked v1 artifacts. P03 ma jedną canonical wartość
+4665 minut, wyliczaną wspólnym helperem produkcyjnym z exact synthetic timestamps. E2E
+`GENERATE` używa `narrative-generation-view-v1` z samymi narratable `KNOWN` facts i provider
+transportu `{blocks}` (maksymalnie 6). Kod wstrzykuje context fingerprint i dokłada exact
+provenance oraz `UNKNOWN`/`MISSING` blocks do finalnego limitu 8. JUDGE schema v3 zwraca
+wyłącznie closed findings; code-owned binder wyprowadza fingerprinty i wszystkie statuses.
+Report v3 przechowuje tylko zamknięte, privacy-safe E2E arrays, a manifest v3 odbudowuje je
+kanonicznie. W repozytorium nie ma accepted manifestu v3.
+
 Finalny live baseline używa wyłącznie danych syntetycznych, jest poza CI i wymaga osobnej
 zgody, `AI_LIVE_EVAL_ENABLED=true`, przejścia preflightu oraz limitów 48 logical calls, 56
-provider attempts i USD 3.00. Plan v1 ma dokładnie 46 calls i wymaga
+provider attempts i USD 3.00. Plan v2 ma dokładnie 46 calls i wymaga
 `AI_MAX_RETRIES=0`. `npm run eval:live:preflight` jest osobną, credential-free i
 network-free kalkulacją tego samego planu oraz kosztu. Runtime scenario
 `SCENARIO_RUNTIME_LUNA` używa `OPENAI / gpt-5.6-luna / low / 2048`, przechodzi cap z ceiling
-1,185,201 USD micros (401,101 `GENERATE`, 784,100 `JUDGE`) i ma kodowy headroom 1,814,799
+1,171,326 USD micros (346,331 `GENERATE`, 824,995 `JUDGE`) i ma kodowy headroom 1,828,674
 micros. `SCENARIO_COMPARISON_TERRA` używa tego samego workloadu i ceiling 2048, ale kosztuje
-8,241,209 micros i pozostaje wyłącznie comparison scenario ponad capem, bez semantyki
+8,595,433 micros i pozostaje wyłącznie comparison scenario ponad capem, bez semantyki
 fallbacku. Workload fingerprint obu exact workloadów to
-`2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b`.
+`fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947`.
 
 Pierwszy osobno autoryzowany run z 2026-08-23 na source
 `7af918ded8ee7b30d3fdabd92d705c2dd34e7c49` zatrzymał się fail-closed na 18/46 (`R06`,
@@ -62,17 +71,27 @@ niepełny, a zero known attempts / zero known cost było wyłącznie settled sub
 danych i bez rerunu, smoke, diagnostycznego requestu, retry, resume, continuation lub fallbacku.
 
 Retry policy `zero-retry-with-terminal-failure-accounting-v2` zachowuje zero retry. JUDGE
-schema v2 ma statyczny provider transport: względem exact P01 v1 zmienia wyłącznie
-`dimensions.minItems` z 8 na 1 oraz `blockSequences.maxItems` i `items.maximum` z aktualnej
-liczby bloków 1 na frozen globalne maksimum 8. Exact fingerprints, osiem wymiarów i finding
-cross-fields są wiązane lokalnie przez jawne etapy. Execution v2 i failure accounting v3
+schema v3 ma statyczny provider transport `{findings}` bez fingerprintów i tablicy statuses.
+Exact fingerprints i osiem wymiarów są wstrzykiwane lub wyprowadzane lokalnie, a finding
+cross-fields pozostają związane z exact context. Execution v3 i failure accounting v4
 pozwalają kontynuować wyłącznie kompletnie rozliczony post-response invalid `JUDGE` z exact
-durable `FAILED` linkage. Primary, repeat i E2E mają osobne validity gates; report v2 może
-być `FAIL`, natomiast manifest v2 nadal wymaga pełnego `PASS` i wyłącznie poprawnych
-`SUCCEEDED` operacji. Validator manifestu odbudowuje kanonicznie cały report z frozen datasetu
-i allowlistowanych primary/repeat/E2E/operation rows; nie ufa zapisanym metrics, gates, totals
-ani kosztowi i odrzuca dodatkowe pola. Privacy-safe failure przenosi tylko zamknięte metadata,
-bez raw contentu.
+durable `FAILED` linkage. Primary, repeat i E2E mają osobne validity gates.
+Raw provider transport niespełniający strict schema ma `TRANSPORT_SCHEMA_VALIDATION`; mismatch
+exact request/generation view/context albo locally injected binding ma `CONTEXT_BINDING`; poprawny
+transport odrzucony przez deterministic narrative finalization/policy ma
+`NARRATIVE_FINALIZATION`. Te allowlistowane stages nie przenoszą narracji, provider outputu,
+promptu, kontekstu, URL-a, source value, PII ani sekretu.
+`narrative-quality-eval-report-v3` dodaje do każdego wiersza E2E wyłącznie sortowane, unikalne,
+zamknięte `actualFailedDimensions` i `actualReasonCodes`: poprawny `PUBLISH` oraz niepoprawny
+structured output mają puste listy, poprawny `REJECT` zachowuje exact lokalnie zwalidowane
+findings, a deterministic `PRECHECK` zachowuje wyłącznie code-owned powody i wymiary bez calla
+`JUDGE`. Historyczny identyfikator report v2 pozostaje jawny; nie powstał z niego accepted
+artifact. Manifest v3 nadal wymaga pełnego `PASS` i wyłącznie poprawnych `SUCCEEDED` operacji.
+Validator manifestu odbudowuje kanonicznie cały report, łącznie z nowymi listami E2E, z frozen
+datasetu i allowlistowanych primary/repeat/E2E/operation rows; nie ufa zapisanym metrics, gates,
+totals ani kosztowi i odrzuca dodatkowe pola. Historyczny identyfikator manifest v2 również
+pozostaje jawny, a ten offline hardening nie tworzy accepted manifestu. Privacy-safe failure
+przenosi tylko zamknięte metadata, bez raw contentu.
 Live `PREFLIGHT_PASSED` emituje workload fingerprint, verified pricing, exact profile i wersje
 plan/execution/accounting/cost/retry ceiling. Ten offline fix i wszystkie jego testy wykonują
 zero provider calls, kosztują USD 0, nie autoryzują kolejnego baseline i utrzymują Fazę 3B3 w

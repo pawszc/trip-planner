@@ -24,11 +24,10 @@ import type {
 import type { AiRunRecorder, AiRunTelemetryEvent } from '../../srv/ai/telemetry.ts';
 import { NARRATIVE_LIVE_BASELINE_OPERATION_PLAN } from '../../srv/evals/baseline.ts';
 import {
-  NARRATIVE_JUDGE_DIMENSIONS,
+  NARRATIVE_JUDGE_REASON_DIMENSIONS,
   type NarrativeJudgeOutput,
 } from '../../srv/narratives/narrative-judge.ts';
-import type { NarrativeModelView } from '../../srv/narratives/narrative-model-view.ts';
-import type { NarrativeQualityContext } from '../../srv/narratives/narrative-quality-context.ts';
+import type { NarrativeGenerationView } from '../../srv/narratives/narrative-generation-view.ts';
 import type { OptionNarrativeOutput } from '../../srv/narratives/option-narrative.ts';
 import { loadNarrativeQualityDataset } from '../../srv/evals/dataset.ts';
 import {
@@ -87,28 +86,23 @@ function configuredPriceSnapshot(config: AiConfig): AiPriceSnapshot {
 }
 
 function fakeGenerateOutput(
-  descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
+  descriptor: NarrativeLiveEvalCallDescriptor<OptionNarrativeOutput>,
 ): OptionNarrativeOutput {
-  const view = descriptor.request.input as NarrativeModelView;
-  const statusFacts = view.facts.filter(
-    ({ status }) => status === 'UNKNOWN' || status === 'MISSING',
-  );
-  return {
-    contextFingerprint: view.groundedContextFingerprint,
+  const generationView = descriptor.request.input as NarrativeGenerationView;
+  const providerOutput = {
     blocks: [
       {
-        kind: 'SUMMARY',
-        text:
-          descriptor.caseId === 'E03'
-            ? 'Synthetic fixture: UNKNOWN values remain unknown; MISSING values remain missing.'
-            : 'Synthetic evaluation summary.',
-        factReferences:
-          descriptor.caseId === 'E03'
-            ? statusFacts.map(({ factId }) => factId)
-            : [view.facts[0]!.factId],
+        kind: 'SUMMARY' as const,
+        text: 'Synthetic evaluation summary.',
+        factReferences: [generationView.facts[0]!.factId],
       },
     ],
   };
+  const validation = descriptor.request.validateOutput?.(providerOutput, descriptor.request.input);
+  if (validation === undefined || !validation.success) {
+    throw new Error('The offline GENERATE fixture failed the production request validator.');
+  }
+  return validation.output;
 }
 
 const authoredById = new Map(
@@ -118,24 +112,57 @@ const authoredById = new Map(
 function fakeJudgeOutput(
   descriptor: NarrativeLiveEvalCallDescriptor<unknown>,
 ): NarrativeJudgeOutput {
-  const quality = descriptor.request.input as NarrativeQualityContext;
   const authored =
     descriptor.pass === 'END_TO_END_JUDGE' ? undefined : authoredById.get(descriptor.caseId);
-  const failed = new Set(authored?.expected.failedDimensions ?? []);
-  return {
-    qualityContextFingerprint: quality.fingerprint,
-    narrativeFingerprint: quality.narrativeFingerprint,
-    dimensions: NARRATIVE_JUDGE_DIMENSIONS.map((dimension) => ({
-      dimension,
-      status: failed.has(dimension) ? 'FAIL' : 'PASS',
-    })),
-    findings: (authored?.expected.requiredReasonCodes ?? []).map((reasonCode) => ({
-      reasonCode,
-      severity: authored?.expected.critical ? 'CRITICAL' : 'MAJOR',
-      blockSequences: [1],
-      factIds: [],
-    })),
+  const expectedDimensions = authored?.expected.failedDimensions ?? [];
+  const requiredReasonCodes = authored?.expected.requiredReasonCodes ?? [];
+  const findingPairs: Array<{
+    dimension: (typeof expectedDimensions)[number];
+    reasonCode: (typeof requiredReasonCodes)[number];
+  }> = [];
+  for (const reasonCode of requiredReasonCodes) {
+    const compatible = expectedDimensions.filter((dimension) =>
+      NARRATIVE_JUDGE_REASON_DIMENSIONS[reasonCode].includes(dimension),
+    );
+    const dimension =
+      compatible.find(
+        (candidate) => !findingPairs.some((finding) => finding.dimension === candidate),
+      ) ?? compatible[0];
+    if (dimension === undefined) {
+      throw new Error('The offline JUDGE fixture has no compatible reason mapping.');
+    }
+    findingPairs.push({ dimension, reasonCode });
+  }
+  for (const dimension of expectedDimensions) {
+    if (findingPairs.some((finding) => finding.dimension === dimension)) continue;
+    const reasonCode = requiredReasonCodes.find(
+      (candidate) =>
+        NARRATIVE_JUDGE_REASON_DIMENSIONS[candidate].includes(dimension) &&
+        !findingPairs.some(
+          (finding) => finding.dimension === dimension && finding.reasonCode === candidate,
+        ),
+    );
+    if (reasonCode === undefined) {
+      throw new Error('The offline JUDGE fixture has no finding for an expected dimension.');
+    }
+    findingPairs.push({ dimension, reasonCode });
+  }
+  const providerOutput = {
+    findings: findingPairs.map(({ dimension, reasonCode }) => {
+      return {
+        dimension,
+        reasonCode,
+        severity: authored?.expected.critical ? ('CRITICAL' as const) : ('MAJOR' as const),
+        blockSequences: [1],
+        factIds: [],
+      };
+    }),
   };
+  const validation = descriptor.request.validateOutput?.(providerOutput, descriptor.request.input);
+  if (validation === undefined || !validation.success) {
+    throw new Error('The offline JUDGE fixture failed the production request validator.');
+  }
+  return validation.output as NarrativeJudgeOutput;
 }
 
 function fakeResult<TOutput>(
@@ -216,7 +243,7 @@ class SuccessfulOfflineExecutor implements NarrativeLiveEvalExecutor {
     this.calls.push(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
     const output =
       descriptor.request.taskType === AiTaskType.GENERATE
-        ? fakeGenerateOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>)
+        ? fakeGenerateOutput(descriptor as NarrativeLiveEvalCallDescriptor<OptionNarrativeOutput>)
         : fakeJudgeOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
     return { result: fakeResult(descriptor, output), auditSucceeded: true as const };
   }
@@ -433,7 +460,22 @@ describe('narrative live-eval execution without provider calls', () => {
     expect(result.report.stability.gates.passed).toBe(true);
     expect(result.report.endToEnd.gates.passed).toBe(true);
     expect(result.report.endToEnd.requiredPropertyCatalogVersion).toBe(
-      'narrative-e2e-required-properties-v1',
+      'narrative-e2e-required-properties-v2',
+    );
+    expect(
+      result.report.endToEnd.cases.map(
+        ({ actualFailedDimensions, actualReasonCodes, judgeStructuredOutputValid }) => ({
+          actualFailedDimensions,
+          actualReasonCodes,
+          judgeStructuredOutputValid,
+        }),
+      ),
+    ).toEqual(
+      Array.from({ length: 4 }, () => ({
+        actualFailedDimensions: [],
+        actualReasonCodes: [],
+        judgeStructuredOutputValid: true,
+      })),
     );
     expect(
       result.report.endToEnd.cases.flatMap(({ requiredPropertyResults }) =>
@@ -599,6 +641,8 @@ describe('narrative live-eval execution without provider calls', () => {
     expect(result.endToEndOutcomes[0]).toMatchObject({
       caseId: 'E01',
       actualDecision: 'REJECT',
+      actualFailedDimensions: [],
+      actualReasonCodes: [],
       judgeStructuredOutputValid: false,
       judgeAuditSucceeded: false,
       publicationBundleLinkageValidInMemory: false,
@@ -846,53 +890,97 @@ describe('narrative live-eval execution without provider calls', () => {
     });
   });
 
-  it('fails the E2E gate on an independent property despite an all-PASS JUDGE', async () => {
+  it('fails closed before JUDGE when GENERATE adds an uncited calculation', async () => {
     const config = loadAiConfig(enabledEnvironment);
-    const result = await runNarrativeQualityLiveEvaluation({
-      env: enabledEnvironment,
-      config,
-      priceSnapshot: configuredPriceSnapshot(config),
-      createExecutor: async () => ({
-        async call<TOutput>(descriptor: NarrativeLiveEvalCallDescriptor<TOutput>) {
-          let output: unknown;
-          if (descriptor.request.taskType === AiTaskType.JUDGE) {
-            output = fakeJudgeOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
-          } else if (descriptor.caseId === 'E02') {
-            const view = descriptor.request.input as NarrativeModelView;
-            output = {
-              contextFingerprint: view.groundedContextFingerprint,
-              blocks: [
-                {
-                  kind: 'SUMMARY',
-                  text: 'Synthetic cached offer is currently available.',
-                  factReferences: [view.facts[0]!.factId],
-                },
-              ],
-            };
-          } else {
-            output = fakeGenerateOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
-          }
-          return { result: fakeResult(descriptor, output), auditSucceeded: true as const };
-        },
-      }),
-    });
+    let locallyRejected = false;
+    let failure: unknown;
 
-    const vienna = result.endToEndOutcomes.find(({ caseId }) => caseId === 'E02')!;
-    expect(vienna.actualDecision).toBe('PUBLISH');
-    expect(
-      vienna.requiredPropertyResults.find(({ propertyId }) => propertyId === 'cached-not-live'),
-    ).toEqual({
-      propertyId: 'cached-not-live',
-      passed: false,
-      failureCode: 'CACHED_SOURCE_PRESENTED_AS_LIVE',
+    try {
+      await runNarrativeQualityLiveEvaluation({
+        env: enabledEnvironment,
+        config,
+        priceSnapshot: configuredPriceSnapshot(config),
+        createExecutor: async () => ({
+          async call<TOutput>(descriptor: NarrativeLiveEvalCallDescriptor<TOutput>) {
+            let output: unknown;
+            if (descriptor.request.taskType === AiTaskType.JUDGE) {
+              output = fakeJudgeOutput(descriptor as NarrativeLiveEvalCallDescriptor<unknown>);
+            } else if (descriptor.caseId === 'E01') {
+              const view = descriptor.request.input as NarrativeGenerationView;
+              const budget = view.facts.find(({ key }) => key === 'option.budget.summary');
+              if (budget === undefined) throw new Error('E01 has no provider-visible budget fact.');
+              const validation = descriptor.request.validateOutput?.(
+                {
+                  blocks: [
+                    {
+                      kind: 'SUMMARY',
+                      text: 'Synthetic calculation: 2,403.00 PLN × 2 = 4,806.00 PLN.',
+                      factReferences: [budget.factId],
+                    },
+                  ],
+                },
+                descriptor.request.input,
+              );
+              expect(validation).toEqual({
+                success: false,
+                validationFailureStage: 'NARRATIVE_FINALIZATION',
+              });
+              locallyRejected = true;
+              throw new AiError(
+                'INVALID_STRUCTURED_OUTPUT',
+                'Controlled local GENERATE rejection.',
+                {
+                  provider: descriptor.profile.provider,
+                  model: descriptor.profile.model,
+                  executionEvidence: {
+                    provider: descriptor.profile.provider,
+                    configuredModel: descriptor.profile.model,
+                    providerCallAttempted: true,
+                    validationFailureStage: 'NARRATIVE_FINALIZATION',
+                    responseModel: `${descriptor.profile.model}-response-v1`,
+                    providerResponseStatus: 'COMPLETED',
+                    providerRequestId: 'req_generate_finalization',
+                    usage: {
+                      inputTokens: 100,
+                      outputTokens: 20,
+                      totalTokens: 120,
+                      cacheReadTokens: 0,
+                      cacheWriteTokens: 0,
+                      reasoningTokens: 0,
+                    },
+                    attempts: 1,
+                    latencyMs: 5,
+                  },
+                },
+              );
+            } else {
+              output = fakeGenerateOutput(
+                descriptor as NarrativeLiveEvalCallDescriptor<OptionNarrativeOutput>,
+              );
+            }
+            return { result: fakeResult(descriptor, output), auditSucceeded: true as const };
+          },
+        }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(locallyRejected).toBe(true);
+    expect(failure).toBeInstanceOf(NarrativeLiveEvalExecutionError);
+    const safeFailure = toSafeNarrativeLiveEvalFailure(failure);
+    expect(safeFailure).toMatchObject({
+      status: 'FAILED',
+      reportProduced: false,
+      providerCallAttempted: true,
+      attemptAccountingComplete: true,
+      caseId: 'E01',
+      taskType: 'GENERATE',
+      validationFailureStage: 'NARRATIVE_FINALIZATION',
+      attempts: 1,
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
     });
-    expect(result.report.endToEnd.gates).toEqual({
-      passed: false,
-      failures: ['REQUIRED_PROPERTY_FAILURE'],
-    });
-    const serialized = JSON.stringify(result.report);
-    expect(serialized).toContain('CACHED_SOURCE_PRESENTED_AS_LIVE');
-    expect(serialized).not.toContain('Synthetic cached offer is currently available.');
+    expect(JSON.stringify(safeFailure)).not.toContain('Synthetic calculation');
   });
 
   it('stops after the first thrown provider failure and exposes no partial report', async () => {
@@ -1076,13 +1164,13 @@ describe('narrative live-eval CLI boundary', () => {
     expect(lines).toHaveLength(2);
     expect(JSON.parse(lines[0]!)).toMatchObject({
       status: 'PREFLIGHT_PASSED',
-      planVersion: 'narrative-quality-live-plan-v1',
+      planVersion: 'narrative-quality-live-plan-v2',
       tokenCeilingVersion: 'utf8-wire-bytes-plus-4096-protocol-tokens-v1',
       costCeilingVersion: 'full-ceiling-each-token-class-v1',
       retryPolicyVersion: 'zero-retry-with-terminal-failure-accounting-v2',
-      executionContractVersion: 'narrative-quality-live-execution-v2',
-      failureAccountingVersion: 'post-response-failure-accounting-v3',
-      workloadFingerprint: '2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b',
+      executionContractVersion: 'narrative-quality-live-execution-v3',
+      failureAccountingVersion: 'post-response-failure-accounting-v4',
+      workloadFingerprint: 'fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947',
       plannedLogicalCalls: 46,
       plannedMaximumAttempts: 46,
       plannedMaximumCostUsdMicros: expect.any(Number),

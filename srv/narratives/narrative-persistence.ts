@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { createInputFingerprint, isValidAiRunId } from '../ai/contracts.ts';
+import { canonicalizeJson, createInputFingerprint, isValidAiRunId } from '../ai/contracts.ts';
 import { DomainError } from '../domain/domain-error.ts';
 import type { GroundedOptionContext } from './grounded-option-context.ts';
+import { validateFinalizedNarrative } from './narrative-finalization.ts';
+import {
+  buildNarrativeGenerationView,
+  type NarrativeGenerationView,
+} from './narrative-generation-view.ts';
 import { buildNarrativeModelView, type NarrativeModelView } from './narrative-model-view.ts';
 import {
   OPTION_NARRATIVE_PROMPT_VERSION,
@@ -54,6 +59,8 @@ export interface NarrativePersistenceBundle {
     schemaVersion: string;
     inputFingerprint: string;
   };
+  /** Exact local fingerprint of the finalized output materialized by this bundle. */
+  narrativeFingerprint: string;
   narrativeRun: NarrativeRunRecord;
   optionNarratives: readonly OptionNarrativeRecord[];
   factReferences: readonly NarrativeFactReferenceRecord[];
@@ -62,6 +69,7 @@ export interface NarrativePersistenceBundle {
 export interface NarrativePersistenceInput {
   context: GroundedOptionContext;
   modelView?: NarrativeModelView;
+  generationView?: NarrativeGenerationView;
   output: unknown;
   aiRunId: string;
   completedAt: string;
@@ -89,16 +97,34 @@ export function buildNarrativePersistenceBundle(
   if (!isValidAiRunId(input.aiRunId)) {
     invalidNarrativePersistence('Narrative persistence requires the audited AI run UUID.');
   }
-  const output: OptionNarrativeOutput = parseOptionNarrativeOutput(input.output, input.context);
-  const modelView = input.modelView ?? buildNarrativeModelView(input.context);
-  if (
-    modelView.groundedContextVersion !== input.context.version ||
-    modelView.groundedContextFingerprint !== input.context.fingerprint
-  ) {
+  const expectedModelView = buildNarrativeModelView(input.context);
+  const modelView = input.modelView ?? expectedModelView;
+  if (canonicalizeJson(modelView) !== canonicalizeJson(expectedModelView)) {
     invalidNarrativePersistence(
       'Narrative persistence requires the model view from the exact grounded context.',
     );
   }
+  const expectedGenerationView = buildNarrativeGenerationView(input.context, expectedModelView);
+  const generationView = input.generationView ?? expectedGenerationView;
+  if (canonicalizeJson(generationView) !== canonicalizeJson(expectedGenerationView)) {
+    invalidNarrativePersistence(
+      'Narrative persistence requires the generation view from the exact grounded context.',
+    );
+  }
+  const output: OptionNarrativeOutput = parseOptionNarrativeOutput(input.output, input.context);
+  if (
+    !validateFinalizedNarrative({
+      context: input.context,
+      modelView: expectedModelView,
+      generationView: expectedGenerationView,
+      output,
+    })
+  ) {
+    invalidNarrativePersistence(
+      'Narrative persistence requires the exact provider prefix and code-owned finalization tail.',
+    );
+  }
+  const narrativeFingerprint = createInputFingerprint(output);
   const generateId = input.generateId ?? randomUUID;
   const narrativeRunId = generateId();
   const commonReferences = {
@@ -137,8 +163,9 @@ export function buildNarrativePersistenceBundle(
       taskType: 'GENERATE',
       promptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
       schemaVersion: OPTION_NARRATIVE_SCHEMA_VERSION,
-      inputFingerprint: createInputFingerprint(modelView),
+      inputFingerprint: createInputFingerprint(generationView),
     },
+    narrativeFingerprint,
     narrativeRun: {
       ID: narrativeRunId,
       planningRun_ID: input.context.planningRun.id,

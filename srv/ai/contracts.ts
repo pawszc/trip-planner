@@ -68,7 +68,19 @@ export interface StructuredAiRequest<TOutput> {
    * Optional staged local validator for context-dependent or cross-field invariants. It returns
    * only a controlled stage on failure and never exposes parser issues or rejected values.
    */
-  validateOutput?: (output: unknown) => StructuredAiOutputValidationResult<TOutput>;
+  validateOutput?: (
+    output: unknown,
+    requestInput: JsonValue,
+  ) => StructuredAiOutputValidationResult<TOutput>;
+  /**
+   * Optional request-local classifier for an adapter result that is already transport-parsed and
+   * locally bound. The gateway uses it to preserve controlled semantic stages without exposing the
+   * rejected output or request input in evidence.
+   */
+  validateBoundOutput?: (
+    output: unknown,
+    requestInput: JsonValue,
+  ) => StructuredAiOutputValidationResult<TOutput>;
   maxOutputTokens?: number;
   /** Gateway-owned execution ID. A caller-supplied value is always overwritten by AiGateway. */
   aiRunId?: string;
@@ -93,21 +105,38 @@ export function validateStructuredAiOutput<TOutput>(
     if (!local.success) {
       return { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };
     }
-    const staged = request.validateOutput?.(local.data);
+    const staged = request.validateOutput?.(local.data, request.input);
     return staged === undefined || staged.success ? { success: true, output: local.data } : staged;
   }
   const transport = resolveStructuredAiProviderOutputSchema(request).safeParse(output);
   if (!transport.success) {
     return { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };
   }
-  const staged = request.validateOutput?.(transport.data) ?? {
+  const staged = request.validateOutput?.(transport.data, request.input) ?? {
     success: true as const,
     output: transport.data,
   };
   if (!staged.success) return staged;
   // The full local contract remains the final backstop after explicit transport and binding
   // phases. A staged validator can classify stricter invariants but cannot bypass this schema.
-  const local = request.outputSchema.safeParse(transport.data);
+  const local = request.outputSchema.safeParse(staged.output);
+  return local.success
+    ? { success: true, output: local.data }
+    : { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };
+}
+
+/**
+ * Revalidates an adapter result that has already crossed the provider transport boundary and been
+ * locally bound. Keeping this separate prevents a provider payload from bypassing its findings-only
+ * (or blocks-only) schema while allowing the gateway to enforce the full final output contract.
+ */
+export function validateBoundStructuredAiOutput<TOutput>(
+  request: StructuredAiRequest<TOutput>,
+  output: unknown,
+): StructuredAiOutputValidationResult<TOutput> {
+  const staged = request.validateBoundOutput?.(output, request.input);
+  if (staged !== undefined && !staged.success) return staged;
+  const local = request.outputSchema.safeParse(staged === undefined ? output : staged.output);
   return local.success
     ? { success: true, output: local.data }
     : { success: false, validationFailureStage: 'TRANSPORT_SCHEMA_VALIDATION' };

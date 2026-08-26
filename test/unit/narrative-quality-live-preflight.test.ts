@@ -97,8 +97,8 @@ describe('credential-free narrative live cost preflight', () => {
     const terra = outputs.find(({ scenarioId }) => scenarioId === 'SCENARIO_COMPARISON_TERRA')!;
     expect(luna).toMatchObject({
       status: 'COST_PREFLIGHT_PASSED',
-      executionContractVersion: 'narrative-quality-live-execution-v2',
-      failureAccountingVersion: 'post-response-failure-accounting-v3',
+      executionContractVersion: 'narrative-quality-live-execution-v3',
+      failureAccountingVersion: 'post-response-failure-accounting-v4',
       retryPolicyVersion: 'zero-retry-with-terminal-failure-accounting-v2',
       pricingVerifiedAt: '2026-08-21',
       plannedLogicalCalls: 46,
@@ -106,12 +106,12 @@ describe('credential-free narrative live cost preflight', () => {
       plannedJudgeCalls: 42,
       plannedMaximumAttempts: 46,
       maxRetries: 0,
-      plannedMaximumCostUsdMicros: 1_185_201,
-      plannedMaximumCostUsd: '1.185201',
+      plannedMaximumCostUsdMicros: 1_171_326,
+      plannedMaximumCostUsd: '1.171326',
       configuredCostCapUsdMicros: 3_000_000,
       configuredCostCapUsd: '3.000000',
-      costCapHeadroomUsdMicros: 1_814_799,
-      costCapHeadroomUsd: '1.814799',
+      costCapHeadroomUsdMicros: 1_828_674,
+      costCapHeadroomUsd: '1.828674',
       withinLogicalCallCap: true,
       withinProviderAttemptCap: true,
       withinCostCap: true,
@@ -119,28 +119,28 @@ describe('credential-free narrative live cost preflight', () => {
       costBreakdown: {
         generate: {
           plannedCalls: 4,
-          plannedMaximumCostUsdMicros: 401_101,
-          plannedMaximumCostUsd: '0.401101',
+          plannedMaximumCostUsdMicros: 346_331,
+          plannedMaximumCostUsd: '0.346331',
         },
         judge: {
           plannedCalls: 42,
-          plannedMaximumCostUsdMicros: 784_100,
-          plannedMaximumCostUsd: '0.784100',
+          plannedMaximumCostUsdMicros: 824_995,
+          plannedMaximumCostUsd: '0.824995',
         },
         byProviderModel: [
           {
             provider: 'OPENAI',
             configuredModel: 'gpt-5.6-luna',
             plannedCalls: 42,
-            plannedMaximumCostUsdMicros: 784_100,
-            plannedMaximumCostUsd: '0.784100',
+            plannedMaximumCostUsdMicros: 824_995,
+            plannedMaximumCostUsd: '0.824995',
           },
           {
             provider: 'ANTHROPIC',
             configuredModel: 'claude-sonnet-5',
             plannedCalls: 4,
-            plannedMaximumCostUsdMicros: 401_101,
-            plannedMaximumCostUsd: '0.401101',
+            plannedMaximumCostUsdMicros: 346_331,
+            plannedMaximumCostUsd: '0.346331',
           },
         ],
       },
@@ -152,8 +152,8 @@ describe('credential-free narrative live cost preflight', () => {
       plannedJudgeCalls: 42,
       plannedMaximumAttempts: 46,
       maxRetries: 0,
-      plannedMaximumCostUsdMicros: 8_241_209,
-      plannedMaximumCostUsd: '8.241209',
+      plannedMaximumCostUsdMicros: 8_595_433,
+      plannedMaximumCostUsd: '8.595433',
       configuredCostCapUsdMicros: 3_000_000,
       configuredCostCapUsd: '3.000000',
       withinLogicalCallCap: true,
@@ -165,28 +165,28 @@ describe('credential-free narrative live cost preflight', () => {
       costBreakdown: {
         generate: {
           plannedCalls: 4,
-          plannedMaximumCostUsdMicros: 401_101,
-          plannedMaximumCostUsd: '0.401101',
+          plannedMaximumCostUsdMicros: 346_331,
+          plannedMaximumCostUsd: '0.346331',
         },
         judge: {
           plannedCalls: 42,
-          plannedMaximumCostUsdMicros: 7_840_108,
-          plannedMaximumCostUsd: '7.840108',
+          plannedMaximumCostUsdMicros: 8_249_102,
+          plannedMaximumCostUsd: '8.249102',
         },
         byProviderModel: [
           {
             provider: 'OPENAI',
             configuredModel: 'gpt-5.6-terra',
             plannedCalls: 42,
-            plannedMaximumCostUsdMicros: 7_840_108,
-            plannedMaximumCostUsd: '7.840108',
+            plannedMaximumCostUsdMicros: 8_249_102,
+            plannedMaximumCostUsd: '8.249102',
           },
           {
             provider: 'ANTHROPIC',
             configuredModel: 'claude-sonnet-5',
             plannedCalls: 4,
-            plannedMaximumCostUsdMicros: 401_101,
-            plannedMaximumCostUsd: '0.401101',
+            plannedMaximumCostUsdMicros: 346_331,
+            plannedMaximumCostUsd: '0.346331',
           },
         ],
       },
@@ -196,8 +196,8 @@ describe('credential-free narrative live cost preflight', () => {
       configuredModel: 'claude-sonnet-5',
       effort: 'low',
       maxOutputTokens: 1_600,
-      minimumInputTokensPerAttempt: 14_125,
-      maximumInputTokensPerAttempt: 14_674,
+      minimumInputTokensPerAttempt: 10_294,
+      maximumInputTokensPerAttempt: 12_066,
       maximumOutputTokensPerAttempt: 1_600,
     });
     expect(luna.profiles.judge).toEqual({
@@ -205,8 +205,8 @@ describe('credential-free narrative live cost preflight', () => {
       configuredModel: 'gpt-5.6-luna',
       effort: 'low',
       maxOutputTokens: 2_048,
-      minimumInputTokensPerAttempt: 24_176,
-      maximumInputTokensPerAttempt: 72_619,
+      minimumInputTokensPerAttempt: 26_402,
+      maximumInputTokensPerAttempt: 73_227,
       maximumOutputTokensPerAttempt: 2_048,
     });
     expect(terra.profiles.judge).toEqual({
@@ -214,7 +214,7 @@ describe('credential-free narrative live cost preflight', () => {
       configuredModel: 'gpt-5.6-terra',
     });
     expect(luna.workloadFingerprint).toBe(
-      '2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b',
+      'fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947',
     );
     expect(terra.workloadFingerprint).toBe(luna.workloadFingerprint);
 
@@ -306,7 +306,7 @@ describe('credential-free narrative live cost preflight', () => {
 
     expect(runtime.workloadFingerprint).not.toBe(priorCeiling.workloadFingerprint);
     expect(priorCeiling.workloadFingerprint).toBe(
-      '4ef953603347074196a231c257f0e06f61bfe6e624dc5c850e90c3134d37b6ed',
+      '49f90ecc51d9bcd84c959742e20f4f2f35b9bc0857871840c66837354eeb6eed',
     );
   });
 

@@ -3,6 +3,8 @@ import { AiProvider, AiTaskType } from '../ai/contracts.ts';
 import { createInputFingerprint, type JsonValue } from '../ai/contracts.ts';
 import { AI_VALIDATION_FAILURE_STAGE_VALUES } from '../ai/failure-execution-evidence.ts';
 import { GROUNDED_OPTION_CONTEXT_VERSION } from '../narratives/grounded-option-types.ts';
+import { NARRATIVE_FINALIZATION_VERSION } from '../narratives/narrative-finalization.ts';
+import { NARRATIVE_GENERATION_VIEW_VERSION } from '../narratives/narrative-generation-view.ts';
 import { NARRATIVE_MODEL_VIEW_VERSION } from '../narratives/narrative-model-view.ts';
 import {
   NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
@@ -53,7 +55,9 @@ import {
   type NarrativeE2eRequiredPropertyResult,
 } from './required-properties.ts';
 
-export const NARRATIVE_EVAL_REPORT_VERSION = 'narrative-quality-eval-report-v2';
+/** Historical identifier retained for readers of already-produced v2 evidence. */
+export const NARRATIVE_EVAL_REPORT_VERSION_V2 = 'narrative-quality-eval-report-v2';
+export const NARRATIVE_EVAL_REPORT_VERSION = 'narrative-quality-eval-report-v3';
 export const LATENCY_PERCENTILE_CONVENTION_VERSION = 'nearest-rank-ms-v1';
 
 const safeModel = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/);
@@ -63,6 +67,8 @@ export const evalContractVersionsSchema = z
   .object({
     groundedContextVersion: z.literal(GROUNDED_OPTION_CONTEXT_VERSION),
     modelViewVersion: z.literal(NARRATIVE_MODEL_VIEW_VERSION),
+    generationViewVersion: z.literal(NARRATIVE_GENERATION_VIEW_VERSION),
+    finalizationVersion: z.literal(NARRATIVE_FINALIZATION_VERSION),
     qualityContextVersion: z.literal(NARRATIVE_QUALITY_CONTEXT_VERSION),
     constraintSnapshotVersion: z.literal(NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION),
     generatePromptVersion: z.literal(OPTION_NARRATIVE_PROMPT_VERSION),
@@ -83,6 +89,8 @@ export type EvalContractVersions = z.infer<typeof evalContractVersionsSchema>;
 export const NARRATIVE_EVAL_CONTRACT_VERSIONS = Object.freeze({
   groundedContextVersion: GROUNDED_OPTION_CONTEXT_VERSION,
   modelViewVersion: NARRATIVE_MODEL_VIEW_VERSION,
+  generationViewVersion: NARRATIVE_GENERATION_VIEW_VERSION,
+  finalizationVersion: NARRATIVE_FINALIZATION_VERSION,
   qualityContextVersion: NARRATIVE_QUALITY_CONTEXT_VERSION,
   constraintSnapshotVersion: NARRATIVE_CONSTRAINT_SNAPSHOT_VERSION,
   generatePromptVersion: OPTION_NARRATIVE_PROMPT_VERSION,
@@ -162,6 +170,7 @@ const operationSchema = z
       (operation.structuredOutputValid ||
         operation.validationFailureStage === null ||
         operation.validationFailureStage === 'SCHEMA_CONSTRUCTION' ||
+        operation.validationFailureStage === 'NARRATIVE_FINALIZATION' ||
         !operation.exactAuditLinkageValid ||
         operation.refused ||
         operation.taskType !== AiTaskType.JUDGE)
@@ -232,6 +241,8 @@ export interface EvalEndToEndCaseReportRow {
   readonly generatedSchemaValid: boolean;
   readonly exactReferencesValid: boolean;
   readonly actualDecision: 'PUBLISH' | 'REJECT';
+  readonly actualFailedDimensions: readonly NarrativeQualityDimension[];
+  readonly actualReasonCodes: readonly NarrativeQualityReasonCode[];
   readonly judgeStructuredOutputValid: boolean | null;
   readonly requiredPropertyResults: readonly NarrativeE2eRequiredPropertyResult[];
   readonly generateAuditSucceeded: boolean;
@@ -412,6 +423,8 @@ export function buildPrivacySafeEvalReport(input: BuildEvalReportInput): Narrati
   const endToEndOutcomeById = new Map(
     input.endToEndOutcomes.map((outcome) => [outcome.caseId, outcome]),
   );
+  // Validate the closed E2E outcome schema and cross-field semantics before copying any row.
+  const endToEndMetrics = calculateEndToEndMetrics(input.dataset, input.endToEndOutcomes);
   const endToEndCases = input.dataset.endToEndCases.map((authored): EvalEndToEndCaseReportRow => {
     const outcome = endToEndOutcomeById.get(authored.id);
     if (outcome === undefined) {
@@ -433,6 +446,8 @@ export function buildPrivacySafeEvalReport(input: BuildEvalReportInput): Narrati
       generatedSchemaValid: outcome.generatedSchemaValid,
       exactReferencesValid: outcome.exactReferencesValid,
       actualDecision: outcome.actualDecision,
+      actualFailedDimensions: [...outcome.actualFailedDimensions].sort(),
+      actualReasonCodes: [...outcome.actualReasonCodes].sort(),
       judgeStructuredOutputValid: outcome.judgeStructuredOutputValid,
       requiredPropertyResults,
       generateAuditSucceeded: outcome.generateAuditSucceeded,
@@ -441,7 +456,6 @@ export function buildPrivacySafeEvalReport(input: BuildEvalReportInput): Narrati
       deterministicStateUnchanged: outcome.deterministicStateUnchanged,
     };
   });
-  const endToEndMetrics = calculateEndToEndMetrics(input.dataset, input.endToEndOutcomes);
   const endToEndGates = evaluateEndToEndGates(endToEndMetrics);
   const basis: Omit<NarrativeEvalReport, 'reportFingerprint'> = {
     reportVersion: NARRATIVE_EVAL_REPORT_VERSION,

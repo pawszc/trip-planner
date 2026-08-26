@@ -13,6 +13,17 @@ Kod pozostaje jedynym źródłem prawdy dla hard constraints, kompletności dany
 rankingu i arytmetyki finansowej. Model nie może uzupełniać brakujących faktów ani liczyć
 budżetu.
 
+Contract v2 dodatkowo rozdziela provider transport od finalnego lokalnego outputu. GENERATE
+widzi `narrative-generation-view-v1` z samymi dozwolonymi faktami `KNOWN` i zwraca tylko
+`{blocks}`. Kod wstrzykuje exact context fingerprint oraz deterministic provenance i
+`UNKNOWN`/`MISSING` disclosures. JUDGE zwraca tylko `{findings}`; kod wstrzykuje exact
+quality/narrative fingerprints i wyprowadza wszystkie osiem dimension statuses. Gateway
+rozróżnia walidację raw provider transportu w adapterze od ponownej walidacji już lokalnie
+związanego outputu, więc żaden z dwóch kształtów nie może ominąć właściwego schematu.
+Generation view jest ścisłą projekcją exact fact keys/value shapes; source metadata nie ma do
+niego ścieżki, a przypadkowa zgodność source string z dozwolonym fact value, fact ID lub
+fingerprintem nie jest traktowana jak data leak.
+
 ## Moduły
 
 - `srv/ai/contracts.ts` — vendor-neutral request, profile, wynik i fingerprint;
@@ -25,7 +36,7 @@ budżetu.
 - `srv/ai/persistence/` — store CAP i persistent recorder;
 - `srv/ai/live-smoke.ts` — osobna ścieżka operator-only;
 - `srv/narratives/` — grounded context, model-safe/quality contexts, kontrakty
-  `GENERATE`/`JUDGE`, precheck, review persistence, krótki odczyt i atomowy zapis
+  generation-only view, `GENERATE`/`JUDGE`, deterministic finalization, precheck, review persistence, krótki odczyt i atomowy zapis
   zaakceptowanych narracji;
 - `srv/evals/` — frozen dataset loader, offline harness, metryki, privacy-safe raporty,
   baseline binding, price snapshot i fail-closed live guard;
@@ -104,28 +115,29 @@ credentiali, wersjonowanej ceny każdego dokładnego configured modelu i planu m
 się we wszystkich limitach. Unknown price lub przekroczenie rezerwacji blokuje call przed
 providerem. Runner ma dokładnie 46 logical calls i wymaga `AI_MAX_RETRIES=0`. Niezmieniona
 polityka `zero-retry-with-terminal-failure-accounting-v2` nadal oznacza zero retry, a jawne
-kontrakty `narrative-quality-live-execution-v2` i `post-response-failure-accounting-v3`
+kontrakty `narrative-quality-live-execution-v3` i `post-response-failure-accounting-v4`
 rozdzielają fatalne awarie od kompletnie rozliczonego post-response invalid `JUDGE`. Przy
 evidence niepełnym runner zatrzymuje się bez częściowego raportu i bez wymyślania usage,
 attempts lub kosztu. Checked-in katalog cen zawiera oficjalne
 stawki API zweryfikowane 2026-08-21. Credential-free `npm run eval:live:preflight` używa
 dokładnie tego samego frozen planu i integer-only cost estimatora, ale nie czyta opt-inów ani
 credentiali i nie ma ścieżki do executora, adaptera, gatewaya lub audit store. Pokazuje, że
-runtime Luna/low/2048 ma ceiling 1,185,201 USD micros (401,101 `GENERATE`, 784,100 `JUDGE`)
-i 1,814,799 micros headroomu, a Terra/2048 kosztuje 8,241,209 micros i pozostaje wyłącznie
+runtime Luna/low/2048 ma ceiling 1,171,326 USD micros (346,331 `GENERATE`, 824,995 `JUDGE`)
+i 1,828,674 micros headroomu, a Terra/2048 kosztuje 8,595,433 micros i pozostaje wyłącznie
 comparison scenario ponad capem. Po wersjonowanej zmianie transport schema i kontraktów
 wykonania oba mają workload fingerprint
-`2daba2bbc43db32e86bb29ec0bc5e5bd8bb0a9226189f246e240d8f437b61c6b`;
+`fcf8cc7d3117274b6dc63ba9c4f663e9b49d40c0d14df8a83accae20206d5947`;
 nie istnieje automatyczny fallback między nimi. Po przejściu wszystkich guardów produkcyjnych
 każdy baseline dostaje odizolowany SQLite store pod
 `.tools/narrative-live-eval/`; zawiera on wyłącznie allow-listed `AiRuns`, bez promptu,
 kontekstu, narracji, raw payloadu lub sekretu.
 
-`narrative-quality-model-profile-v2` zmienia tylko exact JUDGE profile na
-`OPENAI/gpt-5.6-luna/low/2048`. Dataset, prompt, rubryka, publication policy, safety precheck,
-price catalog i model profile pozostają bez zmian. Provider-visible JUDGE schema jest jawnie
-podniesiona do `narrative-quality-judge-schema-v2`; report ma v2, accepted manifest v2, a
-execution/failure accounting wersje podano wyżej. Live `PREFLIGHT_PASSED` allowlistuje
+`narrative-quality-model-profile-v2` nadal wiąże exact JUDGE profile
+`OPENAI/gpt-5.6-luna/low/2048`; GENERATE pozostaje `ANTHROPIC/claude-sonnet-5/low/1600`.
+Provider-visible GENERATE schema v2 ma tylko blocks, JUDGE schema v3 ma tylko findings,
+report/manifest mają v3, live plan/execution mają v2/v3, a failure accounting v4 dodaje
+zamknięty `NARRATIVE_FINALIZATION`; price catalog v1 i model profile v2 pozostają bez zmian.
+Live `PREFLIGHT_PASSED` allowlistuje
 workload fingerprint, datę weryfikacji cen, exact profile, wersje planu/execution/accounting/
 token/cost/retry, calls/attempts/cost i limits. Safe failure allowlistuje dostępne safe IDs,
 provider/configuredModel/responseModel/latency/status/reason/usage/attempts oraz
@@ -170,7 +182,11 @@ Klient OpenAI najpierw zachowuje z terminalnej odpowiedzi wyłącznie zamknięte
 `incomplete_details.reason`, bezpieczne request/response IDs, response model, usage, attempts
 i kontrolowany response error code. Dopiero dla `COMPLETED` bez odmowy odczytuje przejściowy
 `output_text` w pamięci, wykonuje `JSON.parse`, statyczną walidację transportową oraz jawne
-`CONTEXT_BINDING`, `DIMENSION_BINDING` i `FINDING_BINDING`. Adapter klasyfikuje:
+`CONTEXT_BINDING`, `NARRATIVE_FINALIZATION`, `DIMENSION_BINDING` i `FINDING_BINDING`.
+Malformed raw provider `{blocks}` ma `TRANSPORT_SCHEMA_VALIDATION`; mismatch exact request,
+generation view, context, references lub injected fingerprint ma `CONTEXT_BINDING`; poprawny
+transport odrzucony przez deterministic narrative policy ma `NARRATIVE_FINALIZATION`. Adapter
+klasyfikuje:
 
 - `COMPLETED` z poprawnym JSON-em i wszystkimi lokalnymi bindingami → sukces;
 - `INCOMPLETE / MAX_OUTPUT_TOKENS` → non-retryable `INCOMPLETE_MODEL_OUTPUT`;
@@ -366,27 +382,38 @@ kategorie, klasyfikacje, walutę, sumy i status kompletności, a
 `grounded-money-display-v1` przygotowuje display dla limitu, sumy, confirmed, estimated,
 per-person i remaining. Prompt zabrania modelowi dzielenia minor units, ustalania precision
 i formatowania pieniędzy.
-Prompt `grounded-option-narrative-prompt-v2` i strict schema
-`grounded-option-narrative-schema-v1` wymagają niepustych referencji w każdym bloku.
+Prompt `grounded-option-narrative-prompt-v3` i provider schema
+`grounded-option-narrative-schema-v2` wymagają niepustych referencji w każdym bloku i
+rezerwują maksymalnie sześć provider blocks.
 
 Nieznana, pusta, nieaktualna albo pochodząca z innego kontekstu referencja odrzuca cały
-output. `GENERATE` otrzymuje jednak model-safe projection zamiast pełnego kontekstu: raw
-source URL/external ID, HTML, znaki kontrolne i inne niepotrzebne provider-shaped values są
-usuwane, podczas gdy exact fact IDs, display, status i lineage pozostają dostępne. Klucze
-provenance są zastępowane wersjonowanym opaque key wyprowadzonym wyłącznie z bezpiecznego
-`factId`; nie używa on `sourceKey`, provider identity, external ID, URL ani contexts.
+output. `GENERATE` otrzymuje `narrative-generation-view-v1`, nie pełny model view: pozostają
+wyłącznie narratable fakty `KNOWN`, exact fact IDs i safe rank/role. Provenance,
+`UNKNOWN`/`MISSING`, raw source URL/external ID, provider/source identity, source keys,
+contexts, HTML i kontrolne/provider-shaped wartości są wykluczone. Każdy wspierany fact key ma
+zamknięty projector exact value shape; unknown keys, duplicate facts i extra nested fields są
+odrzucane. Projekcja nie skanuje arbitrary source-value substrings.
 
-Po lokalnej walidacji deterministyczny precheck blokuje syntaktyczne/formatowe zagrożenia.
-Semantyczna niezgodność kwoty, nowe obliczenie lub wypełnienie `UNKNOWN` celowo trafiają do
-`JUDGE`, zgodnie z frozen stage labels datasetu. Szerokie odczytanie reguły exact-money,
-które przechwyciłoby te przypadki w prechecku, jest jawnym punktem review i nie może zmienić
-golden labels.
+Provider zwraca wyłącznie `{blocks}` i nie może ustawiać fingerprintu ani mandatory prose.
+Lokalny finalizer wstrzykuje exact context fingerprint, następnie dokłada stable source
+freshness/demo disclosure i jeden zbiorczy `UNKNOWN`/`MISSING` limitation block, jeśli są
+wymagane. Exact code-owned references, kolejność, unikalność i finalny limit ośmiu bloków są
+walidowane przed precheckiem, JUDGE i persistence. Provider prose nie jest przepisywane.
+Assertion-aware guard blokuje uzupełnienie ceny/kwoty/statusu non-`KNOWN`, ale nie blokuje
+samego opisu osobnego cytowanego faktu `KNOWN` o transporcie lub noclegu.
 
-`narrative-quality-context-v1` wiąże exact candidate, fingerprints, potwierdzone constraints
+Po lokalnej finalizacji deterministyczny precheck weryfikuje exact provider-prefix/tail i
+blokuje syntaktyczne/formatowe zagrożenia. Semantyczna niezgodność kwoty i nowe obliczenie
+celowo trafiają do `JUDGE`. Frozen semantic dataset nadal zawiera przypadki uzupełnienia
+`UNKNOWN` jako pomiar JUDGE, natomiast produktowy GENERATE nie otrzymuje tych wartości i ich
+mandatory limitation jest code-owned.
+
+`narrative-quality-context-v2` wiąże exact candidate, fingerprints, potwierdzone constraints
 i wszystkie wymagane wersje. Wejście `JUDGE` zawiera dodatkowo pełny, checked-in-golden
 compatible rubric contract, exact `rubricVersion`, canonical `rubricFingerprint`,
-`qualityContextFingerprint` i `narrativeFingerprint`. Strict output ma osiem wymiarów oraz
-kontrolowane findings; code-owned policy publikuje wyłącznie osiem `PASS` i zero findings.
+`qualityContextFingerprint` i `narrativeFingerprint`. Provider output ma tylko kontrolowane
+findings. Kod wstrzykuje oba fingerprinty i wyprowadza osiem statuses; code-owned policy
+publikuje wyłącznie zero findings, czyli osiem wyprowadzonych `PASS`.
 Nowe review i narracje przechowują exact rubric fingerprint, a addytywne legacy rows
 pozostają `null`. Reject zapisuje tylko safe review metadata w osobnej krótkiej transakcji i
 zero tekstu produktu. Publish wymaga dokładnych terminalnych audytów obu tasków, a następnie
@@ -395,7 +422,8 @@ atomowo zapisuje review, `NarrativeRuns`, `OptionNarratives` i znormalizowane
 
 Trwałe linkage używa historycznych scalar IDs, więc 30-dniowy domyślny cleanup audytu nie
 narusza produktu ani durable review. Szczegółową decyzję grounded 3B2 opisuje ADR 0007,
-quality gate — ADR 0008, a rozdzielenie transportu i lokalnego bindingu — ADR 0009.
+quality gate — ADR 0008, rozdzielenie transportu i lokalnego bindingu — ADR 0009, a
+code-owned finalization i findings-only JUDGE — ADR 0010.
 
 ## Znane ograniczenia i następne fazy
 

@@ -24,12 +24,16 @@ export {
 } from '../narratives/narrative-quality-versions.ts';
 
 /**
- * v1 fingerprints the UTF-8 bytes of canonical JSON for the parsed dataset: object keys are
+ * v2 fingerprints the UTF-8 bytes of canonical JSON for the parsed dataset: object keys are
  * recursively sorted and array order is preserved. Whitespace and line endings are irrelevant.
  */
 export const DATASET_FINGERPRINT_BASIS_VERSION = 'parsed-canonical-json-sha256-v1';
-export const NARRATIVE_QUALITY_DATASET_FINGERPRINT =
+export const NARRATIVE_QUALITY_DATASET_V1_VERSION = 'narrative-quality-v1';
+export const NARRATIVE_QUALITY_DATASET_V1_FINGERPRINT =
   '744d0a275f6c3324d5e1d3ff8d383bc1d957d56ea02c10169da756a60678c4b1';
+export const NARRATIVE_QUALITY_DATASET_V1_CANONICAL_BYTES = 18_501;
+export const NARRATIVE_QUALITY_DATASET_FINGERPRINT =
+  'aa6f414e857a7e4f1c83aebc99c1c729b6b55aaeb978ff6e9b8d4a92d96c80a7';
 export const NARRATIVE_QUALITY_DATASET_CANONICAL_BYTES = 18_501;
 
 export const NARRATIVE_QUALITY_DIMENSIONS = NARRATIVE_JUDGE_DIMENSIONS;
@@ -201,6 +205,18 @@ const constraintSnapshotSchema = z
 const authoringContextSchema = z
   .object({
     id: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
+    fixtureBuilder: z.string().regex(/^[a-z0-9-]+-v2$/),
+    summary: z
+      .record(z.string(), z.string().min(1).max(500))
+      .refine((summary) => Object.keys(summary).length >= 4, 'A context summary needs four fields.')
+      .meta({ minProperties: 4 }),
+    constraintSnapshot: constraintSnapshotSchema,
+  })
+  .strict();
+
+const authoringContextV1Schema = z
+  .object({
+    id: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
     fixtureBuilder: z.string().regex(/^[a-z0-9-]+-v1$/),
     summary: z
       .record(z.string(), z.string().min(1).max(500))
@@ -329,10 +345,25 @@ export const narrativeQualityDatasetSchema = z
   })
   .strict();
 
+export const narrativeQualityDatasetV1Schema = z
+  .object({
+    datasetVersion: z.literal(NARRATIVE_QUALITY_DATASET_V1_VERSION),
+    synthetic: z.literal(true),
+    rubricVersion: z.literal('narrative-quality-rubric-v1'),
+    publicationPolicyVersion: z.literal('narrative-publication-policy-v1'),
+    description: z.string().min(1).max(500),
+    contexts: z.array(authoringContextV1Schema).length(4),
+    cases: z.array(semanticCaseSchema).length(32),
+    endToEndCases: z.array(endToEndCaseSchema).length(4),
+  })
+  .strict();
+
 export type NarrativeQualityDataset = z.infer<typeof narrativeQualityDatasetSchema>;
+export type NarrativeQualityDatasetV1 = z.infer<typeof narrativeQualityDatasetV1Schema>;
 export type NarrativeQualityCase = NarrativeQualityDataset['cases'][number];
 export type NarrativeQualityEndToEndCase = NarrativeQualityDataset['endToEndCases'][number];
 export type NarrativeQualityAuthoringContext = NarrativeQualityDataset['contexts'][number];
+type AnyNarrativeQualityDataset = NarrativeQualityDataset | NarrativeQualityDatasetV1;
 
 export class EvalContractError extends Error {
   readonly code:
@@ -366,22 +397,30 @@ function assertExactSet(
   label: string,
   actual: readonly string[],
   expected: readonly string[],
+  versionLabel: 'v1' | 'v2',
 ): void {
   if (
     actual.length !== expected.length ||
     expected.some((value) => !actual.includes(value)) ||
     actual.some((value) => !expected.includes(value))
   ) {
-    throw new EvalContractError('INVALID_DATASET_AUTHORING', `${label} does not match v1.`);
+    throw new EvalContractError(
+      'INVALID_DATASET_AUTHORING',
+      `${label} does not match ${versionLabel}.`,
+    );
   }
 }
 
-function assertExactEndToEndAuthoring(dataset: NarrativeQualityDataset): void {
+function assertExactEndToEndAuthoring(
+  dataset: AnyNarrativeQualityDataset,
+  versionLabel: 'v1' | 'v2',
+): void {
   const expectedIds = Object.keys(endToEndAuthoringContract);
   assertExactSet(
     'End-to-end case membership',
     dataset.endToEndCases.map(({ id }) => id),
     expectedIds,
+    versionLabel,
   );
 
   for (const authored of dataset.endToEndCases) {
@@ -397,12 +436,16 @@ function assertExactEndToEndAuthoring(dataset: NarrativeQualityDataset): void {
       `End-to-end properties for ${authored.id}`,
       authored.requiredProperties,
       expected.requiredProperties,
+      versionLabel,
     );
   }
 }
 
-export function validateNarrativeQualityDatasetContract(
-  dataset: NarrativeQualityDataset,
+function validateNarrativeQualityDatasetContractVersion(
+  dataset: AnyNarrativeQualityDataset,
+  versionLabel: 'v1' | 'v2',
+  expectedFingerprint: string,
+  expectedCanonicalBytes: number,
 ): DatasetContractSummary {
   const contextIds = dataset.contexts.map(({ id }) => id);
   const caseIds = dataset.cases.map(({ id }) => id);
@@ -412,11 +455,31 @@ export function validateNarrativeQualityDatasetContract(
     .filter(({ expected }) => expected.stage === 'PRECHECK')
     .map(({ id }) => id);
 
-  assertExactSet('Context membership', contextIds, NARRATIVE_QUALITY_CONTEXT_IDS);
-  assertExactSet('Semantic case membership', caseIds, NARRATIVE_QUALITY_SEMANTIC_CASE_IDS);
-  assertExactSet('Critical-case membership', criticalIds, NARRATIVE_QUALITY_CRITICAL_CASE_IDS);
-  assertExactSet('Sentinel-case membership', sentinelIds, NARRATIVE_QUALITY_SENTINEL_CASE_IDS);
-  assertExactSet('Precheck-case membership', precheckIds, NARRATIVE_QUALITY_PRECHECK_CASE_IDS);
+  assertExactSet('Context membership', contextIds, NARRATIVE_QUALITY_CONTEXT_IDS, versionLabel);
+  assertExactSet(
+    'Semantic case membership',
+    caseIds,
+    NARRATIVE_QUALITY_SEMANTIC_CASE_IDS,
+    versionLabel,
+  );
+  assertExactSet(
+    'Critical-case membership',
+    criticalIds,
+    NARRATIVE_QUALITY_CRITICAL_CASE_IDS,
+    versionLabel,
+  );
+  assertExactSet(
+    'Sentinel-case membership',
+    sentinelIds,
+    NARRATIVE_QUALITY_SENTINEL_CASE_IDS,
+    versionLabel,
+  );
+  assertExactSet(
+    'Precheck-case membership',
+    precheckIds,
+    NARRATIVE_QUALITY_PRECHECK_CASE_IDS,
+    versionLabel,
+  );
 
   const contextIdSet = new Set(contextIds);
   if (
@@ -434,19 +497,19 @@ export function validateNarrativeQualityDatasetContract(
     if (authored.expected.decision !== expectedDecision) {
       throw new EvalContractError(
         'INVALID_DATASET_AUTHORING',
-        `The expected label for ${authored.id} does not match v1.`,
+        `The expected label for ${authored.id} does not match ${versionLabel}.`,
       );
     }
   }
-  assertExactEndToEndAuthoring(dataset);
+  assertExactEndToEndAuthoring(dataset, versionLabel);
 
   const json = dataset as JsonValue;
   const fingerprint = createInputFingerprint(json);
   const canonicalBytes = Buffer.byteLength(canonicalizeJson(json), 'utf8');
-  if (fingerprint !== NARRATIVE_QUALITY_DATASET_FINGERPRINT) {
+  if (fingerprint !== expectedFingerprint || canonicalBytes !== expectedCanonicalBytes) {
     throw new EvalContractError(
       'DATASET_FINGERPRINT_MISMATCH',
-      'The narrative-quality-v1 dataset does not match its immutable canonical fingerprint.',
+      `The narrative-quality-${versionLabel} dataset does not match its immutable canonical fingerprint.`,
     );
   }
 
@@ -457,7 +520,7 @@ export function validateNarrativeQualityDatasetContract(
   if (publishCount !== 12 || rejectCount !== 20) {
     throw new EvalContractError(
       'INVALID_DATASET_AUTHORING',
-      'The v1 expected-label distribution must remain exactly 12 PUBLISH and 20 REJECT.',
+      `The ${versionLabel} expected-label distribution must remain exactly 12 PUBLISH and 20 REJECT.`,
     );
   }
 
@@ -475,15 +538,49 @@ export function validateNarrativeQualityDatasetContract(
   };
 }
 
+export function validateNarrativeQualityDatasetContract(
+  dataset: NarrativeQualityDataset,
+): DatasetContractSummary {
+  return validateNarrativeQualityDatasetContractVersion(
+    dataset,
+    'v2',
+    NARRATIVE_QUALITY_DATASET_FINGERPRINT,
+    NARRATIVE_QUALITY_DATASET_CANONICAL_BYTES,
+  );
+}
+
+export function validateNarrativeQualityDatasetV1Contract(
+  dataset: NarrativeQualityDatasetV1,
+): DatasetContractSummary {
+  return validateNarrativeQualityDatasetContractVersion(
+    dataset,
+    'v1',
+    NARRATIVE_QUALITY_DATASET_V1_FINGERPRINT,
+    NARRATIVE_QUALITY_DATASET_V1_CANONICAL_BYTES,
+  );
+}
+
 export function parseNarrativeQualityDataset(input: unknown): NarrativeQualityDataset {
   const parsed = narrativeQualityDatasetSchema.safeParse(input);
   if (!parsed.success) {
     throw new EvalContractError(
       'INVALID_DATASET',
-      'The narrative-quality dataset failed its strict v1 authoring schema.',
+      'The narrative-quality dataset failed its strict v2 authoring schema.',
     );
   }
   validateNarrativeQualityDatasetContract(parsed.data);
+  return deepFreeze(parsed.data);
+}
+
+export function parseNarrativeQualityDatasetV1(input: unknown): NarrativeQualityDatasetV1 {
+  const parsed = narrativeQualityDatasetV1Schema.safeParse(input);
+  if (!parsed.success) {
+    throw new EvalContractError(
+      'INVALID_DATASET',
+      'The narrative-quality dataset failed its strict historical v1 authoring schema.',
+    );
+  }
+  validateNarrativeQualityDatasetV1Contract(parsed.data);
   return deepFreeze(parsed.data);
 }
 
@@ -496,7 +593,7 @@ function deepFreeze<T>(value: T): T {
 }
 
 export function loadNarrativeQualityDataset(
-  datasetUrl: URL = new URL('../../evals/datasets/narrative-quality-v1.json', import.meta.url),
+  datasetUrl: URL = new URL('../../evals/datasets/narrative-quality-v2.json', import.meta.url),
 ): NarrativeQualityDataset {
   let input: unknown;
   try {
@@ -505,6 +602,21 @@ export function loadNarrativeQualityDataset(
     throw new EvalContractError('INVALID_DATASET', 'The narrative-quality dataset is unreadable.');
   }
   return parseNarrativeQualityDataset(input);
+}
+
+export function loadNarrativeQualityDatasetV1(
+  datasetUrl: URL = new URL('../../evals/datasets/narrative-quality-v1.json', import.meta.url),
+): NarrativeQualityDatasetV1 {
+  let input: unknown;
+  try {
+    input = JSON.parse(readFileSync(datasetUrl, 'utf8')) as unknown;
+  } catch {
+    throw new EvalContractError(
+      'INVALID_DATASET',
+      'The historical narrative-quality v1 dataset is unreadable.',
+    );
+  }
+  return parseNarrativeQualityDatasetV1(input);
 }
 
 export type GroundedFixtureResolver = (
@@ -529,12 +641,30 @@ export interface ResolvedNarrativeQualityDataset {
   readonly endToEndCases: readonly ResolvedNarrativeQualityEndToEndCase[];
 }
 
+export interface ResolvedNarrativeQualityDatasetV1 {
+  readonly dataset: NarrativeQualityDatasetV1;
+  readonly cases: readonly ResolvedNarrativeQualityCase[];
+  readonly endToEndCases: readonly ResolvedNarrativeQualityEndToEndCase[];
+}
+
 /** Resolves stable authoring keys only through exact fact IDs produced by the injected builder. */
 export function resolveNarrativeQualityDataset(
   dataset: NarrativeQualityDataset,
   resolveFixture: GroundedFixtureResolver,
-): ResolvedNarrativeQualityDataset {
-  validateNarrativeQualityDatasetContract(dataset);
+): ResolvedNarrativeQualityDataset;
+export function resolveNarrativeQualityDataset(
+  dataset: NarrativeQualityDatasetV1,
+  resolveFixture: GroundedFixtureResolver,
+): ResolvedNarrativeQualityDatasetV1;
+export function resolveNarrativeQualityDataset(
+  dataset: AnyNarrativeQualityDataset,
+  resolveFixture: GroundedFixtureResolver,
+): ResolvedNarrativeQualityDataset | ResolvedNarrativeQualityDatasetV1 {
+  if (dataset.datasetVersion === NARRATIVE_QUALITY_DATASET_V1_VERSION) {
+    validateNarrativeQualityDatasetV1Contract(dataset);
+  } else {
+    validateNarrativeQualityDatasetContract(dataset);
+  }
   const contexts = new Map<string, GroundedOptionContext>();
 
   for (const authoredContext of dataset.contexts) {
@@ -609,5 +739,6 @@ export function resolveNarrativeQualityDataset(
     },
   );
 
-  return { dataset, cases, endToEndCases };
+  return { dataset, cases, endToEndCases } as
+    ResolvedNarrativeQualityDataset | ResolvedNarrativeQualityDatasetV1;
 }

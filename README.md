@@ -82,17 +82,19 @@ wersjonowanymi, deterministycznymi opaque keys wyprowadzonymi wyłącznie z bezp
 `factId`, nigdy z `provider`, `sourceKey`, `externalItemId`, `sourceUrl` ani `contexts`.
 Pełny kontekst pozostaje lokalnym źródłem walidacji i lineage.
 
-Strict output `GENERATE` wymaga exact context fingerprint i niepustych `factReferences`
-każdego bloku; nieznany, pusty, nieaktualny albo obcy identyfikator odrzuca cały output.
-Po tej walidacji lokalny precheck blokuje URL-e, Markdown/HTML/script, kontrolne i bidi
+`GENERATE` otrzymuje fingerprintowany `narrative-generation-view-v1` z wyłącznie dozwolonymi
+faktami `KNOWN` i zwraca provider transport `{blocks}` z najwyżej sześcioma blokami. Kod
+waliduje niepuste `factReferences`, wstrzykuje exact context fingerprint i dokłada w stałej
+kolejności wymagane provenance/freshness oraz `UNKNOWN`/`MISSING` disclosures; finalny output
+ma najwyżej osiem bloków. Nieznany, pusty, nieaktualny albo obcy identyfikator odrzuca cały
+output. Po finalizacji lokalny precheck blokuje URL-e, Markdown/HTML/script, kontrolne i bidi
 znaki, wykluczone identyfikatory oraz mechanicznie niedozwolony reformat kwoty. Semantyczna
 zmiana kwoty, nowe obliczenie lub wypełnienie `UNKNOWN` trafia do `JUDGE`, zgodnie z frozen
-stage labels datasetu. Sędzia otrzymuje wersjonowany `narrative-quality-context-v1`, zwraca
-dokładnie osiem wymiarów i kontrolowane findings; końcową decyzję wylicza kod: wyłącznie
-osiem `PASS` i zero findings daje `PUBLISH`. Wejście `JUDGE` zawiera pełny, strukturalny
-kontrakt `narrative-quality-rubric-v1` wraz z exact version, canonical fingerprintem,
-definicjami `PASS`/`FAIL` i zamkniętym mapowaniem reason → dimension/severity. Runtime jest
-sprawdzany względem checked-in golden JSON.
+stage labels datasetu. Sędzia otrzymuje wersjonowany `narrative-quality-context-v2` i pełny,
+strukturalny kontrakt `narrative-quality-rubric-v2` z exact version, canonical fingerprintem
+oraz zamkniętym mapowaniem reason → dimension/severity, lecz zwraca wyłącznie zamknięte
+findings. Kod wstrzykuje fingerprinty, wyprowadza dokładnie osiem statusów i publikuje tylko
+przy ośmiu `PASS` oraz zerze findings. Runtime jest sprawdzany względem checked-in golden JSON.
 
 Precheck lub semantyczny `REJECT` zapisuje w osobnej krótkiej transakcji wyłącznie bezpieczne
 review metadata i nie zapisuje tekstu kandydata. `PUBLISH` atomowo utrwala review,
@@ -143,12 +145,13 @@ w pamięci. Osobny test integracyjny na produkcyjnych writerach CAP i SQLite dow
 zapisu, odczytu, atomowości oraz przetrwania cleanupu obu `AiRuns`.
 
 Finalny live baseline używa wyłącznie danych syntetycznych, wymaga osobnej
-zgody, preflightu oraz limitów 48 logicznych wywołań, 56 prób i USD 3.00. Runner v1 planuje
-dokładnie 46 wywołań i wymaga `AI_MAX_RETRIES=0`. Credential-free
+zgody, preflightu oraz limitów 48 logicznych wywołań, 56 prób i USD 3.00. Plan v2 zawiera
+dokładnie 46 wywołań, najwyżej 46 prób i wymaga `AI_MAX_RETRIES=0`. Credential-free
 `npm run eval:live:preflight` oblicza ten sam plan: zaakceptowany runtime Luna/2048 ma ceiling
-1,185,201 USD micros i 1,814,799 micros zapasu do capu, a Terra/2048 pozostaje wyłącznie
-comparison scenario ponad capem. Trzy osobno autoryzowane one-shot baseline zatrzymały się
-fail-closed przed raportem jakości; trzeci zatrzymał się na pierwszym `P01/JUDGE` z
+1,171,326 USD micros i 1,828,674 micros zapasu do capu, a Terra/2048 ma ceiling 8,595,433
+USD micros i pozostaje wyłącznie comparison scenario ponad capem. Trzy osobno autoryzowane
+one-shot baseline zatrzymały się fail-closed przed raportem jakości; trzeci zatrzymał się na
+pierwszym `P01/JUDGE` z
 `INVALID_STRUCTURED_OUTPUT`. Nie wykonano rerunu,
 continuation, smoke testu ani diagnostycznego requestu. Wersjonowana korekta offline rozdziela
 statyczny transport schema od lokalnych bindingów i pozwala raportować wyłącznie kompletnie
