@@ -6,7 +6,7 @@ service TripPlannerService {
   entity TripRequests as projection on db.TripRequests actions {
     // Akcja związana z konkretnym briefem wymusza kontrolowaną zmianę statusu.
     action confirmConstraints() returns TripRequests;
-    // Planowanie używa wyłącznie potwierdzonego briefu i wersjonowanych providerów fixture.
+    // Planowanie używa wyłącznie potwierdzonego briefu i jawnego provider manifestu.
     action startPlanning() returns PlanningRuns;
   };
 
@@ -38,6 +38,9 @@ service TripPlannerService {
     workflowRun,
     planningRun,
     providerFixtureVersion,
+    providerManifestVersion,
+    providerManifestFingerprint,
+    offerPricingContractVersion,
     scoringVersion,
     currency,
     budgetLimitMinor,
@@ -46,11 +49,25 @@ service TripPlannerService {
     unknownCategoryCount,
     totalAmountMinor,
     costPerPersonMinor,
-    remainingBudgetMinor
+    remainingBudgetMinor,
+    transportMandatoryTotalMinor,
+    transportMandatoryTotalPriceType,
+    transportMandatoryTotalClassification,
+    transportMandatoryTotalSourceKey,
+    accommodationMandatoryTotalMinor,
+    accommodationMandatoryTotalPriceType,
+    accommodationMandatoryTotalClassification,
+    accommodationMandatoryTotalSourceKey
   };
 
   @readonly
   entity SourceSnapshots as projection on db.SourceSnapshots;
+
+  @readonly
+  entity OfferChargeCollections as projection on db.OfferChargeCollections;
+
+  @readonly
+  entity OfferChargeDisclosures as projection on db.OfferChargeDisclosures;
 
   @readonly
   entity OptionNotes as projection on db.OptionNotes;

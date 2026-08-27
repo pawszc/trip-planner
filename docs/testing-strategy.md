@@ -10,13 +10,23 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - ścisłe daty kalendarzowe, w tym daty nieistniejące i poprawne lata przestępne;
 - wszystkie dozwolone przejścia workflow i reprezentatywne przejścia niedozwolone;
 - `Money`, wszystkie `PriceType`, UNKNOWN, waluty i bezpieczne minor units;
+- `source-snapshot-v2`: zamknięte typy źródła, wersje i SHA-256, reguły fixture/live/expiry,
+  bezpieczne URL, canonical equality oraz legacy view bez syntezy i backfillu;
+- `offer-price-v2`: zgodność obowiązkowego subtotalu, fees i all-in total, fail-closed dla
+  wymaganych `UNKNOWN` oraz jawne `COMPLETE`/`PARTIAL`/`UNKNOWN` opłat warunkowych i
+  opcjonalnych bez dodawania ich do budżetu lub score;
+- canonical `planning-provider-manifest-v1`, dokładnie trzy role, tryby fixture/live,
+  zmianę fingerprintu po zmianie wersji/policy i brak miejsca na sekrety lub raw config;
+- `provider-execution-policy-v1`: granice 25/26 calls, obniżalne limity, FIFO i concurrency,
+  timeout, cancellation siblings, pojedynczy attempt, rate-limit fail-fast, zero fallbacku,
+  zamknięte błędy oraz privacy-safe audit bez raw danych;
 - 13 kodów odrzucenia, wiele powodów, deduplikację i granice buildera;
 - komponenty score, stabilny tie-breaker i diversity selection;
 - kontrolowany niedobór dwóch lub zera opcji;
 - dokładną konwersję major → minor units przez zamknięty `currency-fraction-digits-v1`,
   akceptację PLN/EUR i odrzucenie JPY/KWD/nieznanych kodów;
-- literalny golden SHA-256 zamrożonego fingerprintu v0 z `main@1b8a852` oraz jego różnicę
-  względem bieżącego fingerprintu v1;
+- literalne golden SHA-256 zamrożonych fingerprintów v0 z `main@1b8a852` i v1 z
+  `main@ad7a909`, odrębność bieżącego v2 oraz zmianę v2 po zmianie provider manifestu;
 - mapowanie awarii providera na kontrolowany kod bez ujawnienia jego komunikatu.
 - task-aware profile `DECIDE`/`GENERATE`/`JUDGE`, migrację aliasów, walidację effort,
   task-specific limity, obowiązkowy model po zmianie providera i blokadę `AI_DISABLED`
@@ -115,20 +125,25 @@ Budapeszt `BEST_VALUE`, identyczne przy ponownym uruchomieniu.
 
 ### Testy integracyjne
 
-Uruchamiają prawdziwy serwer CAP z SQLite in-memory i testują kontrakt OData. Faza 2C
-sprawdza między innymi:
+Uruchamiają prawdziwy serwer CAP z SQLite in-memory i testują kontrakt OData. Pipeline
+deterministyczny wraz z kontraktem 4B0 sprawdza między innymi:
 
 - odrzucenie `startPlanning` dla brakującego briefu i statusu `DRAFT`;
 - sukces dla `CONSTRAINTS_CONFIRMED`;
 - audyt kolejności `SEARCHING` → `CANDIDATES_VALIDATED` → `OPTIONS_READY`;
 - zapis dokładnie trzech ról i wszystkich powiązań do trip/workflow/planning run;
-- wersje `europe-reference-v1`, engine i scoringu;
+- kanoniczny provider manifest/fingerprint, policy v1, alias `europe-reference-v1`, engine i
+  scoring lineage na wszystkich nowych rekordach;
 - 22 odrzuconych kandydatów, szczegóły i 13 grup kodów;
-- znormalizowane `SourceSnapshots`, `BudgetBreakdowns` i 7 `BudgetItems` na opcję;
+- znormalizowane `source-snapshot-v2`, `BudgetBreakdowns` i 7 `BudgetItems` na opcję;
+- cztery kolekcje conditional/optional charges na opcję, zachowanie jawnej kompletności,
+  nieaddytywne disclosures i brak wpływu na istniejący budżet/ranking;
+- bezpieczne wewnętrzne `ProviderExecutionRecords`, ich call sequence/fingerprint/count oraz
+  brak publicznego endpointu i raw request/response/error/header;
 - zgodność sum confirmed/estimated/unknown z agregatem karty;
 - akceptację PLN/EUR przez pełny przepływ CAP i odrzucenie JPY/KWD/nieznanych kodów przed
   persistence; EUR przechodzi również przez grounded narrative i kodowy display;
-- idempotentne ponowne wywołanie bez duplikatów;
+- idempotentne ponowne wywołanie v2 bez duplikatów;
 - dwa równoległe wywołania `startPlanning` koaleskowane do jednego pipeline'u i runu;
 - kontrolowany niedobór z diagnostyką i zerem częściowych opcji;
 - rollback wszystkich zapisów po awarii providera.
@@ -165,9 +180,13 @@ sprawdza między innymi:
   `INVALID_NARRATIVE_PERSISTENCE`;
 - realną persistence mieszanego `ADDITIONAL_FEES` z niezerowymi częściami confirmed/estimated
   oraz bezpieczny nullable/no-default upgrade dla nieoznaczonych `PlanningRuns` legacy;
-- realny post-upgrade replay exact v0 przy `OPTIONS_READY`: ten sam ID, jeden run, trzy opcje,
-  trzy przejścia, nullowe nowe pola, zero provider calls, zero zapisów i zero backfillu;
-- pierwszeństwo istniejącego v1 nawet przy równoczesnym niespójnym exact v0;
+- realny post-upgrade replay frozen exact v1 i exact v0 przy `OPTIONS_READY`: ten sam ID,
+  jeden run, trzy opcje, trzy przejścia, nullowe nowe pola, zero provider calls, zero zapisów i
+  zero backfillu;
+- kolejność v2 → frozen v1 → exact v0 i pierwszeństwo nowszego istniejącego runu nawet przy
+  równoczesnym niespójnym starszym wpisie;
+- brak legacy replay dla manifestu live lub mieszanego: zero silent live → fixture fallback,
+  zero provider substitution i fail-closed bez zmian persistence;
 - fail-closed 409 bez wywołań i zmian dla exact v0 z brakującą opcją, błędną wersją albo
   `INSUFFICIENT_OPTIONS` oraz 500 `INVALID_GROUNDED_OPTION_CONTEXT` przed gatewayem/AiRun dla
   narracji z legacy runu;
@@ -200,7 +219,8 @@ Testów nie wyłącza się, nie pomija i nie rozwadnia w celu uzyskania zieloneg
 Testy adapterów nie patchują globalnego `fetch`: fabryka klienta otrzymuje lokalny,
 kontrolowany transport, który pozwala sprawdzić rzeczywisty payload SDK bez sieci. Żaden
 test w `test`, `verify` ani `verify:full` nie wymaga credentiali i nie wykonuje płatnego
-requestu.
+requestu. Testy Phase 4B0 używają wyłącznie fixture/in-memory doubles: nie wykonują calli do
+zewnętrznego travel providera ani Duffel, a ścieżka live nie ma cichego fallbacku do fixture.
 
 ## Offline narrative-quality contract replay
 

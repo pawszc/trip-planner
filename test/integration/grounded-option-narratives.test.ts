@@ -29,8 +29,16 @@ import {
 } from '../../srv/narratives/option-narrative.ts';
 import {
   createLegacyPlanningFingerprintV0,
+  createLegacyPlanningFingerprintV1,
   createPlanningContext,
 } from '../../srv/orchestration/planning-request.ts';
+import {
+  createProviderConfigurationManifest,
+  MOCK_PROVIDER_MANIFEST,
+  type ProviderConfigurationManifest,
+} from '../../srv/providers/provider-manifest.ts';
+import { stayResultView } from '../../srv/providers/normalized-result.ts';
+import { createSourceSnapshotResultFingerprint } from '../../srv/providers/source-snapshot.ts';
 import { referenceTripRequestODataPayload } from '../fixtures/trip-request.ts';
 
 process.env.CDS_TYPESCRIPT = 'true';
@@ -121,6 +129,7 @@ type OfflineMode = 'SUCCESS' | 'INVALID_REFERENCE' | 'PROVIDER_FAILURE';
 interface NarrativeServiceSeam {
   createNarrativeGateway(): AiGateway;
   createPlanningProviders(): CandidateEngineProviders;
+  createPlanningProviderManifest(): ProviderConfigurationManifest;
   after(event: string, handler: (result: unknown, request: Request) => void): void;
 }
 
@@ -128,6 +137,7 @@ const forceProductRollbackHeader = 'x-test-force-narrative-rollback';
 let narrativeService: NarrativeServiceSeam;
 let originalGatewayFactory: () => AiGateway;
 let originalPlanningProviderFactory: () => CandidateEngineProviders;
+let originalPlanningManifestFactory: () => ProviderConfigurationManifest;
 
 interface PersistedBudgetItem {
   category: string;
@@ -474,6 +484,9 @@ const REPLAY_SNAPSHOT_ENTITIES = [
   'RankedOptions',
   'SourceSnapshots',
   'BudgetItems',
+  'OfferChargeCollections',
+  'OfferChargeDisclosures',
+  'ProviderExecutionRecords',
   'OptionNotes',
   'RejectionReasons',
   'RejectionSummaries',
@@ -513,14 +526,157 @@ async function convertPlanningRunToLegacyV0(
   const legacyFingerprint = createLegacyPlanningFingerprintV0(createPlanningContext(tripRequest));
   await cds.db.run(
     cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
-      .set({ requestFingerprint: legacyFingerprint, currencyContractVersion: null })
+      .set({
+        requestFingerprint: legacyFingerprint,
+        requestFingerprintVersion: null,
+        currencyContractVersion: null,
+        offerPricingContractVersion: null,
+        providerManifestVersion: null,
+        providerManifestFingerprint: null,
+        providerManifestJson: null,
+      })
       .where({ ID: planningRunId }),
   );
   await cds.db.run(
-    cds.ql.UPDATE.entity('trip.planner.BudgetItems')
-      .set({ confirmedAmountMinor: null, estimatedAmountMinor: null })
+    cds.ql.UPDATE.entity('trip.planner.RankedOptions')
+      .set({
+        providerManifestVersion: null,
+        providerManifestFingerprint: null,
+        offerPricingContractVersion: null,
+        transportMandatoryTotalMinor: null,
+        transportMandatoryTotalPriceType: null,
+        transportMandatoryTotalClassification: null,
+        transportMandatoryTotalSourceKey: null,
+        accommodationMandatoryTotalMinor: null,
+        accommodationMandatoryTotalPriceType: null,
+        accommodationMandatoryTotalClassification: null,
+        accommodationMandatoryTotalSourceKey: null,
+      })
       .where({ planningRun_ID: planningRunId }),
   );
+  await cds.db.run(
+    cds.ql.UPDATE.entity('trip.planner.SourceSnapshots')
+      .set({
+        providerManifestVersion: null,
+        providerManifestFingerprint: null,
+        sourceContractVersion: null,
+        sourceType: null,
+        adapterVersion: null,
+        providerVersion: null,
+        upstreamApiVersion: null,
+        upstreamSchemaFingerprint: null,
+        queryFingerprint: null,
+        resultFingerprint: null,
+        expiresAt: null,
+      })
+      .where({ planningRun_ID: planningRunId }),
+  );
+  await cds.db.run(
+    cds.ql.UPDATE.entity('trip.planner.BudgetItems')
+      .set({
+        providerManifestVersion: null,
+        providerManifestFingerprint: null,
+        confirmedAmountMinor: null,
+        estimatedAmountMinor: null,
+      })
+      .where({ planningRun_ID: planningRunId }),
+  );
+  for (const entity of ['RejectionReasons', 'RejectionSummaries'] as const) {
+    await cds.db.run(
+      cds.ql.UPDATE.entity(`trip.planner.${entity}`)
+        .set({ providerManifestVersion: null, providerManifestFingerprint: null })
+        .where({ planningRun_ID: planningRunId }),
+    );
+  }
+  for (const entity of [
+    'OfferChargeDisclosures',
+    'OfferChargeCollections',
+    'ProviderExecutionRecords',
+  ] as const) {
+    await cds.db.run(
+      cds.ql.DELETE.from(`trip.planner.${entity}`).where({ planningRun_ID: planningRunId }),
+    );
+  }
+  return { legacyFingerprint, previousFingerprint: planningRun.requestFingerprint };
+}
+
+async function convertPlanningRunToLegacyV1(
+  tripRequestId: string,
+  planningRunId: string,
+): Promise<{ legacyFingerprint: string; previousFingerprint: string }> {
+  const tripRequest = (await cds.db.run(
+    cds.ql.SELECT.one.from('trip.planner.TripRequests').where({ ID: tripRequestId }),
+  )) as PersistedTripRequest | undefined;
+  const planningRun = (await cds.db.run(
+    cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: planningRunId }),
+  )) as LegacyPlanningRunRecord | undefined;
+  if (tripRequest === undefined || planningRun === undefined) {
+    throw new Error('Planning fixture is missing records required for v1 conversion.');
+  }
+
+  const legacyFingerprint = createLegacyPlanningFingerprintV1(createPlanningContext(tripRequest));
+  await cds.db.run(
+    cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+      .set({
+        requestFingerprint: legacyFingerprint,
+        requestFingerprintVersion: null,
+        offerPricingContractVersion: null,
+        providerManifestVersion: null,
+        providerManifestFingerprint: null,
+        providerManifestJson: null,
+      })
+      .where({ ID: planningRunId }),
+  );
+  await cds.db.run(
+    cds.ql.UPDATE.entity('trip.planner.RankedOptions')
+      .set({
+        providerManifestVersion: null,
+        providerManifestFingerprint: null,
+        offerPricingContractVersion: null,
+        transportMandatoryTotalMinor: null,
+        transportMandatoryTotalPriceType: null,
+        transportMandatoryTotalClassification: null,
+        transportMandatoryTotalSourceKey: null,
+        accommodationMandatoryTotalMinor: null,
+        accommodationMandatoryTotalPriceType: null,
+        accommodationMandatoryTotalClassification: null,
+        accommodationMandatoryTotalSourceKey: null,
+      })
+      .where({ planningRun_ID: planningRunId }),
+  );
+  await cds.db.run(
+    cds.ql.UPDATE.entity('trip.planner.SourceSnapshots')
+      .set({
+        providerManifestVersion: null,
+        providerManifestFingerprint: null,
+        sourceContractVersion: null,
+        sourceType: null,
+        adapterVersion: null,
+        providerVersion: null,
+        upstreamApiVersion: null,
+        upstreamSchemaFingerprint: null,
+        queryFingerprint: null,
+        resultFingerprint: null,
+        expiresAt: null,
+      })
+      .where({ planningRun_ID: planningRunId }),
+  );
+  for (const entity of ['BudgetItems', 'RejectionReasons', 'RejectionSummaries'] as const) {
+    await cds.db.run(
+      cds.ql.UPDATE.entity(`trip.planner.${entity}`)
+        .set({ providerManifestVersion: null, providerManifestFingerprint: null })
+        .where({ planningRun_ID: planningRunId }),
+    );
+  }
+  for (const entity of [
+    'OfferChargeDisclosures',
+    'OfferChargeCollections',
+    'ProviderExecutionRecords',
+  ] as const) {
+    await cds.db.run(
+      cds.ql.DELETE.from(`trip.planner.${entity}`).where({ planningRun_ID: planningRunId }),
+    );
+  }
   return { legacyFingerprint, previousFingerprint: planningRun.requestFingerprint };
 }
 
@@ -539,6 +695,28 @@ async function withHardTimeout<T>(operation: Promise<T>, timeoutMs = 5_000): Pro
   }
 }
 
+async function expectPlanningReplayFailsClosedWithoutProviderOrWrites(
+  tripRequestId: string,
+): Promise<void> {
+  const beforeReplay = await readReplayPersistenceSnapshot();
+  let planningProviderFactoryCalls = 0;
+  narrativeService.createPlanningProviders = () => {
+    planningProviderFactoryCalls += 1;
+    return originalPlanningProviderFactory();
+  };
+
+  await expect(
+    withHardTimeout(
+      POST(`/trip-planner/TripRequests(${tripRequestId})/TripPlannerService.startPlanning`, {}),
+    ),
+  ).rejects.toMatchObject({
+    status: 409,
+    response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+  });
+  expect(planningProviderFactoryCalls).toBe(0);
+  expect(await readReplayPersistenceSnapshot()).toEqual(beforeReplay);
+}
+
 beforeAll(async () => {
   await test;
   const service = cds.services.TripPlannerService as unknown as NarrativeServiceSeam | undefined;
@@ -546,6 +724,7 @@ beforeAll(async () => {
   narrativeService = service;
   originalGatewayFactory = service.createNarrativeGateway;
   originalPlanningProviderFactory = service.createPlanningProviders;
+  originalPlanningManifestFactory = service.createPlanningProviderManifest;
   service.after('generateNarrative', (_result: unknown, request: Request) => {
     if (request.headers[forceProductRollbackHeader] === 'true') {
       throw new Error('Intentional narrative product rollback.');
@@ -557,11 +736,13 @@ beforeEach(async () => {
   await test.data.reset();
   narrativeService.createNarrativeGateway = originalGatewayFactory;
   narrativeService.createPlanningProviders = originalPlanningProviderFactory;
+  narrativeService.createPlanningProviderManifest = originalPlanningManifestFactory;
 });
 
 afterEach(() => {
   narrativeService.createNarrativeGateway = originalGatewayFactory;
   narrativeService.createPlanningProviders = originalPlanningProviderFactory;
+  narrativeService.createPlanningProviderManifest = originalPlanningManifestFactory;
 });
 
 describe('grounded option narrative CAP use case', () => {
@@ -599,15 +780,50 @@ describe('grounded option narrative CAP use case', () => {
         async search(request) {
           const stays = await providers.accommodation.search(request);
           return stays.map((stay) => {
-            if (!isKnownMoney(stay.additionalFees)) return stay;
-            return {
+            if (
+              !isKnownMoney(stay.additionalFees) ||
+              !isKnownMoney(stay.pricing.mandatoryTotal) ||
+              stay.sourceSnapshot === null
+            ) {
+              return stay;
+            }
+            const estimatedFees = createMoney(
+              stay.additionalFees.amountMinor,
+              stay.additionalFees.currency,
+              'ESTIMATE',
+              null,
+            );
+            const changedStay = {
               ...stay,
-              additionalFees: createMoney(
-                stay.additionalFees.amountMinor,
-                stay.additionalFees.currency,
-                'ESTIMATE',
-                stay.additionalFees.sourceSnapshot,
+              price: { ...stay.price, sourceSnapshot: null },
+              additionalFees: estimatedFees,
+              pricing: {
+                ...stay.pricing,
+                mandatoryTotal: createMoney(
+                  stay.pricing.mandatoryTotal.amountMinor,
+                  stay.pricing.mandatoryTotal.currency,
+                  'ESTIMATE',
+                  null,
+                ),
+              },
+              sourceSnapshot: null,
+            };
+            const sourceSnapshot = {
+              ...stay.sourceSnapshot,
+              resultFingerprint: createSourceSnapshotResultFingerprint(
+                stay.sourceSnapshot,
+                stayResultView(changedStay),
               ),
+            };
+            return {
+              ...changedStay,
+              price: { ...changedStay.price, sourceSnapshot },
+              additionalFees: { ...changedStay.additionalFees, sourceSnapshot },
+              pricing: {
+                ...changedStay.pricing,
+                mandatoryTotal: { ...changedStay.pricing.mandatoryTotal, sourceSnapshot },
+              },
+              sourceSnapshot,
             };
           });
         },
@@ -644,22 +860,307 @@ describe('grounded option narrative CAP use case', () => {
     });
   });
 
-  it('replays an exact post-upgrade PlanningRun v0 without writes or backfill', async () => {
-    const planningRunColumns = (await cds.db.run(
-      "PRAGMA table_info('trip_planner_PlanningRuns')",
-    )) as SqliteColumnInfo[];
-    const budgetItemColumns = (await cds.db.run(
-      "PRAGMA table_info('trip_planner_BudgetItems')",
-    )) as SqliteColumnInfo[];
-    const currencyVersionColumn = planningRunColumns.find(
-      (column) => column.name === 'currencyContractVersion',
+  it('replays the exact source-main PlanningRun v1 without writes, backfill, or provider calls', async () => {
+    const { tripRequestId, planningRunId } = await createPlannedOption();
+    const { legacyFingerprint, previousFingerprint } = await convertPlanningRunToLegacyV1(
+      tripRequestId,
+      planningRunId,
     );
-    expect(currencyVersionColumn).toMatchObject({ notnull: 0, dflt_value: null });
-    for (const columnName of ['confirmedAmountMinor', 'estimatedAmountMinor']) {
-      expect(budgetItemColumns.find((column) => column.name === columnName)).toMatchObject({
-        notnull: 0,
-        dflt_value: null,
-      });
+    expect(legacyFingerprint).not.toBe(previousFingerprint);
+
+    const legacyRun = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.PlanningRuns').where({ ID: planningRunId }),
+    )) as Readonly<Record<string, unknown>>;
+    expect(legacyRun).toMatchObject({
+      ID: planningRunId,
+      tripRequest_ID: tripRequestId,
+      requestFingerprint: legacyFingerprint,
+      requestFingerprintVersion: null,
+      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+      providerFixtureVersion: 'europe-reference-v1',
+      providerManifestVersion: null,
+      providerManifestFingerprint: null,
+      providerManifestJson: null,
+      engineVersion: 'candidate-engine-v1',
+      scoringVersion: 'candidate-score-v1:candidate-engine-v1',
+      selectedOptionCount: 3,
+    });
+
+    const beforeReplay = await readReplayPersistenceSnapshot();
+    let planningProviderFactoryCalls = 0;
+    narrativeService.createPlanningProviders = () => {
+      planningProviderFactoryCalls += 1;
+      return originalPlanningProviderFactory();
+    };
+    const replayed = await withHardTimeout(
+      POST(`/trip-planner/TripRequests(${tripRequestId})/TripPlannerService.startPlanning`, {}),
+    );
+
+    expect(replayed.data).toMatchObject({
+      ID: planningRunId,
+      requestFingerprint: legacyFingerprint,
+      requestFingerprintVersion: null,
+      currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+      providerManifestVersion: null,
+      providerManifestFingerprint: null,
+    });
+    expect(planningProviderFactoryCalls).toBe(0);
+    expect(await readReplayPersistenceSnapshot()).toEqual(beforeReplay);
+  });
+
+  it.each([
+    ['SourceSnapshot manifest', 'SourceSnapshots', 'providerManifestFingerprint'],
+    ['BudgetItem manifest', 'BudgetItems', 'providerManifestVersion'],
+    ['offer collection pricing', 'OfferChargeCollections', 'offerPricingContractVersion'],
+    ['provider execution manifest', 'ProviderExecutionRecords', 'providerManifestFingerprint'],
+    ['provider execution status', 'ProviderExecutionRecords', 'status'],
+    ['provider execution query fingerprint', 'ProviderExecutionRecords', 'queryFingerprint'],
+    ['rejection detail manifest', 'RejectionReasons', 'providerManifestVersion'],
+    ['rejection summary manifest', 'RejectionSummaries', 'providerManifestVersion'],
+  ] as const)(
+    'rejects current replay with contaminated %s descendant lineage without calls or writes',
+    async (_case, entity, field) => {
+      const { tripRequestId, planningRunId } = await createPlannedOption();
+      const row = (await cds.db.run(
+        cds.ql.SELECT.one.from(`trip.planner.${entity}`).where({
+          planningRun_ID: planningRunId,
+        }),
+      )) as { ID: string } | undefined;
+      if (row === undefined) {
+        throw new Error(`Planning fixture produced no ${entity} descendant to corrupt.`);
+      }
+      await cds.db.run(
+        cds.ql.UPDATE.entity(`trip.planner.${entity}`)
+          .set({ [field]: 'corrupt-lineage-version' })
+          .where({ ID: row.ID }),
+      );
+
+      await expectPlanningReplayFailsClosedWithoutProviderOrWrites(tripRequestId);
+    },
+  );
+
+  it('rejects current replay with a cross-option SourceSnapshot key collision', async () => {
+    const { tripRequestId, planningRunId } = await createPlannedOption();
+    const options = (await cds.db.run(
+      cds.ql.SELECT.from('trip.planner.RankedOptions')
+        .where({ planningRun_ID: planningRunId })
+        .orderBy('rank'),
+    )) as Array<{ ID: string }>;
+    if (options.length < 2 || options[0] === undefined || options[1] === undefined) {
+      throw new Error('Planning fixture produced fewer than two options for collision testing.');
+    }
+    const firstSource = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.SourceSnapshots').where({
+        planningRun_ID: planningRunId,
+        rankedOption_ID: options[0].ID,
+      }),
+    )) as { sourceKey: string } | undefined;
+    const secondSource = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.SourceSnapshots').where({
+        planningRun_ID: planningRunId,
+        rankedOption_ID: options[1].ID,
+      }),
+    )) as { ID: string } | undefined;
+    if (firstSource === undefined || secondSource === undefined) {
+      throw new Error('Planning fixture produced no sources for collision testing.');
+    }
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.SourceSnapshots')
+        .set({ sourceKey: firstSource.sourceKey })
+        .where({ ID: secondSource.ID }),
+    );
+
+    await expectPlanningReplayFailsClosedWithoutProviderOrWrites(tripRequestId);
+  });
+
+  it.each([
+    ['v0 SourceSnapshot contract', 'V0', 'SourceSnapshots', 'sourceContractVersion'],
+    ['v1 SourceSnapshot fixture lineage', 'V1', 'SourceSnapshots', 'fixtureVersion'],
+    ['v1 BudgetItem manifest', 'V1', 'BudgetItems', 'providerManifestVersion'],
+    ['v0 rejection manifest', 'V0', 'RejectionReasons', 'providerManifestVersion'],
+  ] as const)(
+    'rejects legacy replay with contaminated %s descendant lineage without calls or writes',
+    async (_case, legacyVersion, entity, field) => {
+      const { tripRequestId, planningRunId } = await createPlannedOption();
+      if (legacyVersion === 'V0') {
+        await convertPlanningRunToLegacyV0(tripRequestId, planningRunId);
+      } else {
+        await convertPlanningRunToLegacyV1(tripRequestId, planningRunId);
+      }
+      const row = (await cds.db.run(
+        cds.ql.SELECT.one.from(`trip.planner.${entity}`).where({
+          planningRun_ID: planningRunId,
+        }),
+      )) as { ID: string } | undefined;
+      if (row === undefined) {
+        throw new Error(`Legacy fixture produced no ${entity} descendant to corrupt.`);
+      }
+      await cds.db.run(
+        cds.ql.UPDATE.entity(`trip.planner.${entity}`)
+          .set({ [field]: 'planning-provider-manifest-v1' })
+          .where({ ID: row.ID }),
+      );
+
+      await expectPlanningReplayFailsClosedWithoutProviderOrWrites(tripRequestId);
+    },
+  );
+
+  it.each(['V0', 'V1'] as const)(
+    'rejects %s replay when one ranked option has no historical sources',
+    async (legacyVersion) => {
+      const { tripRequestId, planningRunId, option } = await createPlannedOption();
+      if (legacyVersion === 'V0') {
+        await convertPlanningRunToLegacyV0(tripRequestId, planningRunId);
+      } else {
+        await convertPlanningRunToLegacyV1(tripRequestId, planningRunId);
+      }
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.BudgetItems')
+          .set({ sourceSnapshot_ID: null })
+          .where({ rankedOption_ID: option.ID }),
+      );
+      await cds.db.run(
+        cds.ql.DELETE.from('trip.planner.SourceSnapshots').where({ rankedOption_ID: option.ID }),
+      );
+
+      await expectPlanningReplayFailsClosedWithoutProviderOrWrites(tripRequestId);
+    },
+  );
+
+  it.each([
+    ['v0 offer pricing collection', 'V0', 'OfferChargeCollections'],
+    ['v1 provider execution audit', 'V1', 'ProviderExecutionRecords'],
+  ] as const)(
+    'rejects legacy replay contaminated by a new %s row without calls or writes',
+    async (_case, legacyVersion, entity) => {
+      const { tripRequestId, planningRunId } = await createPlannedOption();
+      const currentRow = (await cds.db.run(
+        cds.ql.SELECT.one.from(`trip.planner.${entity}`).where({
+          planningRun_ID: planningRunId,
+        }),
+      )) as Readonly<Record<string, unknown>> | undefined;
+      if (currentRow === undefined) {
+        throw new Error(`Planning fixture produced no ${entity} descendant to restore.`);
+      }
+      if (legacyVersion === 'V0') {
+        await convertPlanningRunToLegacyV0(tripRequestId, planningRunId);
+      } else {
+        await convertPlanningRunToLegacyV1(tripRequestId, planningRunId);
+      }
+      await cds.db.run(cds.ql.INSERT.into(`trip.planner.${entity}`).entries(currentRow));
+
+      await expectPlanningReplayFailsClosedWithoutProviderOrWrites(tripRequestId);
+    },
+  );
+
+  it('never replays fixture history when the active manifest contains a live provider', async () => {
+    const { tripRequestId, planningRunId } = await createPlannedOption();
+    await convertPlanningRunToLegacyV1(tripRequestId, planningRunId);
+    const mixedLiveManifest = createProviderConfigurationManifest(
+      MOCK_PROVIDER_MANIFEST.entries.map((entry) =>
+        entry.role === 'TRANSPORT'
+          ? {
+              ...entry,
+              mode: 'LIVE' as const,
+              providerKey: 'offline-live-transport',
+              providerName: 'OfflineLiveTransportProvider',
+              providerVersion: 'offline-contract-v1',
+              adapterId: 'offline-live-transport-adapter',
+              adapterVersion: 'offline-live-transport-adapter-v1',
+              searchPolicyVersion: 'offline-search-policy-v1',
+              fixtureVersion: null,
+              upstreamApiVersion: 'offline-api-v1',
+              upstreamSchemaVersion: 'offline-schema-v1',
+            }
+          : entry,
+      ),
+    );
+    narrativeService.createPlanningProviderManifest = () => mixedLiveManifest;
+    let planningProviderFactoryCalls = 0;
+    narrativeService.createPlanningProviders = () => {
+      planningProviderFactoryCalls += 1;
+      return originalPlanningProviderFactory();
+    };
+    const beforeReplay = await readReplayPersistenceSnapshot();
+
+    await expect(
+      POST(`/trip-planner/TripRequests(${tripRequestId})/TripPlannerService.startPlanning`, {}),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+    });
+    expect(planningProviderFactoryCalls).toBe(0);
+    expect(await readReplayPersistenceSnapshot()).toEqual(beforeReplay);
+  });
+
+  it('replays an exact post-upgrade PlanningRun v0 without writes or backfill', async () => {
+    const nullableNoDefaultColumns = {
+      PlanningRuns: [
+        'requestFingerprintVersion',
+        'currencyContractVersion',
+        'providerFixtureVersion',
+        'providerManifestVersion',
+        'providerManifestFingerprint',
+        'providerManifestJson',
+        'offerPricingContractVersion',
+      ],
+      RankedOptions: [
+        'providerFixtureVersion',
+        'providerManifestVersion',
+        'providerManifestFingerprint',
+        'offerPricingContractVersion',
+        'transportMandatoryTotalMinor',
+        'transportMandatoryTotalPriceType',
+        'transportMandatoryTotalClassification',
+        'transportMandatoryTotalSourceKey',
+        'accommodationMandatoryTotalMinor',
+        'accommodationMandatoryTotalPriceType',
+        'accommodationMandatoryTotalClassification',
+        'accommodationMandatoryTotalSourceKey',
+      ],
+      SourceSnapshots: [
+        'providerFixtureVersion',
+        'providerManifestVersion',
+        'providerManifestFingerprint',
+        'sourceContractVersion',
+        'sourceType',
+        'adapterVersion',
+        'providerVersion',
+        'upstreamApiVersion',
+        'upstreamSchemaFingerprint',
+        'queryFingerprint',
+        'resultFingerprint',
+        'expiresAt',
+        'fixtureVersion',
+      ],
+      BudgetItems: [
+        'providerFixtureVersion',
+        'providerManifestVersion',
+        'providerManifestFingerprint',
+        'confirmedAmountMinor',
+        'estimatedAmountMinor',
+      ],
+      RejectionReasons: [
+        'providerFixtureVersion',
+        'providerManifestVersion',
+        'providerManifestFingerprint',
+      ],
+      RejectionSummaries: [
+        'providerFixtureVersion',
+        'providerManifestVersion',
+        'providerManifestFingerprint',
+      ],
+    } as const;
+    for (const [entity, columnNames] of Object.entries(nullableNoDefaultColumns)) {
+      const columns = (await cds.db.run(
+        `PRAGMA table_info('trip_planner_${entity}')`,
+      )) as SqliteColumnInfo[];
+      for (const columnName of columnNames) {
+        expect(columns.find((column) => column.name === columnName)).toMatchObject({
+          notnull: 0,
+          dflt_value: null,
+        });
+      }
     }
 
     const { tripRequestId, planningRunId, option } = await createPlannedOption();

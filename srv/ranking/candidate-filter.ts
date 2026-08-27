@@ -4,8 +4,9 @@ import {
   type TripCandidate,
   TRANSPORT_MODE_VALUES,
 } from '../domain/candidate.ts';
-import { isSupportedCurrency } from '../domain/currency.ts';
-import { FRESHNESS_TYPE_VALUES, type Money, type SourceSnapshot } from '../domain/money.ts';
+import { type Money, type SourceSnapshot } from '../domain/money.ts';
+import { offerPricingValidationIssues } from '../domain/offer-pricing.ts';
+import { canonicalSourceSnapshot, isCompleteSourceSnapshot } from '../providers/source-snapshot.ts';
 import { SOFT_PREFERENCE_KEYS } from '../domain/trip-request.ts';
 import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.ts';
@@ -74,8 +75,22 @@ function moneyEntries(candidate: TripCandidate): readonly (readonly [string, Mon
   return [
     ['transport.price', candidate.transport.price],
     ['transport.additionalFees', candidate.transport.additionalFees],
+    ['transport.pricing.mandatoryTotal', candidate.transport.pricing.mandatoryTotal],
+    ...candidate.transport.pricing.conditionalCharges.items.map(
+      (charge) => [`transport.pricing.conditionalCharges.${charge.id}`, charge.amount] as const,
+    ),
+    ...candidate.transport.pricing.optionalAncillaries.items.map(
+      (charge) => [`transport.pricing.optionalAncillaries.${charge.id}`, charge.amount] as const,
+    ),
     ['stay.price', candidate.stay.price],
     ['stay.additionalFees', candidate.stay.additionalFees],
+    ['stay.pricing.mandatoryTotal', candidate.stay.pricing.mandatoryTotal],
+    ...candidate.stay.pricing.conditionalCharges.items.map(
+      (charge) => [`stay.pricing.conditionalCharges.${charge.id}`, charge.amount] as const,
+    ),
+    ...candidate.stay.pricing.optionalAncillaries.items.map(
+      (charge) => [`stay.pricing.optionalAncillaries.${charge.id}`, charge.amount] as const,
+    ),
     ['budget.localTransport', candidate.budget.localTransport],
     ['budget.food', candidate.budget.food],
     ['budget.attractions', candidate.budget.attractions],
@@ -95,26 +110,6 @@ function sourceEntries(
       ([path, money]) => [`money:${path}`, money.sourceSnapshot] as const,
     ),
   ];
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-function hasCompleteSourceSnapshot(source: SourceSnapshot | null): source is SourceSnapshot {
-  return (
-    source !== null &&
-    typeof source === 'object' &&
-    isNonEmptyString(source.id) &&
-    isNonEmptyString(source.provider) &&
-    isNonEmptyString(source.externalItemId) &&
-    isNonEmptyString(source.fetchedAt) &&
-    strictInstant(source.fetchedAt) !== null &&
-    isNonEmptyString(source.sourceUrl) &&
-    FRESHNESS_TYPE_VALUES.includes(source.freshnessType) &&
-    isSupportedCurrency(source.currency) &&
-    isNonEmptyString(source.fixtureVersion)
-  );
 }
 
 function invalidDates(candidate: TripCandidate, context: PlanningContext): readonly string[] {
@@ -331,8 +326,10 @@ export function validateCandidate(
   const requiredPrices = [
     ['transport.price', candidate.transport.price],
     ['transport.additionalFees', candidate.transport.additionalFees],
+    ['transport.pricing.mandatoryTotal', candidate.transport.pricing.mandatoryTotal],
     ['stay.price', candidate.stay.price],
     ['stay.additionalFees', candidate.stay.additionalFees],
+    ['stay.pricing.mandatoryTotal', candidate.stay.pricing.mandatoryTotal],
     ['localCostEstimates.localTransport', candidate.localCostEstimates.localTransport],
     ['localCostEstimates.food', candidate.localCostEstimates.food],
     ['localCostEstimates.attractions', candidate.localCostEstimates.attractions],
@@ -354,7 +351,7 @@ export function validateCandidate(
   }
 
   const missingSources = sourceEntries(candidate)
-    .filter(([, source]) => !hasCompleteSourceSnapshot(source))
+    .filter(([, source]) => !isCompleteSourceSnapshot(source))
     .map(([path]) => path);
   if (missingSources.length > 0) {
     reasons.push(
@@ -419,6 +416,31 @@ export function validateCandidate(
   }
 
   const missingFields = [...incompleteFields(candidate)];
+  missingFields.push(
+    ...offerPricingValidationIssues(
+      candidate.transport.price,
+      candidate.transport.additionalFees,
+      candidate.transport.pricing,
+      'transport.pricing',
+    ),
+    ...offerPricingValidationIssues(
+      candidate.stay.price,
+      candidate.stay.additionalFees,
+      candidate.stay.pricing,
+      'stay.pricing',
+    ),
+  );
+  const sourceIdentity = new Map<string, string>();
+  for (const [path, source] of sourceEntries(candidate)) {
+    if (!isCompleteSourceSnapshot(source)) continue;
+    const canonical = canonicalSourceSnapshot(source);
+    const previous = sourceIdentity.get(source.id);
+    if (previous !== undefined && previous !== canonical) {
+      missingFields.push(`sourceCollision:${path}`);
+    } else {
+      sourceIdentity.set(source.id, canonical);
+    }
+  }
   if (
     candidate.budget.totalAmountMinor === null &&
     unknownPrices.length === 0 &&

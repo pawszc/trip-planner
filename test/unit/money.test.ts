@@ -5,6 +5,8 @@ import {
   MONEY_CLASSIFICATION_VALUES,
   MoneyError,
   PRICE_TYPE_VALUES,
+  SOURCE_SNAPSHOT_CONTRACT_VERSION,
+  SOURCE_TYPE_VALUES,
   addMinorUnits,
   assertMoneyCurrency,
   classifyMoney,
@@ -15,12 +17,23 @@ import {
   type KnownPriceType,
   type SourceSnapshot,
 } from '../../srv/domain/money.ts';
+import { createProviderFingerprint } from '../../srv/providers/provider-fingerprint.ts';
 
+const queryFingerprint = createProviderFingerprint({ fixture: 'transport-v1' });
 const snapshot: SourceSnapshot = {
+  contractVersion: SOURCE_SNAPSHOT_CONTRACT_VERSION,
   id: 'snapshot-transport-1',
+  sourceType: 'FIXTURE',
   provider: 'MOCK_TRANSPORT',
+  adapterVersion: 'mock-transport-v1',
+  providerVersion: 'transport-v1',
+  upstreamApiVersion: null,
+  upstreamSchemaFingerprint: null,
+  queryFingerprint,
+  resultFingerprint: createProviderFingerprint({ queryFingerprint, item: 'transport-1' }),
   externalItemId: 'transport-1',
   fetchedAt: '2026-01-01T00:00:00.000Z',
+  expiresAt: null,
   sourceUrl: 'INTERNAL_FIXTURE',
   freshnessType: 'FIXTURE',
   currency: 'PLN',
@@ -31,6 +44,7 @@ describe('Money', () => {
   it('publikuje kompletny, stabilny zestaw typów cen i świeżości źródeł', () => {
     expect(PRICE_TYPE_VALUES).toEqual(['LIVE_PRICE', 'FIXED_PRICE', 'ESTIMATE', 'UNKNOWN']);
     expect(FRESHNESS_TYPE_VALUES).toEqual(['LIVE', 'CACHED', 'FIXTURE', 'INTERNAL_RULE']);
+    expect(SOURCE_TYPE_VALUES).toEqual(['LIVE', 'FIXTURE', 'INTERNAL_RULE']);
     expect(MONEY_CLASSIFICATION_VALUES).toEqual(['CONFIRMED', 'ESTIMATED', 'UNKNOWN']);
   });
 

@@ -15,13 +15,34 @@ import {
   type TransportOption,
   type TripCandidate,
 } from '../../srv/domain/candidate.ts';
-import { createMoney, unknownMoney, type SourceSnapshot } from '../../srv/domain/money.ts';
+import {
+  SOURCE_SNAPSHOT_CONTRACT_VERSION,
+  createMoney,
+  unknownMoney,
+  type SourceSnapshot,
+} from '../../srv/domain/money.ts';
+import {
+  OFFER_PRICING_CONTRACT_VERSION,
+  knownEmptyChargeCollection,
+} from '../../srv/domain/offer-pricing.ts';
+import { createProviderFingerprint } from '../../srv/providers/provider-fingerprint.ts';
+
+const fixtureQueryFingerprint = createProviderFingerprint({ fixture: 'fixture-v1' });
 
 const fixtureSnapshot: SourceSnapshot = {
+  contractVersion: SOURCE_SNAPSHOT_CONTRACT_VERSION,
   id: 'snapshot-fixture-v1',
+  sourceType: 'FIXTURE',
   provider: 'MOCK_PROVIDER',
+  adapterVersion: 'mock-adapter-v1',
+  providerVersion: 'fixture-v1',
+  upstreamApiVersion: null,
+  upstreamSchemaFingerprint: null,
+  queryFingerprint: fixtureQueryFingerprint,
+  resultFingerprint: createProviderFingerprint({ fixtureQueryFingerprint, item: 1 }),
   externalItemId: 'fixture-item-1',
   fetchedAt: '2026-01-01T00:00:00.000Z',
+  expiresAt: null,
   sourceUrl: 'INTERNAL_FIXTURE',
   freshnessType: 'FIXTURE',
   currency: 'PLN',
@@ -29,10 +50,19 @@ const fixtureSnapshot: SourceSnapshot = {
 };
 
 const internalRuleSnapshot: SourceSnapshot = {
+  contractVersion: SOURCE_SNAPSHOT_CONTRACT_VERSION,
   id: 'snapshot-local-cost-rule-v1',
+  sourceType: 'INTERNAL_RULE',
   provider: 'INTERNAL_ESTIMATOR',
+  adapterVersion: 'internal-estimator-v1',
+  providerVersion: 'local-cost-rule-v1',
+  upstreamApiVersion: null,
+  upstreamSchemaFingerprint: null,
+  queryFingerprint: createProviderFingerprint({ rule: 'local-cost-rule-v1' }),
+  resultFingerprint: createProviderFingerprint({ rule: 'local-cost-rule-v1', result: 1 }),
   externalItemId: 'local-cost-rule-v1',
   fetchedAt: '2026-01-01T00:00:00.000Z',
+  expiresAt: null,
   sourceUrl: 'INTERNAL_FIXTURE',
   freshnessType: 'INTERNAL_RULE',
   currency: 'PLN',
@@ -70,6 +100,8 @@ const planningContext: PlanningContext = {
   },
 };
 
+const transportPrice = createMoney(60_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot);
+const transportFees = createMoney(2_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot);
 const transport: TransportOption = {
   id: 'transport-prg-1',
   destinationCode: 'PRG',
@@ -86,11 +118,19 @@ const transport: TransportOption = {
     durationMinutes: 240,
     connections: 0,
   },
-  price: createMoney(60_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot),
-  additionalFees: createMoney(2_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot),
+  price: transportPrice,
+  additionalFees: transportFees,
+  pricing: {
+    contractVersion: OFFER_PRICING_CONTRACT_VERSION,
+    mandatoryTotal: createMoney(62_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot),
+    conditionalCharges: knownEmptyChargeCollection(),
+    optionalAncillaries: knownEmptyChargeCollection(),
+  },
   sourceSnapshot: fixtureSnapshot,
 };
 
+const stayPrice = createMoney(120_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot);
+const stayFees = createMoney(5_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot);
 const stay: StayOption = {
   id: 'stay-prg-1',
   destinationCode: 'PRG',
@@ -98,8 +138,14 @@ const stay: StayOption = {
   checkInDate: '2026-09-17',
   checkOutDate: '2026-09-20',
   nights: 3,
-  price: createMoney(120_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot),
-  additionalFees: createMoney(5_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot),
+  price: stayPrice,
+  additionalFees: stayFees,
+  pricing: {
+    contractVersion: OFFER_PRICING_CONTRACT_VERSION,
+    mandatoryTotal: createMoney(125_000, 'PLN', 'FIXED_PRICE', fixtureSnapshot),
+    conditionalCharges: knownEmptyChargeCollection(),
+    optionalAncillaries: knownEmptyChargeCollection(),
+  },
   centralityScore: 92,
   sourceSnapshot: fixtureSnapshot,
 };

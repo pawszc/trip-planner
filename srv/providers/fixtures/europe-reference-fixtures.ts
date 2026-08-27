@@ -6,7 +6,17 @@ import type {
   TransportMode,
   TransportOption,
 } from '../../domain/candidate.ts';
-import { createMoney, type KnownPriceType, unknownMoney } from '../../domain/money.ts';
+import {
+  addMinorUnits,
+  createMoney,
+  isKnownMoney,
+  type KnownPriceType,
+  unknownMoney,
+} from '../../domain/money.ts';
+import {
+  OFFER_PRICING_CONTRACT_VERSION,
+  knownEmptyChargeCollection,
+} from '../../domain/offer-pricing.ts';
 import type { SoftPreferences } from '../../domain/trip-request.ts';
 import type {
   AccommodationSearchRequest,
@@ -18,6 +28,7 @@ import {
   validatePlacesSearchRequest,
   validateTransportSearchRequest,
 } from '../provider-request-validation.ts';
+import { placeResultView, stayResultView, transportResultView } from '../normalized-result.ts';
 import { addFixtureDays, fixtureInstant, fixtureNights } from './fixture-date.ts';
 import { createFixtureSource, MOCK_PROVIDER_NAMES } from './fixture-source.ts';
 
@@ -669,35 +680,90 @@ function buildTransportOption(
 ): TransportOption {
   const currency =
     definition.currency === 'MISMATCH' ? mismatchCurrency(request.currency) : request.currency;
+  const outbound = buildLeg(request, definition.outbound);
+  const returnLeg = buildLeg(request, definition.return);
+  const amountMinor =
+    definition.amountPerAdultMinor === null
+      ? null
+      : definition.amountPerAdultMinor * request.adults;
+  const priceWithoutSource =
+    amountMinor === null
+      ? unknownMoney(currency, null)
+      : createMoney(amountMinor, currency, definition.priceType, null);
+  const feesWithoutSource = createMoney(
+    definition.additionalFeesMinor,
+    currency,
+    'FIXED_PRICE',
+    null,
+  );
+  const mandatoryTotalWithoutSource = isKnownMoney(priceWithoutSource)
+    ? createMoney(
+        addMinorUnits(priceWithoutSource.amountMinor, feesWithoutSource.amountMinor),
+        currency,
+        priceWithoutSource.priceType,
+        null,
+      )
+    : unknownMoney(currency, null);
+  const normalizedResult = transportResultView({
+    id: definition.id,
+    destinationCode: definition.destinationCode,
+    mode: definition.mode,
+    outbound,
+    return: returnLeg,
+    price: priceWithoutSource,
+    additionalFees: feesWithoutSource,
+    pricing: {
+      contractVersion: OFFER_PRICING_CONTRACT_VERSION,
+      mandatoryTotal: mandatoryTotalWithoutSource,
+      conditionalCharges: knownEmptyChargeCollection(),
+      optionalAncillaries: knownEmptyChargeCollection(),
+    },
+    sourceSnapshot: null,
+  });
   const sourceSnapshot = definition.missingSource
     ? null
-    : createFixtureSource(MOCK_PROVIDER_NAMES.transport, definition.externalItemId, {
-        ...request,
-        currency,
-      });
-  const price =
-    definition.amountPerAdultMinor === null
-      ? unknownMoney(currency, sourceSnapshot)
-      : createMoney(
-          definition.amountPerAdultMinor * request.adults,
+    : createFixtureSource(
+        MOCK_PROVIDER_NAMES.transport,
+        definition.externalItemId,
+        {
+          ...request,
           currency,
-          definition.priceType,
-          sourceSnapshot,
-        );
+        },
+        normalizedResult,
+      );
+  const price =
+    amountMinor === null
+      ? unknownMoney(currency, sourceSnapshot)
+      : createMoney(amountMinor, currency, definition.priceType, sourceSnapshot);
+  const additionalFees = createMoney(
+    definition.additionalFeesMinor,
+    currency,
+    'FIXED_PRICE',
+    sourceSnapshot,
+  );
+  const mandatoryTotal = isKnownMoney(price)
+    ? createMoney(
+        addMinorUnits(price.amountMinor, additionalFees.amountMinor),
+        currency,
+        price.priceType,
+        sourceSnapshot,
+      )
+    : unknownMoney(currency, sourceSnapshot);
 
   return {
     id: definition.id,
     destinationCode: definition.destinationCode,
     mode: definition.mode,
-    outbound: buildLeg(request, definition.outbound),
-    return: buildLeg(request, definition.return),
+    outbound,
+    return: returnLeg,
     price,
-    additionalFees: createMoney(
-      definition.additionalFeesMinor,
-      currency,
-      'FIXED_PRICE',
-      sourceSnapshot,
-    ),
+    additionalFees,
+    pricing: {
+      contractVersion: OFFER_PRICING_CONTRACT_VERSION,
+      mandatoryTotal,
+      conditionalCharges: knownEmptyChargeCollection(),
+      optionalAncillaries: knownEmptyChargeCollection(),
+    },
     sourceSnapshot,
   };
 }
@@ -721,10 +787,58 @@ function buildStayOption(
   definition: StayDefinition,
 ): StayOption {
   const nights = fixtureNights(request.startDate, request.endDate);
+  const priceWithoutSource = createMoney(
+    definition.nightlyAmountMinor * nights,
+    request.currency,
+    definition.priceType,
+    null,
+  );
+  const feesWithoutSource = createMoney(
+    definition.additionalFeesMinor,
+    request.currency,
+    'FIXED_PRICE',
+    null,
+  );
+  const mandatoryTotalWithoutSource = createMoney(
+    addMinorUnits(priceWithoutSource.amountMinor, feesWithoutSource.amountMinor),
+    request.currency,
+    priceWithoutSource.priceType,
+    null,
+  );
   const sourceSnapshot = createFixtureSource(
     MOCK_PROVIDER_NAMES.accommodation,
     definition.externalItemId,
     request,
+    stayResultView({
+      id: definition.id,
+      destinationCode: definition.destinationCode,
+      name: definition.name,
+      checkInDate: request.startDate,
+      checkOutDate: request.endDate,
+      nights,
+      price: priceWithoutSource,
+      additionalFees: feesWithoutSource,
+      pricing: {
+        contractVersion: OFFER_PRICING_CONTRACT_VERSION,
+        mandatoryTotal: mandatoryTotalWithoutSource,
+        conditionalCharges: knownEmptyChargeCollection(),
+        optionalAncillaries: knownEmptyChargeCollection(),
+      },
+      centralityScore: definition.centralityScore,
+      sourceSnapshot: null,
+    }),
+  );
+  const price = createMoney(
+    definition.nightlyAmountMinor * nights,
+    request.currency,
+    definition.priceType,
+    sourceSnapshot,
+  );
+  const additionalFees = createMoney(
+    definition.additionalFeesMinor,
+    request.currency,
+    'FIXED_PRICE',
+    sourceSnapshot,
   );
 
   return {
@@ -734,18 +848,19 @@ function buildStayOption(
     checkInDate: request.startDate,
     checkOutDate: request.endDate,
     nights,
-    price: createMoney(
-      definition.nightlyAmountMinor * nights,
-      request.currency,
-      definition.priceType,
-      sourceSnapshot,
-    ),
-    additionalFees: createMoney(
-      definition.additionalFeesMinor,
-      request.currency,
-      'FIXED_PRICE',
-      sourceSnapshot,
-    ),
+    price,
+    additionalFees,
+    pricing: {
+      contractVersion: OFFER_PRICING_CONTRACT_VERSION,
+      mandatoryTotal: createMoney(
+        addMinorUnits(price.amountMinor, additionalFees.amountMinor),
+        request.currency,
+        price.priceType,
+        sourceSnapshot,
+      ),
+      conditionalCharges: knownEmptyChargeCollection(),
+      optionalAncillaries: knownEmptyChargeCollection(),
+    },
     centralityScore: definition.centralityScore,
     sourceSnapshot,
   };
@@ -765,6 +880,13 @@ function buildPlace(request: PlacesSearchRequest, definition: PlaceDefinition): 
     MOCK_PROVIDER_NAMES.places,
     definition.externalItemId,
     request,
+    placeResultView({
+      id: definition.id,
+      destinationCode: definition.destinationCode,
+      name: definition.name,
+      preferenceScores: { ...definition.preferenceScores },
+      sourceSnapshot: null,
+    }),
   );
 
   return {

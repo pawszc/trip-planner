@@ -7,6 +7,7 @@ import type {
   TripCandidate,
 } from '../domain/candidate.ts';
 import {
+  SOURCE_SNAPSHOT_CONTRACT_VERSION,
   addMinorUnits,
   createMoney,
   isKnownMoney,
@@ -16,6 +17,10 @@ import {
   type Money,
   type SourceSnapshot,
 } from '../domain/money.ts';
+import {
+  createProviderFingerprint,
+  type ProviderJsonValue,
+} from '../providers/provider-fingerprint.ts';
 import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 
 export const INTERNAL_COST_FIXTURE_VERSION = 'internal-cost-estimates-v1';
@@ -29,15 +34,44 @@ export const INTERNAL_COST_RATES = {
 
 const FIXTURE_TIMESTAMP = '2026-01-01T00:00:00.000Z';
 
-function fixtureSource(category: string, currency: string): SourceSnapshot {
+function internalRuleSource(
+  category: string,
+  context: PlanningContext,
+  result: ProviderJsonValue,
+): SourceSnapshot {
+  const queryFingerprint = createProviderFingerprint({
+    ruleVersion: INTERNAL_COST_FIXTURE_VERSION,
+    rates: INTERNAL_COST_RATES,
+    category,
+    currency: context.currency,
+    startDate: context.startDate,
+    endDate: context.endDate,
+    adults: context.adults,
+  });
+  const resultFingerprint = createProviderFingerprint({
+    ruleVersion: INTERNAL_COST_FIXTURE_VERSION,
+    category,
+    queryFingerprint,
+    result,
+  });
   return {
-    id: `${INTERNAL_COST_FIXTURE_VERSION}:${category}:${currency}`,
+    contractVersion: SOURCE_SNAPSHOT_CONTRACT_VERSION,
+    id: `${INTERNAL_COST_FIXTURE_VERSION}:${category}:${context.currency}:${resultFingerprint}`,
+    sourceType: 'INTERNAL_RULE',
     provider: 'INTERNAL_FIXTURE',
+    adapterVersion: 'internal-cost-estimator-v1',
+    providerVersion: INTERNAL_COST_FIXTURE_VERSION,
+    upstreamApiVersion: null,
+    upstreamSchemaFingerprint: null,
+    queryFingerprint,
+    resultFingerprint,
     externalItemId: category,
     fetchedAt: FIXTURE_TIMESTAMP,
+    expiresAt: null,
     sourceUrl: 'INTERNAL_FIXTURE',
     freshnessType: 'INTERNAL_RULE',
-    currency,
+    currency: context.currency,
+    // Retained as a legacy grounded-context-v1 alias. providerVersion is authoritative in v2.
     fixtureVersion: INTERNAL_COST_FIXTURE_VERSION,
   };
 }
@@ -79,8 +113,13 @@ export function divideMinorUnitsCeil(totalMinor: number, divisor: number): numbe
   return result;
 }
 
-function estimatedMoney(amountMinor: number, currency: string, category: string): Money {
-  return createMoney(amountMinor, currency, 'ESTIMATE', fixtureSource(category, currency));
+function estimatedMoney(amountMinor: number, context: PlanningContext, category: string): Money {
+  return createMoney(
+    amountMinor,
+    context.currency,
+    'ESTIMATE',
+    internalRuleSource(category, context, { amountMinor, priceType: 'ESTIMATE' }),
+  );
 }
 
 export function estimateLocalCosts(context: PlanningContext): LocalCostEstimates {
@@ -89,27 +128,39 @@ export function estimateLocalCosts(context: PlanningContext): LocalCostEstimates
     return {
       localTransport: unknownMoney(
         context.currency,
-        fixtureSource('local-transport', context.currency),
+        internalRuleSource('local-transport', context, {
+          amountMinor: null,
+          priceType: 'UNKNOWN',
+        }),
       ),
-      food: unknownMoney(context.currency, fixtureSource('food', context.currency)),
-      attractions: unknownMoney(context.currency, fixtureSource('attractions', context.currency)),
+      food: unknownMoney(
+        context.currency,
+        internalRuleSource('food', context, { amountMinor: null, priceType: 'UNKNOWN' }),
+      ),
+      attractions: unknownMoney(
+        context.currency,
+        internalRuleSource('attractions', context, {
+          amountMinor: null,
+          priceType: 'UNKNOWN',
+        }),
+      ),
     };
   }
 
   return {
     localTransport: estimatedMoney(
       multiplyMinorUnits(INTERNAL_COST_RATES.localTransportPerPersonDayMinor, context.adults, days),
-      context.currency,
+      context,
       'local-transport',
     ),
     food: estimatedMoney(
       multiplyMinorUnits(INTERNAL_COST_RATES.foodPerPersonDayMinor, context.adults, days),
-      context.currency,
+      context,
       'food',
     ),
     attractions: estimatedMoney(
       multiplyMinorUnits(INTERNAL_COST_RATES.attractionsPerPersonDayMinor, context.adults, days),
-      context.currency,
+      context,
       'attractions',
     ),
   };
@@ -117,11 +168,18 @@ export function estimateLocalCosts(context: PlanningContext): LocalCostEstimates
 
 function combinedAdditionalFees(
   candidate: Pick<TripCandidate, 'transport' | 'stay'>,
-  currency: string,
+  context: PlanningContext,
 ): Money {
+  const currency = context.currency;
   const fees = [candidate.transport.additionalFees, candidate.stay.additionalFees];
   if (fees.some((fee) => !isKnownMoney(fee) || fee.currency !== currency)) {
-    return unknownMoney(currency, fixtureSource('additional-fees', currency));
+    return unknownMoney(
+      currency,
+      internalRuleSource('additional-fees', context, {
+        amountMinor: null,
+        priceType: 'UNKNOWN',
+      }),
+    );
   }
 
   const priceType: KnownPriceType = fees.some((fee) => fee.priceType === 'ESTIMATE')
@@ -131,17 +189,26 @@ function combinedAdditionalFees(
     (total, fee) => addMinorUnits(total, isKnownMoney(fee) ? fee.amountMinor : 0),
     0,
   );
-  return createMoney(amountMinor, currency, priceType, fixtureSource('additional-fees', currency));
+  return createMoney(
+    amountMinor,
+    currency,
+    priceType,
+    internalRuleSource('additional-fees', context, { amountMinor, priceType }),
+  );
 }
 
-function bufferFor(items: readonly Money[], currency: string): Money {
+function bufferFor(items: readonly Money[], context: PlanningContext): Money {
+  const currency = context.currency;
   if (items.some((item) => !isKnownMoney(item) || item.currency !== currency)) {
-    return unknownMoney(currency, fixtureSource('buffer', currency));
+    return unknownMoney(
+      currency,
+      internalRuleSource('buffer', context, { amountMinor: null, priceType: 'UNKNOWN' }),
+    );
   }
   const subtotal = sumMoney(items, currency).knownAmountMinor;
   const numerator = BigInt(subtotal) * BigInt(INTERNAL_COST_RATES.bufferBasisPoints);
   const amountMinor = Number((numerator + 9_999n) / 10_000n);
-  return estimatedMoney(amountMinor, currency, 'buffer');
+  return estimatedMoney(amountMinor, context, 'buffer');
 }
 
 const CATEGORIES = [
@@ -181,7 +248,7 @@ export function calculateBudgetBreakdown(
   context: PlanningContext,
   input: Pick<TripCandidate, 'transport' | 'stay' | 'localCostEstimates'>,
 ): BudgetBreakdown {
-  const additionalFees = combinedAdditionalFees(input, context.currency);
+  const additionalFees = combinedAdditionalFees(input, context);
   const additionalFeeItems = [input.transport.additionalFees, input.stay.additionalFees];
   const beforeBuffer = [
     input.transport.price,
@@ -198,7 +265,7 @@ export function calculateBudgetBreakdown(
     food: input.localCostEstimates.food,
     attractions: input.localCostEstimates.attractions,
     additionalFees,
-    buffer: bufferFor(beforeBuffer, context.currency),
+    buffer: bufferFor(beforeBuffer, context),
   };
   // Części kategorii są częścią wyniku kalkulatora. Zagregowane additional fees mogą mieć
   // jednocześnie część confirmed i estimated, również gdy inna składowa jest UNKNOWN.

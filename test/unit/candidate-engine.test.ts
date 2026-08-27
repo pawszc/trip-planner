@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { TransportOption } from '../../srv/domain/candidate.js';
 import { runCandidateEngine } from '../../srv/orchestration/candidate-engine.js';
 import type {
   AccommodationProvider,
@@ -10,8 +11,34 @@ import { REFERENCE_PLANNING_CONTEXT } from '../../srv/providers/fixtures/referen
 import { MockAccommodationProvider } from '../../srv/providers/mock-accommodation-provider.js';
 import { MockPlacesProvider } from '../../srv/providers/mock-places-provider.js';
 import { MockTransportProvider } from '../../srv/providers/mock-transport-provider.js';
+import {
+  createProviderConfigurationManifest,
+  MOCK_PROVIDER_MANIFEST,
+  providerEntry,
+  type ProviderConfigurationManifest,
+} from '../../srv/providers/provider-manifest.js';
 import { REJECTION_CODES } from '../../srv/ranking/rejection-reasons.js';
 import { candidateContext, candidateDestination } from './candidate-fixtures.js';
+
+function liveTransportManifest() {
+  return createProviderConfigurationManifest(
+    MOCK_PROVIDER_MANIFEST.entries.map((entry) =>
+      entry.role === 'TRANSPORT'
+        ? {
+            ...entry,
+            mode: 'LIVE' as const,
+            providerKey: 'offline-live-transport',
+            providerName: 'OfflineLiveTransportProvider',
+            providerVersion: 'offline-live-transport-v1',
+            adapterId: 'offline-live-transport-adapter',
+            adapterVersion: 'offline-live-transport-adapter-v1',
+            fixtureVersion: null,
+            upstreamApiVersion: 'offline-api-v1',
+          }
+        : entry,
+    ),
+  );
+}
 
 describe('candidate engine orchestration', () => {
   it('runs the complete offline reference pipeline and exposes every hard-rule code', async () => {
@@ -24,6 +51,7 @@ describe('candidate engine orchestration', () => {
           accommodation: new MockAccommodationProvider(),
           places: new MockPlacesProvider(),
         },
+        providerManifest: MOCK_PROVIDER_MANIFEST,
       });
     const result = await runReference();
     const codes = new Set(result.rejectionReasons.map((reason) => reason.code));
@@ -104,6 +132,7 @@ describe('candidate engine orchestration', () => {
         accommodation: { search: accommodationSearch },
         places: { search: placesSearch },
       },
+      providerManifest: MOCK_PROVIDER_MANIFEST,
       config: { limits: { maxDestinations: 1 } },
     });
 
@@ -150,6 +179,7 @@ describe('candidate engine orchestration', () => {
           accommodation: { search: async () => [] },
           places: { search: async () => [] },
         },
+        providerManifest: MOCK_PROVIDER_MANIFEST,
       }),
     ).rejects.toMatchObject({ name: 'DomainError' });
     expect(search).not.toHaveBeenCalled();
@@ -170,6 +200,7 @@ describe('candidate engine orchestration', () => {
         context: candidateContext,
         destinations: [{ ...candidateDestination, code: '' }],
         providers,
+        providerManifest: MOCK_PROVIDER_MANIFEST,
       }),
     ).rejects.toMatchObject({ code: 'INVALID_DESTINATION' });
     await expect(
@@ -177,6 +208,7 @@ describe('candidate engine orchestration', () => {
         context: candidateContext,
         destinations: [candidateDestination],
         providers,
+        providerManifest: MOCK_PROVIDER_MANIFEST,
         config: { limits: { maxCandidatesPerDestination: -1 } },
       }),
     ).rejects.toMatchObject({ code: 'INVALID_CANDIDATE_ENGINE_CONFIG' });
@@ -191,6 +223,7 @@ describe('candidate engine orchestration', () => {
         accommodation: { search: async () => [] },
         places: { search: async () => [] },
       },
+      providerManifest: MOCK_PROVIDER_MANIFEST,
       config: { selectionCount: 1 },
     });
     expect(result.shortage).toMatchObject({ required: 3, missing: 3 });
@@ -206,10 +239,164 @@ describe('candidate engine orchestration', () => {
           accommodation: { search: async () => [] },
           places: { search: async () => [] },
         },
+        providerManifest: MOCK_PROVIDER_MANIFEST,
       }),
     ).rejects.toMatchObject({
       code: 'PROVIDER_SEARCH_FAILED',
-      message: 'Nie udało się pobrać danych demonstracyjnych do planowania.',
+      message: 'Nie udało się pobrać danych do planowania.',
     });
+  });
+
+  it.each([
+    {
+      label: 'extra top-level field',
+      manifest: { ...MOCK_PROVIDER_MANIFEST, credential: 'must-not-be-accepted' },
+    },
+    {
+      label: 'unsupported manifest version',
+      manifest: { ...MOCK_PROVIDER_MANIFEST, manifestVersion: 'unsupported-manifest' },
+    },
+    {
+      label: 'duplicate provider role',
+      manifest: {
+        ...MOCK_PROVIDER_MANIFEST,
+        entries: [...MOCK_PROVIDER_MANIFEST.entries, MOCK_PROVIDER_MANIFEST.entries[0]],
+      },
+    },
+  ])('rejects a closed-manifest violation ($label) before provider calls', async ({ manifest }) => {
+    const transportSearch = vi.fn<TransportProvider['search']>().mockResolvedValue([]);
+    const accommodationSearch = vi.fn<AccommodationProvider['search']>().mockResolvedValue([]);
+    const placesSearch = vi.fn<PlacesProvider['search']>().mockResolvedValue([]);
+
+    await expect(
+      runCandidateEngine({
+        context: candidateContext,
+        destinations: [candidateDestination],
+        providers: {
+          transport: { search: transportSearch },
+          accommodation: { search: accommodationSearch },
+          places: { search: placesSearch },
+        },
+        providerManifest: manifest as unknown as ProviderConfigurationManifest,
+      }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_SEARCH_FAILED' });
+
+    expect(transportSearch).not.toHaveBeenCalled();
+    expect(accommodationSearch).not.toHaveBeenCalled();
+    expect(placesSearch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a changed normalized DTO that reuses the previous source result fingerprint', async () => {
+    const fixtureProvider = new MockAccommodationProvider();
+    const accommodationSearch = vi.fn<AccommodationProvider['search']>(async (request, options) =>
+      (await fixtureProvider.search(request, options)).map((offer, index) =>
+        index === 0 ? { ...offer, name: `${offer.name} changed` } : offer,
+      ),
+    );
+
+    await expect(
+      runCandidateEngine({
+        context: REFERENCE_PLANNING_CONTEXT,
+        destinations: [REFERENCE_DESTINATIONS[0]!],
+        providers: {
+          transport: new MockTransportProvider(),
+          accommodation: { search: accommodationSearch },
+          places: new MockPlacesProvider(),
+        },
+        providerManifest: MOCK_PROVIDER_MANIFEST,
+      }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_SEARCH_FAILED' });
+
+    expect(accommodationSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when a live manifest is paired with fixture provider results', async () => {
+    const mixedManifest = liveTransportManifest();
+
+    await expect(
+      runCandidateEngine({
+        context: REFERENCE_PLANNING_CONTEXT,
+        destinations: [REFERENCE_DESTINATIONS[0]!],
+        providers: {
+          transport: new MockTransportProvider(),
+          accommodation: new MockAccommodationProvider(),
+          places: new MockPlacesProvider(),
+        },
+        providerManifest: mixedManifest,
+      }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_SEARCH_FAILED',
+      message: 'Nie udało się pobrać danych do planowania.',
+    });
+  });
+
+  it('requires live runtime provider identity even when the provider would return no rows', async () => {
+    const manifest = liveTransportManifest();
+    const transportSearch = vi.fn<TransportProvider['search']>().mockResolvedValue([]);
+
+    await expect(
+      runCandidateEngine({
+        context: candidateContext,
+        destinations: [candidateDestination],
+        providers: {
+          transport: { search: transportSearch },
+          accommodation: new MockAccommodationProvider(),
+          places: new MockPlacesProvider(),
+        },
+        providerManifest: manifest,
+      }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_SEARCH_FAILED' });
+
+    expect(transportSearch).not.toHaveBeenCalled();
+  });
+
+  it('rejects mismatched live runtime provider identity before an empty-result call', async () => {
+    const manifest = liveTransportManifest();
+    const configured = providerEntry(manifest, 'TRANSPORT');
+    const transportSearch = vi.fn<TransportProvider['search']>().mockResolvedValue([]);
+
+    await expect(
+      runCandidateEngine({
+        context: candidateContext,
+        destinations: [candidateDestination],
+        providers: {
+          transport: {
+            manifestEntry: { ...configured, adapterVersion: 'different-adapter-v1' },
+            search: transportSearch,
+          },
+          accommodation: new MockAccommodationProvider(),
+          places: new MockPlacesProvider(),
+        },
+        providerManifest: manifest,
+      }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_SEARCH_FAILED' });
+
+    expect(transportSearch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a structurally invalid resolved live DTO through the controlled boundary', async () => {
+    const manifest = liveTransportManifest();
+    const configured = providerEntry(manifest, 'TRANSPORT');
+    const transportSearch = vi
+      .fn<TransportProvider['search']>()
+      .mockResolvedValue([{ id: '' } as unknown as TransportOption]);
+
+    await expect(
+      runCandidateEngine({
+        context: candidateContext,
+        destinations: [candidateDestination],
+        providers: {
+          transport: { manifestEntry: configured, search: transportSearch },
+          accommodation: new MockAccommodationProvider(),
+          places: new MockPlacesProvider(),
+        },
+        providerManifest: manifest,
+      }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_SEARCH_FAILED',
+      message: 'Nie udało się pobrać danych do planowania.',
+    });
+
+    expect(transportSearch).toHaveBeenCalledTimes(1);
   });
 });

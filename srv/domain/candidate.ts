@@ -1,5 +1,6 @@
 import type { HardConstraints, Pace, SoftPreferences } from './trip-request.ts';
 import type { Money, SourceSnapshot } from './money.ts';
+import type { OfferPricingV2 } from './offer-pricing.ts';
 
 /** Brief wykonawczy używa minor units i nie przenosi legacy floating point do silnika. */
 export interface PlanningContext {
@@ -37,8 +38,11 @@ export interface TransportOption {
   mode: TransportMode;
   outbound: TransportLeg;
   return: TransportLeg;
+  /** Mandatory subtotal; mandatory taxes/fees remain separate for the seven-item budget. */
   price: Money;
+  /** Mandatory taxes/fees only. Conditional and optional amounts live in pricing disclosures. */
   additionalFees: Money;
+  pricing: OfferPricingV2;
   sourceSnapshot: SourceSnapshot | null;
 }
 
@@ -49,8 +53,11 @@ export interface StayOption {
   checkInDate: string;
   checkOutDate: string;
   nights: number;
+  /** Mandatory subtotal; mandatory taxes/fees remain separate for the seven-item budget. */
   price: Money;
+  /** Mandatory taxes/fees only. Conditional and optional amounts live in pricing disclosures. */
   additionalFees: Money;
+  pricing: OfferPricingV2;
   /** Deterministyczna wartość 0–100 dostarczona wraz ze źródłem oferty. */
   centralityScore: number;
   sourceSnapshot: SourceSnapshot | null;

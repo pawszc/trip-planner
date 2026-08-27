@@ -2,9 +2,17 @@ import { randomUUID } from 'node:crypto';
 import type { Request } from '@sap/cds';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CURRENCY_CONTRACT_VERSION, SUPPORTED_CURRENCY_CODES } from '../../srv/domain/currency.ts';
+import { OFFER_PRICING_CONTRACT_VERSION } from '../../srv/domain/offer-pricing.ts';
 import type { HardConstraints, SoftPreferences } from '../../srv/domain/trip-request.js';
 import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
+import { PLANNING_REQUEST_FINGERPRINT_VERSION } from '../../srv/orchestration/planning-request.ts';
 import { MOCK_FIXTURE_VERSION } from '../../srv/providers/fixtures/fixture-source.js';
+import {
+  createProviderConfigurationManifest,
+  MOCK_PROVIDER_MANIFEST,
+  MOCK_PROVIDER_MANIFEST_LINEAGE,
+  type ProviderConfigurationManifest,
+} from '../../srv/providers/provider-manifest.ts';
 import {
   customHardConstraints,
   customSoftPreferences,
@@ -60,9 +68,14 @@ interface PlanningRunResponse {
   tripRequest_ID: string;
   workflowRun_ID: string;
   requestFingerprint: string;
+  requestFingerprintVersion: string;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
   currencyContractVersion: string | null;
-  providerFixtureVersion: string;
+  offerPricingContractVersion: string | null;
+  providerFixtureVersion: string | null;
+  providerManifestVersion: string;
+  providerManifestFingerprint: string;
+  providerManifestJson: string;
   engineVersion: string;
   scoringVersion: string;
   builtCandidateCount: number;
@@ -86,6 +99,9 @@ interface RankedOptionResponse {
   workflowRun_ID: string;
   planningRun_ID: string;
   providerFixtureVersion: string;
+  providerManifestVersion: string;
+  providerManifestFingerprint: string;
+  offerPricingContractVersion: string;
   scoringVersion: string;
   rank: number;
   role: string;
@@ -95,6 +111,14 @@ interface RankedOptionResponse {
   currency: string;
   budgetLimitMinor: number | string;
   totalAmountMinor: number | string;
+  transportMandatoryTotalMinor: number | string;
+  transportMandatoryTotalPriceType: string;
+  transportMandatoryTotalClassification: string;
+  transportMandatoryTotalSourceKey: string;
+  accommodationMandatoryTotalMinor: number | string;
+  accommodationMandatoryTotalPriceType: string;
+  accommodationMandatoryTotalClassification: string;
+  accommodationMandatoryTotalSourceKey: string;
   costPerPersonMinor: number | string;
   confirmedAmountMinor: number | string;
   estimatedAmountMinor: number | string;
@@ -108,6 +132,8 @@ interface BudgetItemResponse {
   planningRun_ID: string;
   sourceSnapshot_ID: string | null;
   providerFixtureVersion: string;
+  providerManifestVersion: string;
+  providerManifestFingerprint: string;
   scoringVersion: string;
   category: string;
   priceType: 'LIVE_PRICE' | 'FIXED_PRICE' | 'ESTIMATE' | 'UNKNOWN';
@@ -125,12 +151,57 @@ interface SourceSnapshotResponse {
   planningRun_ID: string;
   rankedOption_ID: string;
   providerFixtureVersion: string;
+  providerManifestVersion: string;
+  providerManifestFingerprint: string;
   scoringVersion: string;
+  sourceContractVersion: string;
+  sourceType: string;
   currency: string;
   provider: string;
+  adapterVersion: string;
+  providerVersion: string;
+  upstreamSchemaFingerprint: string;
+  queryFingerprint: string;
+  resultFingerprint: string;
+  expiresAt: string | null;
   sourceUrl: string;
   fixtureVersion: string;
   demonstrationData: boolean;
+}
+
+interface OfferChargeCollectionResponse {
+  planningRun_ID: string;
+  rankedOption_ID: string;
+  providerManifestVersion: string;
+  providerManifestFingerprint: string;
+  offerPricingContractVersion: string;
+  scope: 'TRANSPORT' | 'ACCOMMODATION';
+  kind: 'CONDITIONAL' | 'OPTIONAL';
+  completeness: 'COMPLETE' | 'PARTIAL' | 'UNKNOWN';
+  itemCount: number;
+}
+
+interface ProviderExecutionRecord {
+  planningRun_ID: string;
+  sequence: number;
+  providerManifestVersion: string;
+  providerManifestFingerprint: string;
+  policyVersion: string;
+  providerKey: string;
+  operation: string;
+  status: 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'BLOCKED';
+  providerCallAttempted: boolean;
+  attempts: number;
+  queryFingerprint: string;
+  resultFingerprint: string | null;
+  resultCount: number | null;
+  failureCategory: string | null;
+  underlyingFailureCategory: string | null;
+  httpStatus: number | null;
+  rateLimitRetryAfterMs: number | string | null;
+  rateLimitLimit: number | string | null;
+  rateLimitRemaining: number | string | null;
+  rateLimitResetAt: string | null;
 }
 
 interface RejectionReasonResponse {
@@ -671,8 +742,13 @@ describe('TripPlannerService', () => {
       status: 'SUCCEEDED',
       tripRequest_ID: tripRequest.ID,
       workflowRun_ID: workflowRuns[0]?.ID,
+      requestFingerprintVersion: PLANNING_REQUEST_FINGERPRINT_VERSION,
       currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+      offerPricingContractVersion: OFFER_PRICING_CONTRACT_VERSION,
       providerFixtureVersion: MOCK_FIXTURE_VERSION,
+      providerManifestVersion: MOCK_PROVIDER_MANIFEST_LINEAGE.manifestVersion,
+      providerManifestFingerprint: MOCK_PROVIDER_MANIFEST_LINEAGE.manifestFingerprint,
+      providerManifestJson: MOCK_PROVIDER_MANIFEST_LINEAGE.manifestJson,
       engineVersion: 'candidate-engine-v1',
       scoringVersion: 'candidate-score-v1:candidate-engine-v1',
       builtCandidateCount: 28,
@@ -705,6 +781,12 @@ describe('TripPlannerService', () => {
           option.workflowRun_ID === workflowRuns[0]?.ID &&
           option.planningRun_ID === planningRun.ID &&
           option.providerFixtureVersion === MOCK_FIXTURE_VERSION &&
+          option.providerManifestVersion === MOCK_PROVIDER_MANIFEST_LINEAGE.manifestVersion &&
+          option.providerManifestFingerprint ===
+            MOCK_PROVIDER_MANIFEST_LINEAGE.manifestFingerprint &&
+          option.offerPricingContractVersion === OFFER_PRICING_CONTRACT_VERSION &&
+          option.transportMandatoryTotalSourceKey.length > 0 &&
+          option.accommodationMandatoryTotalSourceKey.length > 0 &&
           option.scoringVersion === planningRun.scoringVersion,
       ),
     ).toBe(true);
@@ -777,6 +859,21 @@ describe('TripPlannerService', () => {
       'planningRun_ID',
       planningRun.ID,
     );
+    const chargeCollections = await readPlanningCollection<OfferChargeCollectionResponse>(
+      'OfferChargeCollections',
+      'planningRun_ID',
+      planningRun.ID,
+    );
+    const chargeDisclosures = await readPlanningCollection<Record<string, unknown>>(
+      'OfferChargeDisclosures',
+      'planningRun_ID',
+      planningRun.ID,
+    );
+    const providerExecution = (await cds.db.run(
+      cds.ql.SELECT.from('trip.planner.ProviderExecutionRecords')
+        .where({ planningRun_ID: planningRun.ID })
+        .orderBy('sequence'),
+    )) as ProviderExecutionRecord[];
 
     expect(sources.length).toBeGreaterThan(0);
     expect(
@@ -786,6 +883,16 @@ describe('TripPlannerService', () => {
           source.workflowRun_ID === workflowRun?.ID &&
           source.planningRun_ID === planningRun.ID &&
           source.providerFixtureVersion === MOCK_FIXTURE_VERSION &&
+          source.providerManifestVersion === MOCK_PROVIDER_MANIFEST_LINEAGE.manifestVersion &&
+          source.providerManifestFingerprint ===
+            MOCK_PROVIDER_MANIFEST_LINEAGE.manifestFingerprint &&
+          source.sourceContractVersion === 'source-snapshot-v2' &&
+          (source.sourceType === 'FIXTURE' || source.sourceType === 'INTERNAL_RULE') &&
+          source.adapterVersion.length > 0 &&
+          source.providerVersion.length > 0 &&
+          /^[0-9a-f]{64}$/.test(source.queryFingerprint) &&
+          /^[0-9a-f]{64}$/.test(source.resultFingerprint) &&
+          source.expiresAt === null &&
           source.scoringVersion === planningRun.scoringVersion,
       ),
     ).toBe(true);
@@ -799,6 +906,47 @@ describe('TripPlannerService', () => {
     ).toBe(true);
     expect(budgetItems).toHaveLength(21);
     expect(budgetBreakdowns).toHaveLength(3);
+    expect(chargeCollections).toHaveLength(12);
+    expect(chargeDisclosures).toHaveLength(0);
+    expect(
+      chargeCollections.every(
+        (collection) =>
+          collection.planningRun_ID === planningRun.ID &&
+          collection.providerManifestVersion === MOCK_PROVIDER_MANIFEST_LINEAGE.manifestVersion &&
+          collection.providerManifestFingerprint ===
+            MOCK_PROVIDER_MANIFEST_LINEAGE.manifestFingerprint &&
+          collection.offerPricingContractVersion === OFFER_PRICING_CONTRACT_VERSION &&
+          collection.completeness === 'COMPLETE' &&
+          collection.itemCount === 0,
+      ),
+    ).toBe(true);
+    expect(providerExecution).toHaveLength(17);
+    expect(providerExecution.map((record) => record.sequence)).toEqual(
+      Array.from({ length: 17 }, (_unused, index) => index + 1),
+    );
+    expect(
+      providerExecution.every(
+        (record) =>
+          record.planningRun_ID === planningRun.ID &&
+          record.providerManifestVersion === MOCK_PROVIDER_MANIFEST_LINEAGE.manifestVersion &&
+          record.providerManifestFingerprint ===
+            MOCK_PROVIDER_MANIFEST_LINEAGE.manifestFingerprint &&
+          record.status === 'SUCCEEDED' &&
+          record.providerCallAttempted &&
+          record.attempts === 1 &&
+          /^[0-9a-f]{64}$/.test(record.queryFingerprint) &&
+          record.resultFingerprint !== null &&
+          /^[0-9a-f]{64}$/.test(record.resultFingerprint) &&
+          record.resultCount !== null &&
+          record.failureCategory === null &&
+          record.underlyingFailureCategory === null &&
+          record.httpStatus === null &&
+          record.rateLimitRetryAfterMs === null &&
+          record.rateLimitLimit === null &&
+          record.rateLimitRemaining === null &&
+          record.rateLimitResetAt === null,
+      ),
+    ).toBe(true);
 
     for (const option of options) {
       const items = budgetItems.filter((item) => item.rankedOption_ID === option.ID);
@@ -838,6 +986,8 @@ describe('TripPlannerService', () => {
         items.every(
           (item) =>
             item.providerFixtureVersion === planningRun.providerFixtureVersion &&
+            item.providerManifestVersion === planningRun.providerManifestVersion &&
+            item.providerManifestFingerprint === planningRun.providerManifestFingerprint &&
             item.scoringVersion === planningRun.scoringVersion,
         ),
       ).toBe(true);
@@ -853,6 +1003,14 @@ describe('TripPlannerService', () => {
         Number(option.budgetLimitMinor) - Number(option.totalAmountMinor),
       );
       expect(option.unknownCategoryCount).toBe(0);
+      expect(Number(option.transportMandatoryTotalMinor)).toBeGreaterThan(0);
+      expect(Number(option.accommodationMandatoryTotalMinor)).toBeGreaterThan(0);
+      expect(option.transportMandatoryTotalClassification).toBe(
+        option.transportMandatoryTotalPriceType === 'ESTIMATE' ? 'ESTIMATED' : 'CONFIRMED',
+      );
+      expect(option.accommodationMandatoryTotalClassification).toBe(
+        option.accommodationMandatoryTotalPriceType === 'ESTIMATE' ? 'ESTIMATED' : 'CONFIRMED',
+      );
     }
   });
 
@@ -1029,5 +1187,58 @@ describe('TripPlannerService', () => {
         tripRequest.ID,
       ),
     ).resolves.toHaveLength(0);
+  });
+
+  it('rejects live-manifest and fixture-provider split-brain without persisting a fallback', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviderManifest(): ProviderConfigurationManifest;
+    };
+    const originalManifestFactory = service.createPlanningProviderManifest;
+    const mixedManifest = createProviderConfigurationManifest(
+      MOCK_PROVIDER_MANIFEST.entries.map((entry) =>
+        entry.role === 'TRANSPORT'
+          ? {
+              ...entry,
+              mode: 'LIVE' as const,
+              providerKey: 'offline-live-transport',
+              providerName: 'OfflineLiveTransportProvider',
+              providerVersion: 'offline-live-transport-v1',
+              adapterId: 'offline-live-transport-adapter',
+              adapterVersion: 'offline-live-transport-adapter-v1',
+              fixtureVersion: null,
+              upstreamApiVersion: 'offline-api-v1',
+            }
+          : entry,
+      ),
+    );
+    service.createPlanningProviderManifest = () => mixedManifest;
+
+    try {
+      await expect(POST(startPlanningActionUrl(tripRequest.ID), {})).rejects.toMatchObject({
+        status: 502,
+        response: { data: { error: { code: 'PROVIDER_SEARCH_FAILED' } } },
+      });
+    } finally {
+      service.createPlanningProviderManifest = originalManifestFactory;
+    }
+
+    expect((await readWorkflowRuns(tripRequest.ID))[0]?.state).toBe('CONSTRAINTS_CONFIRMED');
+    await expect(
+      readPlanningCollection<PlanningRunResponse>('PlanningRuns', 'tripRequest_ID', tripRequest.ID),
+    ).resolves.toHaveLength(0);
+    await expect(
+      readPlanningCollection<SourceSnapshotResponse>(
+        'SourceSnapshots',
+        'tripRequest_ID',
+        tripRequest.ID,
+      ),
+    ).resolves.toHaveLength(0);
+    const auditRows = (await cds.db.run(
+      cds.ql.SELECT.from('trip.planner.ProviderExecutionRecords').where({
+        tripRequest_ID: tripRequest.ID,
+      }),
+    )) as unknown[];
+    expect(auditRows).toHaveLength(0);
   });
 });

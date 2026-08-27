@@ -6,7 +6,17 @@ import type {
   TransportOption,
   TripCandidate,
 } from '../../srv/domain/candidate.js';
-import { createMoney, type SourceSnapshot } from '../../srv/domain/money.js';
+import {
+  SOURCE_SNAPSHOT_CONTRACT_VERSION,
+  addMinorUnits,
+  createMoney,
+  type SourceSnapshot,
+} from '../../srv/domain/money.js';
+import {
+  OFFER_PRICING_CONTRACT_VERSION,
+  knownEmptyChargeCollection,
+} from '../../srv/domain/offer-pricing.js';
+import { createProviderFingerprint } from '../../srv/providers/provider-fingerprint.js';
 import { buildCandidates } from '../../srv/ranking/candidate-builder.js';
 
 export const candidateContext: PlanningContext = {
@@ -47,12 +57,26 @@ export const candidateDestination: Destination = {
 };
 
 export function candidateSource(id: string, currency = 'PLN'): SourceSnapshot {
+  const queryFingerprint = createProviderFingerprint({
+    fixture: 'candidate-test-v1',
+    id,
+    currency,
+  });
   return {
+    contractVersion: SOURCE_SNAPSHOT_CONTRACT_VERSION,
     id: `source-${id}`,
+    sourceType: 'FIXTURE',
     provider: 'TEST_FIXTURE',
+    adapterVersion: 'candidate-test-adapter-v1',
+    providerVersion: 'candidate-test-v1',
+    upstreamApiVersion: null,
+    upstreamSchemaFingerprint: null,
+    queryFingerprint,
+    resultFingerprint: createProviderFingerprint({ queryFingerprint, id }),
     externalItemId: id,
     fetchedAt: '2026-01-01T00:00:00.000Z',
-    sourceUrl: `internal://test/${id}`,
+    expiresAt: null,
+    sourceUrl: 'INTERNAL_FIXTURE',
     freshnessType: 'FIXTURE',
     currency,
     fixtureVersion: 'candidate-test-v1',
@@ -61,6 +85,8 @@ export function candidateSource(id: string, currency = 'PLN'): SourceSnapshot {
 
 export function candidateTransport(id = 'transport-prg'): TransportOption {
   const source = candidateSource(id);
+  const price = createMoney(64_000, 'PLN', 'LIVE_PRICE', source);
+  const additionalFees = createMoney(4_000, 'PLN', 'FIXED_PRICE', source);
   return {
     id,
     destinationCode: 'PRG',
@@ -77,14 +103,27 @@ export function candidateTransport(id = 'transport-prg'): TransportOption {
       durationMinutes: 240,
       connections: 0,
     },
-    price: createMoney(64_000, 'PLN', 'LIVE_PRICE', source),
-    additionalFees: createMoney(4_000, 'PLN', 'FIXED_PRICE', source),
+    price,
+    additionalFees,
+    pricing: {
+      contractVersion: OFFER_PRICING_CONTRACT_VERSION,
+      mandatoryTotal: createMoney(
+        addMinorUnits(price.amountMinor, additionalFees.amountMinor),
+        'PLN',
+        'LIVE_PRICE',
+        source,
+      ),
+      conditionalCharges: knownEmptyChargeCollection(),
+      optionalAncillaries: knownEmptyChargeCollection(),
+    },
     sourceSnapshot: source,
   };
 }
 
 export function candidateStay(id = 'stay-prg', name = 'Central Test Hotel'): StayOption {
   const source = candidateSource(id);
+  const price = createMoney(90_000, 'PLN', 'FIXED_PRICE', source);
+  const additionalFees = createMoney(6_000, 'PLN', 'FIXED_PRICE', source);
   return {
     id,
     destinationCode: 'PRG',
@@ -92,8 +131,19 @@ export function candidateStay(id = 'stay-prg', name = 'Central Test Hotel'): Sta
     checkInDate: '2026-10-10',
     checkOutDate: '2026-10-13',
     nights: 3,
-    price: createMoney(90_000, 'PLN', 'FIXED_PRICE', source),
-    additionalFees: createMoney(6_000, 'PLN', 'FIXED_PRICE', source),
+    price,
+    additionalFees,
+    pricing: {
+      contractVersion: OFFER_PRICING_CONTRACT_VERSION,
+      mandatoryTotal: createMoney(
+        addMinorUnits(price.amountMinor, additionalFees.amountMinor),
+        'PLN',
+        'FIXED_PRICE',
+        source,
+      ),
+      conditionalCharges: knownEmptyChargeCollection(),
+      optionalAncillaries: knownEmptyChargeCollection(),
+    },
     centralityScore: 90,
     sourceSnapshot: source,
   };
