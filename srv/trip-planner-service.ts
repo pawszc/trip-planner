@@ -8,7 +8,10 @@ import { createInputFingerprint, isValidAiRunId } from './ai/contracts.ts';
 import { AI_ERROR_CODE_VALUES, AiError, type AiErrorCode } from './ai/errors.ts';
 import { CURRENCY_CONTRACT_VERSION } from './domain/currency.ts';
 import type { SourceSnapshot } from './domain/money.ts';
-import { OFFER_PRICING_CONTRACT_VERSION } from './domain/offer-pricing.ts';
+import {
+  CONDITIONAL_CHARGE_PAYABLE_AT_VALUES,
+  OFFER_PRICING_CONTRACT_VERSION,
+} from './domain/offer-pricing.ts';
 import { confirmTripRequestStatus, DomainError } from './domain/trip-request.ts';
 import { transitionWorkflowState } from './domain/workflow-run.ts';
 import {
@@ -133,7 +136,9 @@ interface PersistedPlanningRun {
   providerManifestJson: string | null;
   engineVersion: string;
   scoringVersion: string;
+  rejectedCandidateCount: number;
   selectedOptionCount: number;
+  providerExecutionCallCount: number | null;
   errorCode: string | null;
   errorMessage: string | null;
 }
@@ -186,10 +191,12 @@ interface PersistedSourceSnapshotReplayLineage extends PersistedReplayManifestLi
   externalItemId: string;
   fetchedAt: string;
   expiresAt: string | null;
-  sourceUrl: string;
+  sourceUrl: string | null;
+  attribution: string | null;
   freshnessType: string;
-  currency: string;
+  currency: string | null;
   fixtureVersion: string | null;
+  termsPolicyVersion: string | null;
   contexts: string;
   demonstrationData: boolean;
   rankedOption_ID: string;
@@ -214,6 +221,13 @@ interface PersistedOfferChargeDisclosureReplayLineage extends PersistedReplayAss
   collection_ID: string;
   sourceSnapshot_ID: string | null;
   offerPricingContractVersion: string;
+  chargeId: string;
+  code: string;
+  label: string;
+  condition: string | null;
+  payableAt: string | null;
+  mandatoryWhenConditionMet: boolean | null;
+  includedInBudget: boolean;
 }
 
 interface PersistedProviderExecutionReplayLineage extends PersistedReplayAssociationLineage {
@@ -409,6 +423,18 @@ function optionHasExactOfferCollections(
   return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
 }
 
+function safePersistedDisclosureText(value: unknown, maximum: number): value is string {
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    value.length <= maximum &&
+    ![...value].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159);
+    })
+  );
+}
+
 function assertCurrentPlanningReplayDescendants(
   tripRequestId: string,
   workflowRun: PersistedWorkflowRun,
@@ -442,9 +468,11 @@ function assertCurrentPlanningReplayDescendants(
       fetchedAt: source.fetchedAt,
       expiresAt: source.expiresAt,
       sourceUrl: source.sourceUrl,
+      attribution: source.attribution,
       freshnessType: source.freshnessType,
       currency: source.currency,
       fixtureVersion: source.fixtureVersion,
+      termsPolicyVersion: source.termsPolicyVersion,
     } as SourceSnapshot;
     if (!isCompleteSourceSnapshot(snapshot)) return false;
     const canonical = canonicalSourceSnapshot(snapshot);
@@ -541,11 +569,27 @@ function assertCurrentPlanningReplayDescendants(
     );
   const validDisclosures = descendants.offerChargeDisclosures.every((disclosure) => {
     const collection = collectionById.get(disclosure.collection_ID);
+    const conditionalSemantics =
+      collection?.kind === 'CONDITIONAL'
+        ? safePersistedDisclosureText(disclosure.condition, 500) &&
+          CONDITIONAL_CHARGE_PAYABLE_AT_VALUES.includes(
+            disclosure.payableAt as (typeof CONDITIONAL_CHARGE_PAYABLE_AT_VALUES)[number],
+          ) &&
+          typeof disclosure.mandatoryWhenConditionMet === 'boolean'
+        : collection?.kind === 'OPTIONAL' &&
+          disclosure.condition === null &&
+          disclosure.payableAt === null &&
+          disclosure.mandatoryWhenConditionMet === null;
     return (
       hasReplayAssociationLineage(disclosure, tripRequestId, workflowRun.ID, planningRun.ID) &&
       optionIds.has(disclosure.rankedOption_ID) &&
       collection?.rankedOption_ID === disclosure.rankedOption_ID &&
       disclosure.offerPricingContractVersion === OFFER_PRICING_CONTRACT_VERSION &&
+      safePersistedDisclosureText(disclosure.chargeId, 120) &&
+      safePersistedDisclosureText(disclosure.code, 120) &&
+      safePersistedDisclosureText(disclosure.label, 240) &&
+      conditionalSemantics &&
+      disclosure.includedInBudget === false &&
       disclosure.sourceSnapshot_ID !== null &&
       sourceById.get(disclosure.sourceSnapshot_ID)?.rankedOption_ID === disclosure.rankedOption_ID
     );
@@ -630,7 +674,9 @@ function assertCurrentPlanningReplayDescendants(
     !exactDisclosureCounts ||
     !validAuditLineage ||
     !validAuditContract ||
-    descendants.providerExecutionRecords.length === 0 ||
+    planningRun.providerExecutionCallCount === null ||
+    planningRun.providerExecutionCallCount <= 0 ||
+    descendants.providerExecutionRecords.length !== planningRun.providerExecutionCallCount ||
     !validRejections
   ) {
     throw new DomainError(
@@ -683,6 +729,8 @@ function assertLegacyPlanningReplayDescendants(
       source.queryFingerprint === null &&
       source.resultFingerprint === null &&
       source.expiresAt === null &&
+      source.attribution === null &&
+      source.termsPolicyVersion === null &&
       (exactFixtureSource || exactInternalRuleSource)
     );
   });
@@ -720,6 +768,13 @@ function assertLegacyPlanningReplayDescendants(
       lineage.scoringVersion,
     ),
   );
+  const shortageDescendantsValid =
+    planningRun.status !== 'INSUFFICIENT_OPTIONS' ||
+    (rankedOptions.length === 0 &&
+      descendants.sourceSnapshots.length === 0 &&
+      descendants.budgetItems.length === 0 &&
+      descendants.rejectionReasons.length > 0 &&
+      descendants.rejectionSummaries.length > 0);
   if (
     !validSources ||
     !everyOptionHasSources ||
@@ -727,7 +782,8 @@ function assertLegacyPlanningReplayDescendants(
     !validRejections ||
     descendants.offerChargeCollections.length !== 0 ||
     descendants.offerChargeDisclosures.length !== 0 ||
-    descendants.providerExecutionRecords.length !== 0
+    descendants.providerExecutionRecords.length !== 0 ||
+    !shortageDescendantsValid
   ) {
     throw new DomainError(
       'PLANNING_STATE_INCONSISTENT',
@@ -768,6 +824,7 @@ function assertLegacyPlanningReplay(
     hasNoProviderManifestLineage(planningRun) &&
     planningRun.engineVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.engineVersion &&
     planningRun.scoringVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.scoringVersion &&
+    planningRun.providerExecutionCallCount === null &&
     planningRun.selectedOptionCount === 3;
 
   if (
@@ -802,7 +859,7 @@ function assertLegacyPlanningReplayV1(
         hasNoProviderManifestLineage(option) &&
         hasNoOfferPricingLineage(option),
     );
-  const runHasExactHistoricalLineage =
+  const runHasSharedHistoricalLineage =
     planningRun.tripRequest_ID === tripRequestId &&
     planningRun.workflowRun_ID === workflowRun.ID &&
     planningRun.requestFingerprint === expectedFingerprint &&
@@ -810,19 +867,29 @@ function assertLegacyPlanningReplayV1(
     planningRun.currencyContractVersion ===
       LEGACY_PLANNING_RUN_V1_LINEAGE.currencyContractVersion &&
     planningRun.offerPricingContractVersion === null &&
-    planningRun.status === 'SUCCEEDED' &&
     planningRun.providerFixtureVersion === LEGACY_PLANNING_RUN_V1_LINEAGE.providerFixtureVersion &&
     planningRun.providerManifestJson === null &&
     hasNoProviderManifestLineage(planningRun) &&
     planningRun.engineVersion === LEGACY_PLANNING_RUN_V1_LINEAGE.engineVersion &&
     planningRun.scoringVersion === LEGACY_PLANNING_RUN_V1_LINEAGE.scoringVersion &&
-    planningRun.selectedOptionCount === 3;
+    planningRun.providerExecutionCallCount === null;
+  const succeededRun =
+    planningRun.status === 'SUCCEEDED' &&
+    workflowRun.state === 'OPTIONS_READY' &&
+    planningRun.selectedOptionCount === 3 &&
+    optionsHaveExactHistoricalLineage;
+  const shortageRun =
+    planningRun.status === 'INSUFFICIENT_OPTIONS' &&
+    workflowRun.state === 'CONSTRAINTS_CONFIRMED' &&
+    planningRun.selectedOptionCount === 0 &&
+    planningRun.rejectedCandidateCount > 0 &&
+    planningRun.errorCode === 'INSUFFICIENT_VALID_CANDIDATES' &&
+    rankedOptions.length === 0;
 
   if (
     workflowRun.tripRequest_ID !== tripRequestId ||
-    workflowRun.state !== 'OPTIONS_READY' ||
-    !runHasExactHistoricalLineage ||
-    !optionsHaveExactHistoricalLineage
+    !runHasSharedHistoricalLineage ||
+    (!succeededRun && !shortageRun)
   ) {
     throw new DomainError(
       'PLANNING_STATE_INCONSISTENT',
@@ -853,6 +920,8 @@ function assertCurrentPlanningReplay(
     planningRun.providerFixtureVersion === manifest.fixtureVersion &&
     planningRun.engineVersion === DEFAULT_CANDIDATE_ENGINE_CONFIG.version &&
     planningRun.scoringVersion === CURRENT_PLANNING_RUN_SCORING_VERSION &&
+    planningRun.providerExecutionCallCount !== null &&
+    planningRun.providerExecutionCallCount > 0 &&
     planningRun.selectedOptionCount === 3 &&
     rankedOptions.length === 3 &&
     rankedOptions.every(
@@ -1407,7 +1476,9 @@ export default class TripPlannerService extends cds.ApplicationService {
             existingRun.currencyContractVersion !== CURRENCY_CONTRACT_VERSION ||
             existingRun.offerPricingContractVersion !== OFFER_PRICING_CONTRACT_VERSION ||
             existingRun.engineVersion !== DEFAULT_CANDIDATE_ENGINE_CONFIG.version ||
-            existingRun.scoringVersion !== CURRENT_PLANNING_RUN_SCORING_VERSION
+            existingRun.scoringVersion !== CURRENT_PLANNING_RUN_SCORING_VERSION ||
+            existingRun.providerExecutionCallCount === null ||
+            existingRun.providerExecutionCallCount <= 0
           ) {
             throw new DomainError(
               'PLANNING_STATE_INCONSISTENT',
@@ -1431,7 +1502,8 @@ export default class TripPlannerService extends cds.ApplicationService {
         // Dual-read v1/v0 jest dozwolony wyłącznie dla exact fixture-compatible manifestu.
         // Live/mixed configuration never falls back to historical fixture data.
         if (
-          workflowRun.state === 'OPTIONS_READY' &&
+          (workflowRun.state === 'OPTIONS_READY' ||
+            workflowRun.state === 'CONSTRAINTS_CONFIRMED') &&
           isLegacyFixtureCompatibleManifest(providerManifest)
         ) {
           const legacyV1Fingerprint = createLegacyPlanningFingerprintV1(context);
@@ -1465,35 +1537,37 @@ export default class TripPlannerService extends cds.ApplicationService {
             );
           }
 
-          const legacyV0Fingerprint = createLegacyPlanningFingerprintV0(context);
-          const legacyV0Run = (await transaction.run(
-            SELECT.one.from(PersistedPlanningRuns).where({
-              tripRequest_ID: ID,
-              requestFingerprint: legacyV0Fingerprint,
-            }),
-          )) as PersistedPlanningRun | undefined;
-          if (legacyV0Run) {
-            const legacyV0Options = (await transaction.run(
-              SELECT.from(PersistedRankedOptions).where({ planningRun_ID: legacyV0Run.ID }),
-            )) as PersistedRankedOptionLineage[];
-            assertLegacyPlanningReplay(
-              ID,
-              workflowRun,
-              legacyV0Run,
-              legacyV0Fingerprint,
-              legacyV0Options,
-            );
-            assertLegacyPlanningReplayDescendants(
-              ID,
-              workflowRun,
-              legacyV0Run,
-              legacyV0Options,
-              await readReplayDescendants(legacyV0Run.ID),
-              LEGACY_PLANNING_RUN_V0_LINEAGE,
-            );
-            return transaction.run(
-              SELECT.one.from(PersistedPlanningRuns).where({ ID: legacyV0Run.ID }),
-            );
+          if (workflowRun.state === 'OPTIONS_READY') {
+            const legacyV0Fingerprint = createLegacyPlanningFingerprintV0(context);
+            const legacyV0Run = (await transaction.run(
+              SELECT.one.from(PersistedPlanningRuns).where({
+                tripRequest_ID: ID,
+                requestFingerprint: legacyV0Fingerprint,
+              }),
+            )) as PersistedPlanningRun | undefined;
+            if (legacyV0Run) {
+              const legacyV0Options = (await transaction.run(
+                SELECT.from(PersistedRankedOptions).where({ planningRun_ID: legacyV0Run.ID }),
+              )) as PersistedRankedOptionLineage[];
+              assertLegacyPlanningReplay(
+                ID,
+                workflowRun,
+                legacyV0Run,
+                legacyV0Fingerprint,
+                legacyV0Options,
+              );
+              assertLegacyPlanningReplayDescendants(
+                ID,
+                workflowRun,
+                legacyV0Run,
+                legacyV0Options,
+                await readReplayDescendants(legacyV0Run.ID),
+                LEGACY_PLANNING_RUN_V0_LINEAGE,
+              );
+              return transaction.run(
+                SELECT.one.from(PersistedPlanningRuns).where({ ID: legacyV0Run.ID }),
+              );
+            }
           }
         }
 

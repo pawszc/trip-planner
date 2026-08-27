@@ -24,8 +24,9 @@ Każdy nowy fakt providera lub reguły wewnętrznej używa `source-snapshot-v2` 
 `sourceType`: `LIVE`, `FIXTURE` albo `INTERNAL_RULE`. Snapshot utrwala provider i jego
 wersję, wersję adaptera, opcjonalną wersję upstream API, opcjonalny fingerprint upstream
 schema, fingerprint kanonicznego bezpiecznego query, fingerprint znormalizowanego wyniku,
-identyfikator elementu, czas pobrania, opcjonalny czas wygaśnięcia, bezpieczny URL atrybucji,
-freshness, walutę oraz — wyłącznie dla fixture — `fixtureVersion`.
+identyfikator elementu, czas pobrania, opcjonalny czas wygaśnięcia, nullable bezpieczny URL,
+nullable atrybucję i walutę, wymaganą `termsPolicyVersion`, freshness oraz — wyłącznie dla
+fixture — `fixtureVersion`. Nullable oznacza brak opublikowanego faktu i nie wolno go uzupełniać.
 
 Fingerprinty powstają z lokalnych allowlistowanych reprezentacji, nie z raw requestu lub raw
 response. Fingerprint wyniku snapshotu jest ponownie wyliczany na granicy silnika z pełnego,
@@ -54,6 +55,9 @@ Opłaty warunkowe i opcjonalne ancillary są oddzielnymi kolekcjami o jawnej kom
 disclosures: nie są dodawane do siedmiu kategorii budżetu, bufora, score ani hard constraints.
 Persistence przechowuje zarówno stan kolekcji (w tym różnicę między `COMPLETE` z zerem pozycji
 a `UNKNOWN`), jak i pozycje z `includedInBudget = false`.
+Każda opłata ma bezpieczny `label`; opłata warunkowa dodatkowo utrwala `condition`, zamknięte
+`payableAt` (`BOOKING`/`PROPERTY`/`AIRPORT`/`UNKNOWN`) i
+`mandatoryWhenConditionMet`. Wszystkie te pola uczestniczą w fingerprintingu i replayu.
 
 Ta zmiana nie zmienia arytmetyki istniejącego budżetu, wag rankingu, tie-breakera ani ról
 `BEST_OVERALL`, `MOST_CONVENIENT` i `BEST_VALUE`.
@@ -89,10 +93,11 @@ związane z fingerprintem faktycznie wykonanego query.
 - fallback `NONE`.
 
 Jawny override może wyłącznie obniżyć timeout, call budget albo concurrency. Orkiestracja
-sprawdza planowany budżet przed fan-outem i rezerwuje każdy call w run-scoped scope. Pierwszy
-błąd inny niż cancellation anuluje aktywne i oczekujące sibling calls. Adapter otrzymuje
-`AbortSignal`; timeout, cancellation, call-budget boundary i błąd synchroniczny pozostają
-kontrolowanymi wynikami wykonania, bez retry i bez ukrytego fallbacku.
+sprawdza minimalny planowany fan-out, a adapter live otrzymuje run-scoped `executeUpstream`.
+Każdy rzeczywisty create/poll/page/fan-out request musi osobno uzyskać permit, zużyć budżet,
+otrzymać timeout i utworzyć audit event; samo logiczne `search()` nie ukrywa requestów
+wewnętrznych. Fixture zachowuje jeden source call na logiczne wyszukiwanie. Pierwszy błąd inny
+niż cancellation anuluje aktywne i oczekujące sibling calls. Nie ma retry ani fallbacku.
 
 Błędy mają zamknięte kategorie: `CANCELLED`, `TIMEOUT`, `RATE_LIMITED`, `UPSTREAM_4XX`,
 `UPSTREAM_5XX`, `NETWORK`, `INVALID_SCHEMA`, `PARTIAL_DESTINATION`,
@@ -106,6 +111,8 @@ fingerprints, result count oraz zamkniętą kategorię i status HTTP. Nie przech
 wyniku, raw błędu, headerów ani sekretów i nie jest projekcją publiczną. Dla rate limitu może
 zachować wyłącznie znormalizowane liczby/reset time; `PARTIAL_DESTINATION` zachowuje osobno
 zamkniętą kategorię przyczyny. Cały event przechodzi lokalną walidację przed persistence.
+`PlanningRun.providerExecutionCallCount` wiąże dokładną terminalną długość audytu, więc replay
+odrzuca także poprawny prefiks `1..k`, jeśli utracono jego końcowy suffix.
 
 ### Kompatybilność i zakaz live → fixture fallback
 
@@ -113,6 +120,9 @@ Reader działa w kolejności v2 → zamrożony v1 → exact v0, a writer zapisuj
 Algorytmy fingerprintów v1 i v0 oraz ich lineage są odseparowanymi kontraktami historycznymi.
 Nowe kolumny legacy pozostają nullable/no-default. Replay nie wykonuje UPDATE, migracji ani
 backfillu i nie konstruuje providerów.
+Zamrożony reader v1 obsługuje zarówno sukces przy `OPTIONS_READY`, jak i historyczny
+`INSUFFICIENT_OPTIONS` przy `CONSTRAINTS_CONFIRMED`, z zerem opcji i bez provider call/write.
+Reader v0 pozostaje ograniczony do historycznego sukcesu.
 
 Replay sprawdza fail-closed także lineage rekordów potomnych: source snapshots, budget items,
 charge collections/disclosures, rejection diagnostics i provider audit. Historyczne v1/v0 nie
@@ -154,6 +164,8 @@ krótki write z ponowną walidacją stanu/idempotencji należy do 4B1 i jest poz
   rekordu wykonania; ewentualny niezależny durable failure audit wymaga osobnej decyzji.
 - Bezpieczne wywołania live nadal wymagają implementacji adaptera, jawnego opt-in i refaktoru
   granicy transakcyjnej w 4B1.
+- Deterministyczne odrzucanie live offer względem bieżącego zegara nie jest domknięte w 4B0;
+  `expiresAt` jest zachowane, lecz clock-injected freshness/refresh policy pozostaje bramką 4B1.
 
 ## Rollback
 

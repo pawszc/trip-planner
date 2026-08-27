@@ -325,6 +325,38 @@ describe('provider execution scope', () => {
     ]);
   });
 
+  it('wraps a raw destination-scoped throw as PARTIAL_DESTINATION with NETWORK underneath', async () => {
+    const scope = new ProviderExecutionScope();
+    const destinationDescriptor: ProviderCallDescriptor<{ id: number }> = {
+      ...descriptor(1),
+      operation: 'ACCOMMODATION_SEARCH',
+      destinationCode: 'PRG',
+    };
+
+    const error = await scope
+      .execute(destinationDescriptor, () => {
+        throw new Error('RAW_DESTINATION_FAILURE_SENTINEL');
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ProviderExecutionError);
+    expect(error).toMatchObject({
+      category: 'PARTIAL_DESTINATION',
+      evidence: expect.objectContaining({
+        destinationCode: 'PRG',
+        underlyingCategory: 'NETWORK',
+        providerCallAttempted: true,
+      }),
+    });
+    expect(scope.getAuditEvents()).toEqual([
+      expect.objectContaining({
+        destinationCode: 'PRG',
+        failureCategory: 'PARTIAL_DESTINATION',
+        underlyingFailureCategory: 'NETWORK',
+      }),
+    ]);
+  });
+
   it('classifies local result fingerprint/count failures as INVALID_SCHEMA', async () => {
     const scope = new ProviderExecutionScope();
     const invalidDescriptor: ProviderCallDescriptor<{ id: number }> = {

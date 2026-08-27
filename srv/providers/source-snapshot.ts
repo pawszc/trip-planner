@@ -49,6 +49,7 @@ function safeText(value: unknown, maximum: number): value is string {
 }
 
 function safeAttributionUrl(value: unknown, sourceType: SourceSnapshot['sourceType']): boolean {
+  if (value === null) return true;
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
@@ -78,6 +79,7 @@ export function sourceSnapshotValidationIssues(source: SourceSnapshot | null): r
   const issues: string[] = [];
   const expectedKeys = [
     'adapterVersion',
+    'attribution',
     'contractVersion',
     'currency',
     'expiresAt',
@@ -92,6 +94,7 @@ export function sourceSnapshotValidationIssues(source: SourceSnapshot | null): r
     'resultFingerprint',
     'sourceType',
     'sourceUrl',
+    'termsPolicyVersion',
     'upstreamApiVersion',
     'upstreamSchemaFingerprint',
   ];
@@ -109,6 +112,10 @@ export function sourceSnapshotValidationIssues(source: SourceSnapshot | null): r
   if (!safeText(source.adapterVersion, 120)) issues.push('adapterVersion');
   if (!safeText(source.providerVersion, 120)) issues.push('providerVersion');
   if (!safeText(source.externalItemId, 250)) issues.push('externalItemId');
+  if (!safeText(source.termsPolicyVersion, 120)) issues.push('termsPolicyVersion');
+  if (source.attribution !== null && !safeText(source.attribution, 500)) {
+    issues.push('attribution');
+  }
   if (source.upstreamApiVersion !== null && !safeText(source.upstreamApiVersion, 120)) {
     issues.push('upstreamApiVersion');
   }
@@ -129,7 +136,7 @@ export function sourceSnapshotValidationIssues(source: SourceSnapshot | null): r
   }
   if (!safeAttributionUrl(source.sourceUrl, source.sourceType)) issues.push('sourceUrl');
   if (!FRESHNESS_TYPE_VALUES.includes(source.freshnessType)) issues.push('freshnessType');
-  if (!isSupportedCurrency(source.currency)) issues.push('currency');
+  if (source.currency !== null && !isSupportedCurrency(source.currency)) issues.push('currency');
 
   if (source.sourceType === 'FIXTURE') {
     if (source.freshnessType !== 'FIXTURE') issues.push('fixtureFreshness');
@@ -181,9 +188,11 @@ export function createSourceSnapshotResultFingerprint(
       fetchedAt: source.fetchedAt,
       expiresAt: source.expiresAt,
       sourceUrl: source.sourceUrl,
+      attribution: source.attribution,
       freshnessType: source.freshnessType,
       currency: source.currency,
       fixtureVersion: source.fixtureVersion,
+      termsPolicyVersion: source.termsPolicyVersion,
     },
     normalizedResult,
   });
@@ -206,8 +215,10 @@ export function canonicalSourceSnapshot(source: SourceSnapshot): string {
     fetchedAt: source.fetchedAt,
     expiresAt: source.expiresAt,
     sourceUrl: source.sourceUrl,
+    attribution: source.attribution,
     freshnessType: source.freshnessType,
     currency: source.currency,
     fixtureVersion: source.fixtureVersion,
+    termsPolicyVersion: source.termsPolicyVersion,
   });
 }

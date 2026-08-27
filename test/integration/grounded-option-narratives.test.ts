@@ -534,6 +534,7 @@ async function convertPlanningRunToLegacyV0(
         providerManifestVersion: null,
         providerManifestFingerprint: null,
         providerManifestJson: null,
+        providerExecutionCallCount: null,
       })
       .where({ ID: planningRunId }),
   );
@@ -568,6 +569,8 @@ async function convertPlanningRunToLegacyV0(
         queryFingerprint: null,
         resultFingerprint: null,
         expiresAt: null,
+        attribution: null,
+        termsPolicyVersion: null,
       })
       .where({ planningRun_ID: planningRunId }),
   );
@@ -624,6 +627,7 @@ async function convertPlanningRunToLegacyV1(
         providerManifestVersion: null,
         providerManifestFingerprint: null,
         providerManifestJson: null,
+        providerExecutionCallCount: null,
       })
       .where({ ID: planningRunId }),
   );
@@ -658,6 +662,8 @@ async function convertPlanningRunToLegacyV1(
         queryFingerprint: null,
         resultFingerprint: null,
         expiresAt: null,
+        attribution: null,
+        termsPolicyVersion: null,
       })
       .where({ planningRun_ID: planningRunId }),
   );

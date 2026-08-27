@@ -44,9 +44,11 @@ const fixtureSnapshot: SourceSnapshot = {
   fetchedAt: '2026-01-01T00:00:00.000Z',
   expiresAt: null,
   sourceUrl: 'INTERNAL_FIXTURE',
+  attribution: 'Candidate domain fixture',
   freshnessType: 'FIXTURE',
   currency: 'PLN',
   fixtureVersion: 'fixture-v1',
+  termsPolicyVersion: 'test-fixture-terms-v1',
 };
 
 const internalRuleSnapshot: SourceSnapshot = {
@@ -64,9 +66,11 @@ const internalRuleSnapshot: SourceSnapshot = {
   fetchedAt: '2026-01-01T00:00:00.000Z',
   expiresAt: null,
   sourceUrl: 'INTERNAL_FIXTURE',
+  attribution: 'Candidate domain internal rule',
   freshnessType: 'INTERNAL_RULE',
   currency: 'PLN',
   fixtureVersion: 'local-cost-rule-v1',
+  termsPolicyVersion: 'test-internal-rule-terms-v1',
 };
 
 const planningContext: PlanningContext = {

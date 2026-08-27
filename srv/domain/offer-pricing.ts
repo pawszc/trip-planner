@@ -11,18 +11,39 @@ export const OFFER_PRICING_CONTRACT_VERSION = 'offer-price-v2';
 export const CHARGE_COLLECTION_COMPLETENESS_VALUES = ['COMPLETE', 'PARTIAL', 'UNKNOWN'] as const;
 export type ChargeCollectionCompleteness = (typeof CHARGE_COLLECTION_COMPLETENESS_VALUES)[number];
 export const MAX_OFFER_CHARGE_ITEMS = 100;
+export const CONDITIONAL_CHARGE_PAYABLE_AT_VALUES = [
+  'BOOKING',
+  'PROPERTY',
+  'AIRPORT',
+  'UNKNOWN',
+] as const;
+export type ConditionalChargePayableAt = (typeof CONDITIONAL_CHARGE_PAYABLE_AT_VALUES)[number];
 
-export interface OfferChargeDisclosure {
+interface OfferChargeDisclosureBase {
   /** Stable adapter/provider identifier, separate from any raw free-text description. */
   id: string;
   /** Closed adapter-owned code such as CITY_TAX or CHECKED_BAGGAGE. */
   code: string;
+  /** Safe adapter-normalized display label; never an arbitrary raw payload. */
+  label: string;
   amount: Money;
 }
 
-export interface OfferChargeCollection {
+export interface ConditionalChargeDisclosure extends OfferChargeDisclosureBase {
+  condition: string;
+  payableAt: ConditionalChargePayableAt;
+  mandatoryWhenConditionMet: boolean;
+}
+
+export type OptionalAncillaryDisclosure = OfferChargeDisclosureBase;
+
+export type OfferChargeDisclosure = ConditionalChargeDisclosure | OptionalAncillaryDisclosure;
+
+export interface OfferChargeCollection<
+  TDisclosure extends OfferChargeDisclosure = OfferChargeDisclosure,
+> {
   completeness: ChargeCollectionCompleteness;
-  items: readonly OfferChargeDisclosure[];
+  items: readonly TDisclosure[];
 }
 
 /**
@@ -33,11 +54,13 @@ export interface OfferChargeCollection {
 export interface OfferPricingV2 {
   contractVersion: typeof OFFER_PRICING_CONTRACT_VERSION;
   mandatoryTotal: Money;
-  conditionalCharges: OfferChargeCollection;
-  optionalAncillaries: OfferChargeCollection;
+  conditionalCharges: OfferChargeCollection<ConditionalChargeDisclosure>;
+  optionalAncillaries: OfferChargeCollection<OptionalAncillaryDisclosure>;
 }
 
-export function knownEmptyChargeCollection(): OfferChargeCollection {
+export function knownEmptyChargeCollection<
+  TDisclosure extends OfferChargeDisclosure = OfferChargeDisclosure,
+>(): OfferChargeCollection<TDisclosure> {
   return Object.freeze({ completeness: 'COMPLETE', items: Object.freeze([]) });
 }
 
@@ -50,9 +73,22 @@ function safeChargeText(value: unknown): value is string {
   );
 }
 
+function safeChargeDisplayText(value: unknown, maximum: number): value is string {
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    value.length <= maximum &&
+    ![...value].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159);
+    })
+  );
+}
+
 export function chargeCollectionValidationIssues(
   collection: OfferChargeCollection | null | undefined,
   path: string,
+  kind: 'CONDITIONAL' | 'OPTIONAL' = 'OPTIONAL',
 ): readonly string[] {
   const issues: string[] = [];
   if (collection === null || typeof collection !== 'object') {
@@ -82,11 +118,13 @@ export function chargeCollectionValidationIssues(
     }
     const item = charge as Readonly<Record<string, unknown>>;
     const itemKeys = Object.keys(item).sort((left, right) => left.localeCompare(right, 'en'));
+    const expectedItemKeys =
+      kind === 'CONDITIONAL'
+        ? ['amount', 'code', 'condition', 'id', 'label', 'mandatoryWhenConditionMet', 'payableAt']
+        : ['amount', 'code', 'id', 'label'];
     if (
-      itemKeys.length !== 3 ||
-      itemKeys[0] !== 'amount' ||
-      itemKeys[1] !== 'code' ||
-      itemKeys[2] !== 'id'
+      itemKeys.length !== expectedItemKeys.length ||
+      itemKeys.some((key, keyIndex) => key !== expectedItemKeys[keyIndex])
     ) {
       issues.push(`${path}.items[${index}].fields`);
     }
@@ -95,6 +133,20 @@ export function chargeCollectionValidationIssues(
     }
     if (safeChargeText(item.id)) seenIds.add(item.id);
     if (!safeChargeText(item.code)) issues.push(`${path}.items[${index}].code`);
+    if (!safeChargeDisplayText(item.label, 240)) issues.push(`${path}.items[${index}].label`);
+    if (kind === 'CONDITIONAL') {
+      if (!safeChargeDisplayText(item.condition, 500)) {
+        issues.push(`${path}.items[${index}].condition`);
+      }
+      if (
+        !CONDITIONAL_CHARGE_PAYABLE_AT_VALUES.includes(item.payableAt as ConditionalChargePayableAt)
+      ) {
+        issues.push(`${path}.items[${index}].payableAt`);
+      }
+      if (typeof item.mandatoryWhenConditionMet !== 'boolean') {
+        issues.push(`${path}.items[${index}].mandatoryWhenConditionMet`);
+      }
+    }
     issues.push(...moneyValidationIssues(item.amount, `${path}.items[${index}].amount`));
   }
   return Object.freeze(issues);
@@ -126,8 +178,16 @@ export function offerPricingValidationIssues(
     ...moneyValidationIssues(price, `${path}.subtotal`),
     ...moneyValidationIssues(mandatoryFees, `${path}.mandatoryFees`),
     ...moneyValidationIssues(pricing.mandatoryTotal, `${path}.mandatoryTotal`),
-    ...chargeCollectionValidationIssues(pricing.conditionalCharges, `${path}.conditionalCharges`),
-    ...chargeCollectionValidationIssues(pricing.optionalAncillaries, `${path}.optionalAncillaries`),
+    ...chargeCollectionValidationIssues(
+      pricing.conditionalCharges,
+      `${path}.conditionalCharges`,
+      'CONDITIONAL',
+    ),
+    ...chargeCollectionValidationIssues(
+      pricing.optionalAncillaries,
+      `${path}.optionalAncillaries`,
+      'OPTIONAL',
+    ),
   );
   if (!isMoney(price) || !isMoney(mandatoryFees) || !isMoney(pricing.mandatoryTotal)) {
     return Object.freeze(

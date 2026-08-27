@@ -35,9 +35,11 @@ const snapshot: SourceSnapshot = {
   fetchedAt: '2026-01-01T00:00:00.000Z',
   expiresAt: null,
   sourceUrl: 'INTERNAL_FIXTURE',
+  attribution: 'Money test fixture',
   freshnessType: 'FIXTURE',
   currency: 'PLN',
   fixtureVersion: 'transport-v1',
+  termsPolicyVersion: 'test-fixture-terms-v1',
 };
 
 describe('Money', () => {

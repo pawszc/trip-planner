@@ -32,8 +32,26 @@ export type ProviderExecutionPolicyOverride = Partial<
   Pick<ProviderExecutionPolicy, 'timeoutMs' | 'maxCallsPerRun' | 'maxConcurrency'>
 >;
 
+export interface ProviderUpstreamAttemptOptions {
+  signal: AbortSignal;
+}
+
+export interface ProviderUpstreamCallDescriptor<T> {
+  queryFingerprint: string;
+  resultFingerprint: (result: T) => string;
+  resultCount: (result: T) => number;
+}
+
+/**
+ * Adapter-facing run-scoped upstream seam. Every real network/transport attempt must pass through
+ * `executeUpstream`; the adapter never receives an unbudgeted HTTP client from orchestration.
+ */
 export interface ProviderCallOptions {
   signal: AbortSignal;
+  executeUpstream<T>(
+    descriptor: ProviderUpstreamCallDescriptor<T>,
+    invoke: (options: ProviderUpstreamAttemptOptions) => Promise<T>,
+  ): Promise<T>;
 }
 
 export interface ProviderCallDescriptor<T> {
@@ -243,9 +261,13 @@ export class ProviderExecutionScope {
     );
   }
 
+  public get signal(): AbortSignal {
+    return this.rootController.signal;
+  }
+
   public async execute<T>(
     descriptor: ProviderCallDescriptor<T>,
-    invoke: (options: ProviderCallOptions) => Promise<T>,
+    invoke: (options: ProviderUpstreamAttemptOptions) => Promise<T>,
   ): Promise<T> {
     if (!safeDescriptor(descriptor)) {
       throw executionPolicyError();
@@ -408,13 +430,25 @@ export class ProviderExecutionScope {
           rateLimit: error.evidence.rateLimit,
         });
       } else {
-        safeError = this.createError(
-          descriptor,
-          sequence,
-          timedOut ? 'TIMEOUT' : this.rootController.signal.aborted ? 'CANCELLED' : 'NETWORK',
-          attempted,
+        const underlyingCategory = timedOut
+          ? 'TIMEOUT'
+          : this.rootController.signal.aborted
+            ? 'CANCELLED'
+            : 'NETWORK';
+        const destinationFailure =
+          descriptor.destinationCode !== undefined &&
+          descriptor.destinationCode !== null &&
+          underlyingCategory !== 'CANCELLED';
+        safeError = new ProviderExecutionError({
+          category: destinationFailure ? 'PARTIAL_DESTINATION' : underlyingCategory,
+          providerKey: descriptor.providerKey,
+          operation: descriptor.operation,
+          callSequence: sequence,
+          providerCallAttempted: attempted,
           latencyMs,
-        );
+          destinationCode: descriptor.destinationCode ?? null,
+          underlyingCategory: destinationFailure ? underlyingCategory : null,
+        });
       }
       this.recordFailure(
         descriptor,

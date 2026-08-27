@@ -51,8 +51,10 @@ function liveSource(): SourceSnapshot {
     fetchedAt: '2026-10-01T12:00:00.000Z',
     expiresAt: '2026-10-01T12:30:00.000Z',
     sourceUrl: 'https://provider.example/offers/offer-1',
+    attribution: 'Contract provider',
     freshnessType: 'LIVE',
     fixtureVersion: null,
+    termsPolicyVersion: 'contract-provider-terms-v1',
   };
 }
 
@@ -103,6 +105,27 @@ describe('source snapshot v2', () => {
         expiresAt: '2026-10-01T11:59:59.000Z',
       }),
     ).toContain('expiresAtOrder');
+  });
+
+  it('preserves nullable URL/currency/attribution without inventing facts and requires terms policy lineage', () => {
+    const sparseLive = {
+      ...liveSource(),
+      sourceUrl: null,
+      currency: null,
+      attribution: null,
+    };
+
+    expect(sourceSnapshotValidationIssues(sparseLive)).toEqual([]);
+    expect(isCompleteSourceSnapshot(sparseLive)).toBe(true);
+    expect(
+      sourceSnapshotValidationIssues({
+        ...sparseLive,
+        termsPolicyVersion: null,
+      } as unknown as SourceSnapshot),
+    ).toContain('termsPolicyVersion');
+    expect(
+      sourceSnapshotValidationIssues({ ...sparseLive, attribution: 'unsafe\nvalue' }),
+    ).toContain('attribution');
   });
 
   it.each([

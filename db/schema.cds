@@ -122,6 +122,13 @@ type OfferChargeKind : String(24) enum {
   OPTIONAL;
 }
 
+type ConditionalChargePayableAt : String(24) enum {
+  BOOKING;
+  PROPERTY;
+  AIRPORT;
+  UNKNOWN;
+}
+
 type ChargeCollectionCompleteness : String(16) enum {
   COMPLETE;
   PARTIAL;
@@ -331,6 +338,8 @@ entity PlanningRuns : cuid, managed {
   validCandidateCount : Integer not null;
   rejectedCandidateCount : Integer not null;
   selectedOptionCount : Integer not null;
+  // Exact terminal audit length for current v2 rows; nullable/no-default preserves legacy.
+  providerExecutionCallCount : Integer;
   errorCode : String(80);
   errorMessage : String(500);
 }
@@ -620,10 +629,13 @@ entity SourceSnapshots : cuid, managed {
   externalItemId : String(250) not null;
   fetchedAt : Timestamp not null;
   expiresAt : Timestamp;
-  sourceUrl : String(500) not null;
+  sourceUrl : String(500);
+  attribution : String(500);
   freshnessType : FreshnessType not null;
-  currency : String(3) not null;
+  currency : String(3);
   fixtureVersion : String(80);
+  // Nullable/no-default for historical rows; every source-snapshot-v2 write sets it.
+  termsPolicyVersion : String(120);
   contexts : String(1000) not null;
   demonstrationData : Boolean not null;
 }
@@ -722,6 +734,11 @@ entity OfferChargeDisclosures : cuid, managed {
   offerPricingContractVersion : String(80) not null;
   chargeId : String(120) not null;
   code : String(120) not null;
+  label : String(240) not null;
+  // Required only for CONDITIONAL rows; OPTIONAL rows persist null for all three fields.
+  condition : String(500);
+  payableAt : ConditionalChargePayableAt;
+  mandatoryWhenConditionMet : Boolean;
   priceType : PriceType not null;
   classification : MoneyClassification not null;
   currency : String(3) not null;

@@ -11,6 +11,8 @@ import { REFERENCE_PLANNING_CONTEXT } from '../../srv/providers/fixtures/referen
 import { MockAccommodationProvider } from '../../srv/providers/mock-accommodation-provider.js';
 import { MockPlacesProvider } from '../../srv/providers/mock-places-provider.js';
 import { MockTransportProvider } from '../../srv/providers/mock-transport-provider.js';
+import { resolveProviderExecutionPolicy } from '../../srv/providers/provider-execution.js';
+import { createProviderFingerprint } from '../../srv/providers/provider-fingerprint.js';
 import {
   createProviderConfigurationManifest,
   MOCK_PROVIDER_MANIFEST,
@@ -20,7 +22,7 @@ import {
 import { REJECTION_CODES } from '../../srv/ranking/rejection-reasons.js';
 import { candidateContext, candidateDestination } from './candidate-fixtures.js';
 
-function liveTransportManifest() {
+function liveTransportManifest(policy = MOCK_PROVIDER_MANIFEST.executionPolicy) {
   return createProviderConfigurationManifest(
     MOCK_PROVIDER_MANIFEST.entries.map((entry) =>
       entry.role === 'TRANSPORT'
@@ -37,7 +39,16 @@ function liveTransportManifest() {
           }
         : entry,
     ),
+    policy,
   );
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 describe('candidate engine orchestration', () => {
@@ -398,5 +409,105 @@ describe('candidate engine orchestration', () => {
     });
 
     expect(transportSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it('enforces concurrency across actual upstream requests made inside one live adapter search', async () => {
+    const manifest = liveTransportManifest(
+      resolveProviderExecutionPolicy({ maxCallsPerRun: 2, maxConcurrency: 1 }),
+    );
+    const configured = providerEntry(manifest, 'TRANSPORT');
+    const gates = [deferred<readonly []>(), deferred<readonly []>()];
+    const started: number[] = [];
+    let active = 0;
+    let maximumActive = 0;
+    const transport: TransportProvider = {
+      manifestEntry: configured,
+      search: async (_request, options) => {
+        if (options === undefined) throw new Error('Missing upstream executor.');
+        const calls = [0, 1].map((index) =>
+          options.executeUpstream(
+            {
+              queryFingerprint: createProviderFingerprint({ upstreamRequest: index }),
+              resultFingerprint: () => createProviderFingerprint({ upstreamResult: index }),
+              resultCount: (result) => result.length,
+            },
+            async () => {
+              started.push(index);
+              active += 1;
+              maximumActive = Math.max(maximumActive, active);
+              try {
+                return await gates[index]!.promise;
+              } finally {
+                active -= 1;
+              }
+            },
+          ),
+        );
+        return (await Promise.all(calls)).flat();
+      },
+    };
+
+    const run = runCandidateEngine({
+      context: candidateContext,
+      destinations: [],
+      providers: {
+        transport,
+        accommodation: new MockAccommodationProvider(),
+        places: new MockPlacesProvider(),
+      },
+      providerManifest: manifest,
+    });
+
+    await vi.waitFor(() => expect(started).toEqual([0]));
+    gates[0]!.resolve([]);
+    await vi.waitFor(() => expect(started).toEqual([0, 1]));
+    gates[1]!.resolve([]);
+
+    const result = await run;
+    expect(maximumActive).toBe(1);
+    expect(result.providerExecution.calls).toHaveLength(2);
+    expect(result.providerExecution.calls.map((event) => event.sequence)).toEqual([1, 2]);
+  });
+
+  it('blocks the first real upstream request beyond the run budget before transport invocation', async () => {
+    const manifest = liveTransportManifest(
+      resolveProviderExecutionPolicy({ maxCallsPerRun: 2, maxConcurrency: 1 }),
+    );
+    const configured = providerEntry(manifest, 'TRANSPORT');
+    const invoked: number[] = [];
+    const transport: TransportProvider = {
+      manifestEntry: configured,
+      search: async (_request, options) => {
+        if (options === undefined) throw new Error('Missing upstream executor.');
+        for (const index of [0, 1, 2]) {
+          await options.executeUpstream(
+            {
+              queryFingerprint: createProviderFingerprint({ upstreamRequest: index }),
+              resultFingerprint: () => createProviderFingerprint({ upstreamResult: index }),
+              resultCount: (result) => result.length,
+            },
+            async () => {
+              invoked.push(index);
+              return [] as const;
+            },
+          );
+        }
+        return [];
+      },
+    };
+
+    await expect(
+      runCandidateEngine({
+        context: candidateContext,
+        destinations: [],
+        providers: {
+          transport,
+          accommodation: new MockAccommodationProvider(),
+          places: new MockPlacesProvider(),
+        },
+        providerManifest: manifest,
+      }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_SEARCH_FAILED' });
+    expect(invoked).toEqual([0, 1]);
   });
 });

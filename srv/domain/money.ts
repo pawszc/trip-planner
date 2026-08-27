@@ -30,10 +30,12 @@ export interface SourceSnapshot {
   externalItemId: string;
   fetchedAt: string;
   expiresAt: string | null;
-  sourceUrl: string;
+  sourceUrl: string | null;
+  attribution: string | null;
   freshnessType: FreshnessType;
-  currency: string;
+  currency: string | null;
   fixtureVersion: string | null;
+  termsPolicyVersion: string;
 }
 
 /** Exact historical fixture shape. Readers may expose it without inventing v2 lineage. */

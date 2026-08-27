@@ -114,9 +114,11 @@ export function createFixtureSource(
     fetchedAt: fixtureFetchedAt(quote.startDate),
     expiresAt: null,
     sourceUrl: 'INTERNAL_FIXTURE',
+    attribution: 'Trip Planner internal reference fixture',
     freshnessType: 'FIXTURE',
     currency: quote.currency,
     fixtureVersion: MOCK_FIXTURE_VERSION,
+    termsPolicyVersion: 'internal-fixture-terms-v1',
   };
   return {
     ...source,

@@ -44,16 +44,18 @@ dokładną wersję kontraktu walut i ceny oferty, kanoniczny provider manifest z
 scoringu, liczniki kandydatów oraz kontrolowany status. Manifest opisuje dokładnie jedną
 konfigurację dla każdej roli `TRANSPORT`, `ACCOMMODATION` i `PLACES`, wraz z trybem
 `FIXTURE`/`LIVE`, wersjami providera/adaptera/upstream schema oraz polityką wykonania.
-Unikalność fingerprintu zapewnia idempotencję dla nieedytowalnego, potwierdzonego briefu.
+Run utrwala także dokładny `providerExecutionCallCount`; replay wymaga całej sekwencji audytu,
+nie tylko poprawnego prefiksu. Unikalność fingerprintu zapewnia idempotencję dla
+nieedytowalnego, potwierdzonego briefu.
 
-Replay stosuje multi-read/single-write. Najpierw szuka v2. Dopiero po jego braku i wyłącznie
-dla `OPTIONS_READY` może obliczyć kolejno zamrożony exact v1 z `main@ad7a909` i exact v0 z
-`main@1b8a852`. Historyczny run jest zwracany tylko po fail-closed sprawdzeniu statusu,
+Replay stosuje multi-read/single-write. Najpierw szuka v2. Po jego braku zamrożony exact v1 z
+`main@ad7a909` obsługuje sukces przy `OPTIONS_READY` oraz historyczny niedobór przy
+`CONSTRAINTS_CONFIRMED`; exact v0 z `main@1b8a852` pozostaje success-only. Historyczny run jest
+zwracany tylko po fail-closed sprawdzeniu statusu,
 linkage, wersji, liczników i dokładnie trzech spójnych `RankedOptions`. Odczyt v1/v0 jest
 ponadto dostępny wyłącznie dla manifestu identycznego z zamkniętym manifestem fixture; live
 ani konfiguracja mieszana nie mogą odziedziczyć wyniku fixture. Nie ma UPDATE, backfillu,
-migracji ani provider call. `INSUFFICIENT_OPTIONS` nie korzysta z legacy replay, a każda
-niespójność kończy się 409 `PLANNING_STATE_INCONSISTENT`.
+migracji ani provider call. Każda niespójność kończy się 409 `PLANNING_STATE_INCONSISTENT`.
 
 Równoległe wywołania `startPlanning` dla tego samego briefu są koaleskowane przez serwis do
 jednego aktywnego wykonania. Pierwszy request jest właścicielem transakcji, a kolejne czekają
@@ -98,10 +100,13 @@ wersjonowanych fixture'ów generowanych względem dat briefu, dlatego nie zależ
 internetu ani zegara systemowego.
 
 Phase 4B0 dodaje `planning-provider-manifest-v1` i
-`provider-execution-policy-v1`. Domyślna polityka ogranicza run do 25 calls, timeoutu
+`provider-execution-policy-v1`. Domyślna polityka ogranicza run do 25 rzeczywistych
+source/upstream calls, timeoutu
 10 000 ms, concurrency 4 i jednego attemptu. Kolejka jest FIFO, rate limit działa
 fail-fast, a fallback ma stałą wartość `NONE`; konfiguracja może te limity tylko obniżyć.
-Pierwszy błąd anuluje sibling calls. Zamknięte błędy i wewnętrzne eventy audytowe zawierają
+Adapter live wykonuje każdy create/poll/page/fan-out request przez run-scoped executor, więc
+requesty wewnątrz jednego logicznego `search()` dzielą ten sam budżet i concurrency. Pierwszy
+błąd anuluje sibling calls. Zamknięte błędy i wewnętrzne eventy audytowe zawierają
 wyłącznie bezpieczne metadata i fingerprinty, nigdy raw request/response/error ani headers.
 Manifest live lub mieszany nie uruchamia legacy fixture replay.
 Instancja adaptera live musi przed fan-outem potwierdzić dokładną tożsamość z manifestu, także
@@ -110,14 +115,16 @@ dla pustego wyniku; źródła wybranych fixture są związane z faktycznie wykon
 Kwoty są dyskryminowaną unią `Money`: znane ceny przechowują bezpieczną całkowitą
 liczbę minor units, natomiast `UNKNOWN` ma `amountMinor: null`. Każda cena ma
 `PriceType` i `source-snapshot-v2` z jawnym typem `LIVE`, `FIXTURE` albo
-`INTERNAL_RULE`, wersjami adaptera/providera, kanonicznym query/result fingerprintem i
-opcjonalnym expiry. Reguły kosztów lokalnych są estymacjami z własnym wersjonowanym
+`INTERNAL_RULE`, wersjami adaptera/providera, kanonicznym query/result fingerprintem,
+opcjonalnym expiry, nullable URL/attribution/currency i wymaganą wersją terms policy. Reguły
+kosztów lokalnych są estymacjami z własnym wersjonowanym
 snapshotem `INTERNAL_RULE`. Silnik nie wykonuje przewalutowania; inna waluta powoduje
 odrzucenie kandydata.
 
 `offer-price-v2` zachowuje `price` jako obowiązkowy subtotal i `additionalFees` jako
 obowiązkowe podatki/opłaty, a dodatkowo wymaga zgodnego `mandatoryTotal`. Nieznana wymagana
-wartość nadal odrzuca kandydata. Warunkowe opłaty i opcjonalne ancillary mają osobne stany
+wartość nadal odrzuca kandydata. Warunkowe opłaty zachowują label, condition, payable-at i
+mandatory-when-met, a opcjonalne ancillary własny label. Obie kolekcje mają osobne stany
 kompletności `COMPLETE`/`PARTIAL`/`UNKNOWN` i są utrwalanymi disclosures, ale nie są
 dodawane do siedmiu kategorii budżetu, bufora, score ani hard constraints.
 

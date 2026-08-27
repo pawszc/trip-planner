@@ -5,7 +5,12 @@ import { CURRENCY_CONTRACT_VERSION, SUPPORTED_CURRENCY_CODES } from '../../srv/d
 import { OFFER_PRICING_CONTRACT_VERSION } from '../../srv/domain/offer-pricing.ts';
 import type { HardConstraints, SoftPreferences } from '../../srv/domain/trip-request.js';
 import type { CandidateEngineProviders } from '../../srv/orchestration/candidate-engine.ts';
-import { PLANNING_REQUEST_FINGERPRINT_VERSION } from '../../srv/orchestration/planning-request.ts';
+import type { PersistedTripRequest } from '../../srv/mapping/trip-request-mapper.ts';
+import {
+  createLegacyPlanningFingerprintV1,
+  createPlanningContext,
+  PLANNING_REQUEST_FINGERPRINT_VERSION,
+} from '../../srv/orchestration/planning-request.ts';
 import { MOCK_FIXTURE_VERSION } from '../../srv/providers/fixtures/fixture-source.js';
 import {
   createProviderConfigurationManifest,
@@ -68,7 +73,7 @@ interface PlanningRunResponse {
   tripRequest_ID: string;
   workflowRun_ID: string;
   requestFingerprint: string;
-  requestFingerprintVersion: string;
+  requestFingerprintVersion: string | null;
   status: 'SUCCEEDED' | 'INSUFFICIENT_OPTIONS';
   currencyContractVersion: string | null;
   offerPricingContractVersion: string | null;
@@ -82,6 +87,7 @@ interface PlanningRunResponse {
   validCandidateCount: number;
   rejectedCandidateCount: number;
   selectedOptionCount: number;
+  providerExecutionCallCount: number | null;
   errorCode: string | null;
   errorMessage: string | null;
 }
@@ -156,7 +162,7 @@ interface SourceSnapshotResponse {
   scoringVersion: string;
   sourceContractVersion: string;
   sourceType: string;
-  currency: string;
+  currency: string | null;
   provider: string;
   adapterVersion: string;
   providerVersion: string;
@@ -164,7 +170,9 @@ interface SourceSnapshotResponse {
   queryFingerprint: string;
   resultFingerprint: string;
   expiresAt: string | null;
-  sourceUrl: string;
+  sourceUrl: string | null;
+  attribution: string | null;
+  termsPolicyVersion: string;
   fixtureVersion: string;
   demonstrationData: boolean;
 }
@@ -893,6 +901,7 @@ describe('TripPlannerService', () => {
           /^[0-9a-f]{64}$/.test(source.queryFingerprint) &&
           /^[0-9a-f]{64}$/.test(source.resultFingerprint) &&
           source.expiresAt === null &&
+          source.termsPolicyVersion.length > 0 &&
           source.scoringVersion === planningRun.scoringVersion,
       ),
     ).toBe(true);
@@ -921,6 +930,7 @@ describe('TripPlannerService', () => {
       ),
     ).toBe(true);
     expect(providerExecution).toHaveLength(17);
+    expect(planningRun.providerExecutionCallCount).toBe(17);
     expect(providerExecution.map((record) => record.sequence)).toEqual(
       Array.from({ length: 17 }, (_unused, index) => index + 1),
     );
@@ -1143,6 +1153,117 @@ describe('TripPlannerService', () => {
     await expect(
       readPlanningCollection<PlanningRunResponse>('PlanningRuns', 'tripRequest_ID', tripRequest.ID),
     ).resolves.toHaveLength(1);
+  });
+
+  it('replays the frozen historical INSUFFICIENT_OPTIONS v1 shape without provider calls or a v2 write', async () => {
+    const created = await POST('/trip-planner/TripRequests', {
+      ...referenceTripRequestODataPayload,
+      hardConstraints_maxTravelMinutes: 1,
+    });
+    const tripRequest = created.data as CreatedTripRequest;
+    await POST(actionUrl(tripRequest.ID), {});
+    const currentRun = await startReferencePlanning(tripRequest.ID);
+    const persistedTripRequest = (await cds.db.run(
+      cds.ql.SELECT.one.from('trip.planner.TripRequests').where({ ID: tripRequest.ID }),
+    )) as PersistedTripRequest;
+    const legacyFingerprint = createLegacyPlanningFingerprintV1(
+      createPlanningContext(persistedTripRequest),
+    );
+
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+        .set({
+          requestFingerprint: legacyFingerprint,
+          requestFingerprintVersion: null,
+          offerPricingContractVersion: null,
+          providerManifestVersion: null,
+          providerManifestFingerprint: null,
+          providerManifestJson: null,
+          providerExecutionCallCount: null,
+        })
+        .where({ ID: currentRun.ID }),
+    );
+    for (const entity of ['RejectionReasons', 'RejectionSummaries'] as const) {
+      await cds.db.run(
+        cds.ql.UPDATE.entity(`trip.planner.${entity}`)
+          .set({ providerManifestVersion: null, providerManifestFingerprint: null })
+          .where({ planningRun_ID: currentRun.ID }),
+      );
+    }
+    await cds.db.run(
+      cds.ql.DELETE.from('trip.planner.ProviderExecutionRecords').where({
+        planningRun_ID: currentRun.ID,
+      }),
+    );
+
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviders(): CandidateEngineProviders;
+    };
+    const originalFactory = service.createPlanningProviders;
+    let providerFactoryCalls = 0;
+    service.createPlanningProviders = () => {
+      providerFactoryCalls += 1;
+      return originalFactory.call(service);
+    };
+    try {
+      const replay = await startReferencePlanning(tripRequest.ID);
+      expect(replay.ID).toBe(currentRun.ID);
+      expect(replay).toMatchObject({
+        requestFingerprint: legacyFingerprint,
+        requestFingerprintVersion: null,
+        status: 'INSUFFICIENT_OPTIONS',
+        selectedOptionCount: 0,
+        providerExecutionCallCount: null,
+      });
+      expect(providerFactoryCalls).toBe(0);
+      await expect(
+        readPlanningCollection<PlanningRunResponse>(
+          'PlanningRuns',
+          'tripRequest_ID',
+          tripRequest.ID,
+        ),
+      ).resolves.toHaveLength(1);
+    } finally {
+      service.createPlanningProviders = originalFactory;
+    }
+  });
+
+  it('rejects current replay when the terminal provider-audit suffix is missing', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const planningRun = await startReferencePlanning(tripRequest.ID);
+    expect(planningRun.providerExecutionCallCount).toBeGreaterThan(0);
+    await cds.db.run(
+      cds.ql.DELETE.from('trip.planner.ProviderExecutionRecords').where({
+        planningRun_ID: planningRun.ID,
+        sequence: planningRun.providerExecutionCallCount,
+      }),
+    );
+
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviders(): CandidateEngineProviders;
+    };
+    const originalFactory = service.createPlanningProviders;
+    let providerFactoryCalls = 0;
+    service.createPlanningProviders = () => {
+      providerFactoryCalls += 1;
+      return originalFactory.call(service);
+    };
+    try {
+      await expect(POST(startPlanningActionUrl(tripRequest.ID), {})).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      expect(providerFactoryCalls).toBe(0);
+      await expect(
+        readPlanningCollection<PlanningRunResponse>(
+          'PlanningRuns',
+          'tripRequest_ID',
+          tripRequest.ID,
+        ),
+      ).resolves.toHaveLength(1);
+    } finally {
+      service.createPlanningProviders = originalFactory;
+    }
   });
 
   it('rolls back every planning write after a provider error and returns a controlled code', async () => {

@@ -73,6 +73,7 @@ export interface PlanningRunRecord {
   validCandidateCount: number;
   rejectedCandidateCount: number;
   selectedOptionCount: number;
+  providerExecutionCallCount: number;
   errorCode: string | null;
   errorMessage: string | null;
 }
@@ -690,9 +691,11 @@ function recordsForOption(
         fetchedAt: source.fetchedAt,
         expiresAt: source.expiresAt,
         sourceUrl: source.sourceUrl,
+        attribution: source.attribution,
         freshnessType: source.freshnessType,
         currency: source.currency,
         fixtureVersion: source.fixtureVersion,
+        termsPolicyVersion: source.termsPolicyVersion,
         contexts: serializedContexts,
         demonstrationData: source.sourceType !== 'LIVE',
       };
@@ -783,6 +786,11 @@ function recordsForOption(
         offerPricingContractVersion: input.offerPricingContractVersion,
         chargeId: charge.id,
         code: charge.code,
+        label: charge.label,
+        condition: 'condition' in charge ? charge.condition : null,
+        payableAt: 'payableAt' in charge ? charge.payableAt : null,
+        mandatoryWhenConditionMet:
+          'mandatoryWhenConditionMet' in charge ? charge.mandatoryWhenConditionMet : null,
         priceType: charge.amount.priceType,
         classification: classifyMoney(charge.amount),
         currency: charge.amount.currency,
@@ -918,6 +926,7 @@ export function buildPlanningPersistenceBundle(
     validCandidateCount: input.result.counts.validCandidates,
     rejectedCandidateCount: input.result.counts.rejectedCandidates,
     selectedOptionCount: succeeded ? 3 : 0,
+    providerExecutionCallCount: input.result.providerExecution.calls.length,
     errorCode: succeeded ? null : (shortage?.code ?? 'INSUFFICIENT_VALID_CANDIDATES'),
     errorMessage: succeeded ? null : (shortage?.message ?? 'Brak trzech poprawnych wariantów.'),
   };

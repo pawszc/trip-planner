@@ -77,9 +77,11 @@ export function candidateSource(id: string, currency = 'PLN'): SourceSnapshot {
     fetchedAt: '2026-01-01T00:00:00.000Z',
     expiresAt: null,
     sourceUrl: 'INTERNAL_FIXTURE',
+    attribution: 'Candidate test fixture',
     freshnessType: 'FIXTURE',
     currency,
     fixtureVersion: 'candidate-test-v1',
+    termsPolicyVersion: 'test-fixture-terms-v1',
   };
 }
 

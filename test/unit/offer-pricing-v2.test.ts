@@ -6,7 +6,9 @@ import {
   OFFER_PRICING_CONTRACT_VERSION,
   chargeCollectionValidationIssues,
   offerPricingValidationIssues,
+  type ConditionalChargeDisclosure,
   type OfferChargeCollection,
+  type OptionalAncillaryDisclosure,
 } from '../../srv/domain/offer-pricing.js';
 import type { CandidateEngineResult } from '../../srv/orchestration/candidate-engine.js';
 import { createPlanningFingerprint } from '../../srv/orchestration/planning-request.js';
@@ -16,6 +18,7 @@ import {
   providerManifestLineage,
 } from '../../srv/providers/provider-manifest.js';
 import { createProviderFingerprint } from '../../srv/providers/provider-fingerprint.js';
+import { transportResultView } from '../../srv/providers/normalized-result.js';
 import { validateCandidate } from '../../srv/ranking/candidate-filter.js';
 import { scoreCandidate } from '../../srv/ranking/candidate-scoring.js';
 import { DEFAULT_CANDIDATE_ENGINE_CONFIG } from '../../srv/ranking/config.js';
@@ -188,22 +191,27 @@ describe('offer price v2', () => {
     const base = candidateFixture();
     const transportSource = base.transport.sourceSnapshot;
     if (transportSource === null) throw new Error('Missing transport source fixture.');
-    const conditionalCharges: OfferChargeCollection = {
+    const conditionalCharges: OfferChargeCollection<ConditionalChargeDisclosure> = {
       completeness: 'COMPLETE',
       items: [
         {
           id: 'city-tax',
           code: 'CITY_TAX',
+          label: 'City tax',
+          condition: 'Charged when the destination requires a local visitor tax.',
+          payableAt: 'PROPERTY',
+          mandatoryWhenConditionMet: true,
           amount: createMoney(2_500, 'PLN', 'FIXED_PRICE', transportSource),
         },
       ],
     };
-    const optionalAncillaries: OfferChargeCollection = {
+    const optionalAncillaries: OfferChargeCollection<OptionalAncillaryDisclosure> = {
       completeness: 'PARTIAL',
       items: [
         {
           id: 'checked-baggage',
           code: 'CHECKED_BAGGAGE',
+          label: 'Checked baggage',
           amount: unknownMoney('PLN', transportSource),
         },
       ],
@@ -266,12 +274,20 @@ describe('offer price v2', () => {
       expect.arrayContaining([
         expect.objectContaining({
           chargeId: 'city-tax',
+          label: 'City tax',
+          condition: 'Charged when the destination requires a local visitor tax.',
+          payableAt: 'PROPERTY',
+          mandatoryWhenConditionMet: true,
           amountMinor: 2_500,
           classification: 'CONFIRMED',
           includedInBudget: false,
         }),
         expect.objectContaining({
           chargeId: 'checked-baggage',
+          label: 'Checked baggage',
+          condition: null,
+          payableAt: null,
+          mandatoryWhenConditionMet: null,
           amountMinor: null,
           classification: 'UNKNOWN',
           includedInBudget: false,
@@ -279,6 +295,26 @@ describe('offer price v2', () => {
       ]),
     );
     expect(firstOption.totalAmountMinor).toBe(base.budget.totalAmountMinor);
+
+    const baselineFingerprint = createProviderFingerprint(transportResultView(candidate.transport));
+    for (const changedCharge of [
+      { ...conditionalCharges.items[0]!, condition: 'Different normalized condition.' },
+      { ...conditionalCharges.items[0]!, payableAt: 'AIRPORT' as const },
+      { ...conditionalCharges.items[0]!, mandatoryWhenConditionMet: false },
+      { ...conditionalCharges.items[0]!, label: 'Different label' },
+    ]) {
+      expect(
+        createProviderFingerprint(
+          transportResultView({
+            ...candidate.transport,
+            pricing: {
+              ...candidate.transport.pricing,
+              conditionalCharges: { completeness: 'COMPLETE', items: [changedCharge] },
+            },
+          }),
+        ),
+      ).not.toBe(baselineFingerprint);
+    }
   });
 
   it('fails closed in candidate validation and persistence when one source ID has different lineage', () => {

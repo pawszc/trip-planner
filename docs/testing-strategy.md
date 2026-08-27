@@ -11,13 +11,15 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - wszystkie dozwolone przejścia workflow i reprezentatywne przejścia niedozwolone;
 - `Money`, wszystkie `PriceType`, UNKNOWN, waluty i bezpieczne minor units;
 - `source-snapshot-v2`: zamknięte typy źródła, wersje i SHA-256, reguły fixture/live/expiry,
-  bezpieczne URL, canonical equality oraz legacy view bez syntezy i backfillu;
+  nullable URL/attribution/currency, wymaganą terms policy, canonical equality oraz legacy view
+  bez syntezy i backfillu;
 - `offer-price-v2`: zgodność obowiązkowego subtotalu, fees i all-in total, fail-closed dla
   wymaganych `UNKNOWN` oraz jawne `COMPLETE`/`PARTIAL`/`UNKNOWN` opłat warunkowych i
   opcjonalnych bez dodawania ich do budżetu lub score;
 - canonical `planning-provider-manifest-v1`, dokładnie trzy role, tryby fixture/live,
   zmianę fingerprintu po zmianie wersji/policy i brak miejsca na sekrety lub raw config;
-- `provider-execution-policy-v1`: granice 25/26 calls, obniżalne limity, FIFO i concurrency,
+- `provider-execution-policy-v1`: granice 25/26 rzeczywistych prób upstream, także wielu prób
+  wewnątrz jednego live `search()`, obniżalne limity, FIFO i concurrency,
   timeout, cancellation siblings, pojedynczy attempt, rate-limit fail-fast, zero fallbacku,
   zamknięte błędy oraz privacy-safe audit bez raw danych;
 - 13 kodów odrzucenia, wiele powodów, deduplikację i granice buildera;
@@ -136,16 +138,19 @@ deterministyczny wraz z kontraktem 4B0 sprawdza między innymi:
   scoring lineage na wszystkich nowych rekordach;
 - 22 odrzuconych kandydatów, szczegóły i 13 grup kodów;
 - znormalizowane `source-snapshot-v2`, `BudgetBreakdowns` i 7 `BudgetItems` na opcję;
-- cztery kolekcje conditional/optional charges na opcję, zachowanie jawnej kompletności,
-  nieaddytywne disclosures i brak wpływu na istniejący budżet/ranking;
-- bezpieczne wewnętrzne `ProviderExecutionRecords`, ich call sequence/fingerprint/count oraz
-  brak publicznego endpointu i raw request/response/error/header;
+- cztery kolekcje conditional/optional charges na opcję, pełne
+  label/condition/payable-at/mandatory semantics, zachowanie jawnej kompletności,
+  fingerprint/persistence oraz brak wpływu na istniejący budżet/ranking;
+- bezpieczne wewnętrzne `ProviderExecutionRecords`, ich call sequence/fingerprint/count,
+  odrzucenie utraconego terminalnego suffixu oraz brak publicznego endpointu i raw
+  request/response/error/header;
 - zgodność sum confirmed/estimated/unknown z agregatem karty;
 - akceptację PLN/EUR przez pełny przepływ CAP i odrzucenie JPY/KWD/nieznanych kodów przed
   persistence; EUR przechodzi również przez grounded narrative i kodowy display;
 - idempotentne ponowne wywołanie v2 bez duplikatów;
 - dwa równoległe wywołania `startPlanning` koaleskowane do jednego pipeline'u i runu;
-- kontrolowany niedobór z diagnostyką i zerem częściowych opcji;
+- kontrolowany niedobór z diagnostyką i zerem częściowych opcji oraz frozen replay historycznego
+  `INSUFFICIENT_OPTIONS` v1 bez provider call/write;
 - rollback wszystkich zapisów po awarii providera.
 - INSERT `STARTED` oraz aktualizację tego samego `AiRuns` do `SUCCEEDED`/`FAILED`;
 - pełne bezpieczne metadata runu, terminalne response ID/status/incomplete reason, opcjonalne

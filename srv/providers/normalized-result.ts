@@ -17,7 +17,15 @@ function chargeCollectionResultView(collection: OfferChargeCollection): Provider
     items: collection.items.map((charge) => ({
       id: charge.id,
       code: charge.code,
+      label: charge.label,
       amount: moneyResultView(charge.amount),
+      ...('condition' in charge
+        ? {
+            condition: charge.condition,
+            payableAt: charge.payableAt,
+            mandatoryWhenConditionMet: charge.mandatoryWhenConditionMet,
+          }
+        : {}),
     })),
   };
 }

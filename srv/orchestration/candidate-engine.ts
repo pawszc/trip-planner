@@ -22,6 +22,8 @@ import type {
 import {
   ProviderExecutionScope,
   type ProviderCallAuditEvent,
+  type ProviderCallDescriptor,
+  type ProviderCallOptions,
 } from '../providers/provider-execution.ts';
 import {
   providerEntry,
@@ -31,6 +33,7 @@ import {
 } from '../providers/provider-manifest.ts';
 import {
   createProviderFingerprint,
+  isSha256Fingerprint,
   type ProviderJsonValue,
 } from '../providers/provider-fingerprint.ts';
 import {
@@ -414,6 +417,56 @@ function providerSearchFailed(): DomainError {
   return new DomainError('PROVIDER_SEARCH_FAILED', 'Nie udało się pobrać danych do planowania.');
 }
 
+async function executeProviderSearch<T>(
+  execution: ProviderExecutionScope,
+  entry: ProviderManifestEntry,
+  descriptor: ProviderCallDescriptor<T>,
+  invoke: (options: ProviderCallOptions) => Promise<T>,
+): Promise<T> {
+  if (entry.mode === 'FIXTURE') {
+    return execution.execute(descriptor, ({ signal }) =>
+      invoke({
+        signal,
+        executeUpstream: async () => {
+          throw new TypeError('Fixture adapters cannot create nested upstream calls.');
+        },
+      }),
+    );
+  }
+
+  let upstreamCallCount = 0;
+  const result = await invoke({
+    signal: execution.signal,
+    executeUpstream: (upstreamDescriptor, upstreamInvoke) => {
+      upstreamCallCount += 1;
+      return execution.execute(
+        {
+          providerKey: descriptor.providerKey,
+          operation: descriptor.operation,
+          ...(descriptor.destinationCode === undefined
+            ? {}
+            : { destinationCode: descriptor.destinationCode }),
+          ...upstreamDescriptor,
+        },
+        upstreamInvoke,
+      );
+    },
+  });
+  if (upstreamCallCount === 0) {
+    throw new TypeError('Live adapter completed without the run-scoped upstream executor.');
+  }
+  const resultFingerprint = descriptor.resultFingerprint(result);
+  const resultCount = descriptor.resultCount(result);
+  if (
+    !isSha256Fingerprint(resultFingerprint) ||
+    !Number.isSafeInteger(resultCount) ||
+    resultCount < 0
+  ) {
+    throw new TypeError('Live adapter result failed aggregate validation.');
+  }
+  return result;
+}
+
 function assertSelectedFixtureQueryLineage(
   candidates: readonly TripCandidate[],
   entries: {
@@ -502,7 +555,9 @@ export async function runCandidateEngine(
   const transportQueryFingerprint = createProviderFingerprint(
     transportRequest as unknown as ProviderJsonValue,
   );
-  const transportPromise = execution.execute<readonly TransportOption[]>(
+  const transportPromise = executeProviderSearch<readonly TransportOption[]>(
+    execution,
+    transportEntry,
     {
       providerKey: transportEntry.providerKey,
       operation: 'TRANSPORT_SEARCH',
@@ -528,7 +583,9 @@ export async function runCandidateEngine(
       destination: { ...destination },
     });
     accommodationQueryFingerprints.set(destination.code, queryFingerprint);
-    return execution.execute<readonly StayOption[]>(
+    return executeProviderSearch<readonly StayOption[]>(
+      execution,
+      accommodationEntry,
       {
         providerKey: accommodationEntry.providerKey,
         operation: 'ACCOMMODATION_SEARCH',
@@ -557,7 +614,9 @@ export async function runCandidateEngine(
       destination: { ...destination },
     });
     placesQueryFingerprints.set(destination.code, queryFingerprint);
-    return execution.execute<readonly Place[]>(
+    return executeProviderSearch<readonly Place[]>(
+      execution,
+      placesEntry,
       {
         providerKey: placesEntry.providerKey,
         operation: 'PLACES_SEARCH',

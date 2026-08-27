@@ -69,10 +69,12 @@ function internalRuleSource(
     fetchedAt: FIXTURE_TIMESTAMP,
     expiresAt: null,
     sourceUrl: 'INTERNAL_FIXTURE',
+    attribution: 'Trip Planner internal deterministic rule',
     freshnessType: 'INTERNAL_RULE',
     currency: context.currency,
     // Retained as a legacy grounded-context-v1 alias. providerVersion is authoritative in v2.
     fixtureVersion: INTERNAL_COST_FIXTURE_VERSION,
+    termsPolicyVersion: 'internal-rule-terms-v1',
   };
 }
 
