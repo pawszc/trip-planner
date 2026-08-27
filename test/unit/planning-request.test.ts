@@ -4,13 +4,19 @@ import {
   SUPPORTED_CURRENCY_CODES,
   SUPPORTED_CURRENCY_DEFINITIONS,
 } from '../../srv/domain/currency.ts';
+import { OFFER_PRICING_CONTRACT_VERSION } from '../../srv/domain/offer-pricing.ts';
 import type { PersistedTripRequest } from '../../srv/mapping/trip-request-mapper.js';
 import {
   createLegacyPlanningFingerprintV0,
+  createLegacyPlanningFingerprintV1,
   createPlanningContext,
   createPlanningFingerprint,
   majorUnitsToMinorUnits,
 } from '../../srv/orchestration/planning-request.js';
+import {
+  MOCK_PROVIDER_MANIFEST,
+  providerManifestLineage,
+} from '../../srv/providers/provider-manifest.js';
 
 const persistedTripRequest = {
   ID: 'trip-1',
@@ -94,27 +100,37 @@ describe('planning request mapping', () => {
     });
   });
 
-  it('reproduces the independently calculated main@1b8a852 fingerprint v0 golden', () => {
+  it('reproduces the independently calculated v0 and source-main v1 goldens', () => {
     const context = createPlanningContext(persistedTripRequest);
-    const legacyFingerprint = createLegacyPlanningFingerprintV0(context);
+    const legacyV0Fingerprint = createLegacyPlanningFingerprintV0(context);
+    const legacyV1Fingerprint = createLegacyPlanningFingerprintV1(context);
+    const manifest = providerManifestLineage(MOCK_PROVIDER_MANIFEST);
     const currentFingerprint = createPlanningFingerprint(context, {
       currencyContractVersion: CURRENCY_CONTRACT_VERSION,
-      providerFixtureVersion: 'europe-reference-v1',
+      offerPricingContractVersion: OFFER_PRICING_CONTRACT_VERSION,
+      providerManifestVersion: manifest.manifestVersion,
+      providerManifestFingerprint: manifest.manifestFingerprint,
       engineVersion: 'candidate-engine-v1',
       scoringVersion: 'candidate-score-v1',
     });
 
-    expect(legacyFingerprint).toBe(
+    expect(legacyV0Fingerprint).toBe(
       '4ddf742558a4ca13d0f039cc9ab7e52a7adebccc326d2ad91442186c5def7257',
     );
-    expect(legacyFingerprint).not.toBe(currentFingerprint);
+    expect(legacyV1Fingerprint).toBe(
+      '608e7840fd96b6f4729ee53425185db93e14a331e76ad5dcc144512590fd1f51',
+    );
+    expect(legacyV0Fingerprint).not.toBe(currentFingerprint);
+    expect(legacyV1Fingerprint).not.toBe(currentFingerprint);
   });
 
   it('creates a stable fingerprint that changes with a relevant version', () => {
     const context = createPlanningContext(persistedTripRequest);
     const versions = {
       currencyContractVersion: CURRENCY_CONTRACT_VERSION,
-      providerFixtureVersion: 'fixture-v1',
+      offerPricingContractVersion: OFFER_PRICING_CONTRACT_VERSION,
+      providerManifestVersion: 'planning-provider-manifest-v1',
+      providerManifestFingerprint: 'a'.repeat(64),
       engineVersion: 'engine-v1',
       scoringVersion: 'score-v1',
     };
@@ -125,10 +141,20 @@ describe('planning request mapping', () => {
       ...versions,
       currencyContractVersion: 'currency-fraction-digits-v2-test',
     });
+    const changedManifest = createPlanningFingerprint(context, {
+      ...versions,
+      providerManifestFingerprint: 'b'.repeat(64),
+    });
+    const changedOfferPricing = createPlanningFingerprint(context, {
+      ...versions,
+      offerPricingContractVersion: 'offer-price-v3-test',
+    });
 
     expect(first).toMatch(/^[a-f0-9]{64}$/);
     expect(repeat).toBe(first);
     expect(changed).not.toBe(first);
     expect(changedCurrencyContract).not.toBe(first);
+    expect(changedManifest).not.toBe(first);
+    expect(changedOfferPricing).not.toBe(first);
   });
 });

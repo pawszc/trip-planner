@@ -1,4 +1,6 @@
 import type { Destination, Place, StayOption, TransportOption } from '../domain/candidate.ts';
+import type { ProviderCallOptions } from './provider-execution.ts';
+import type { ProviderManifestEntry } from './provider-manifest.ts';
 
 /**
  * Common, explicit trip context shared by every provider request.
@@ -29,13 +31,25 @@ export interface PlacesSearchRequest extends ProviderTripRequest {
 }
 
 export interface TransportProvider {
-  search(request: TransportSearchRequest): Promise<readonly TransportOption[]>;
+  /** Runtime adapter identity. Required for LIVE mode, including an empty result set. */
+  readonly manifestEntry?: ProviderManifestEntry;
+  search(
+    request: TransportSearchRequest,
+    options?: ProviderCallOptions,
+  ): Promise<readonly TransportOption[]>;
 }
 
 export interface AccommodationProvider {
-  search(request: AccommodationSearchRequest): Promise<readonly StayOption[]>;
+  /** Runtime adapter identity. Required for LIVE mode, including an empty result set. */
+  readonly manifestEntry?: ProviderManifestEntry;
+  search(
+    request: AccommodationSearchRequest,
+    options?: ProviderCallOptions,
+  ): Promise<readonly StayOption[]>;
 }
 
 export interface PlacesProvider {
-  search(request: PlacesSearchRequest): Promise<readonly Place[]>;
+  /** Runtime adapter identity. Required for LIVE mode, including an empty result set. */
+  readonly manifestEntry?: ProviderManifestEntry;
+  search(request: PlacesSearchRequest, options?: ProviderCallOptions): Promise<readonly Place[]>;
 }

@@ -4,8 +4,42 @@ import { isSupportedCurrency, SUPPORTED_CURRENCY_CODES } from './currency.ts';
 export const FRESHNESS_TYPE_VALUES = ['LIVE', 'CACHED', 'FIXTURE', 'INTERNAL_RULE'] as const;
 export type FreshnessType = (typeof FRESHNESS_TYPE_VALUES)[number];
 
-/** Marker INTERNAL_FIXTURE odróżnia stabilne dane lokalne od adresu zewnętrznego. */
+export const SOURCE_SNAPSHOT_CONTRACT_VERSION = 'source-snapshot-v2';
+export const SOURCE_TYPE_VALUES = ['LIVE', 'FIXTURE', 'INTERNAL_RULE'] as const;
+export type SourceType = (typeof SOURCE_TYPE_VALUES)[number];
+
+/**
+ * Provider-neutral provenance written by every new provider result.
+ *
+ * Nullable lineage fields mean "the upstream did not publish this fact", never an inferred
+ * value. `fixtureVersion` is retained only for explicit fixture compatibility and is null for
+ * live sources. Query/result fingerprints identify canonical, locally safe views rather than
+ * raw provider payloads.
+ */
 export interface SourceSnapshot {
+  contractVersion: typeof SOURCE_SNAPSHOT_CONTRACT_VERSION;
+  id: string;
+  sourceType: SourceType;
+  provider: string;
+  adapterVersion: string;
+  providerVersion: string;
+  upstreamApiVersion: string | null;
+  upstreamSchemaFingerprint: string | null;
+  queryFingerprint: string;
+  resultFingerprint: string;
+  externalItemId: string;
+  fetchedAt: string;
+  expiresAt: string | null;
+  sourceUrl: string | null;
+  attribution: string | null;
+  freshnessType: FreshnessType;
+  currency: string | null;
+  fixtureVersion: string | null;
+  termsPolicyVersion: string;
+}
+
+/** Exact historical fixture shape. Readers may expose it without inventing v2 lineage. */
+export interface LegacyFixtureSourceSnapshot {
   id: string;
   provider: string;
   externalItemId: string;
@@ -14,6 +48,55 @@ export interface SourceSnapshot {
   freshnessType: FreshnessType;
   currency: string;
   fixtureVersion: string;
+}
+
+export interface SourceSnapshotLineageView {
+  contractVersion: typeof SOURCE_SNAPSHOT_CONTRACT_VERSION | 'source-snapshot-v1-legacy';
+  sourceType: SourceType;
+  adapterVersion: string | null;
+  providerVersion: string | null;
+  upstreamApiVersion: string | null;
+  upstreamSchemaFingerprint: string | null;
+  queryFingerprint: string | null;
+  resultFingerprint: string | null;
+  expiresAt: string | null;
+  fixtureVersion: string | null;
+}
+
+/**
+ * Dual-read compatibility view. Legacy fixture rows stay explicitly legacy; missing v2
+ * fingerprints or versions are not synthesized and no persisted row is rewritten.
+ */
+export function sourceSnapshotLineage(
+  source: SourceSnapshot | LegacyFixtureSourceSnapshot,
+): SourceSnapshotLineageView {
+  if ('contractVersion' in source) {
+    return {
+      contractVersion: source.contractVersion,
+      sourceType: source.sourceType,
+      adapterVersion: source.adapterVersion,
+      providerVersion: source.providerVersion,
+      upstreamApiVersion: source.upstreamApiVersion,
+      upstreamSchemaFingerprint: source.upstreamSchemaFingerprint,
+      queryFingerprint: source.queryFingerprint,
+      resultFingerprint: source.resultFingerprint,
+      expiresAt: source.expiresAt,
+      fixtureVersion: source.fixtureVersion,
+    };
+  }
+
+  return {
+    contractVersion: 'source-snapshot-v1-legacy',
+    sourceType: 'FIXTURE',
+    adapterVersion: null,
+    providerVersion: null,
+    upstreamApiVersion: null,
+    upstreamSchemaFingerprint: null,
+    queryFingerprint: null,
+    resultFingerprint: null,
+    expiresAt: null,
+    fixtureVersion: source.fixtureVersion,
+  };
 }
 
 export const PRICE_TYPE_VALUES = ['LIVE_PRICE', 'FIXED_PRICE', 'ESTIMATE', 'UNKNOWN'] as const;
@@ -40,6 +123,43 @@ export interface UnknownMoney extends MoneyBase {
 
 /** UNKNOWN jest osobnym wariantem unii i nigdy nie otrzymuje wymyślonej kwoty. */
 export type Money = KnownMoney | UnknownMoney;
+
+/** Runtime guard for locally mapped provider money; returns field names, never raw values. */
+export function moneyValidationIssues(value: unknown, path: string): readonly string[] {
+  if (typeof value !== 'object' || value === null) return Object.freeze([path]);
+  const candidate = value as Readonly<Record<string, unknown>>;
+  const issues: string[] = [];
+  const expectedKeys = ['amountMinor', 'currency', 'priceType', 'sourceSnapshot'];
+  const actualKeys = Object.keys(candidate).sort((left, right) => left.localeCompare(right, 'en'));
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key, index) => key !== expectedKeys[index])
+  ) {
+    issues.push(`${path}.fields`);
+  }
+  if (!isSupportedCurrency(candidate.currency)) issues.push(`${path}.currency`);
+  if (!PRICE_TYPE_VALUES.includes(candidate.priceType as PriceType)) {
+    issues.push(`${path}.priceType`);
+  } else if (candidate.priceType === 'UNKNOWN') {
+    if (candidate.amountMinor !== null) issues.push(`${path}.amountMinor`);
+  } else if (
+    !Number.isSafeInteger(candidate.amountMinor) ||
+    (candidate.amountMinor as number) < 0
+  ) {
+    issues.push(`${path}.amountMinor`);
+  }
+  if (
+    candidate.sourceSnapshot !== null &&
+    (typeof candidate.sourceSnapshot !== 'object' || candidate.sourceSnapshot === null)
+  ) {
+    issues.push(`${path}.sourceSnapshot`);
+  }
+  return Object.freeze(issues);
+}
+
+export function isMoney(value: unknown): value is Money {
+  return moneyValidationIssues(value, 'money').length === 0;
+}
 
 export const MONEY_CLASSIFICATION_VALUES = ['CONFIRMED', 'ESTIMATED', 'UNKNOWN'] as const;
 export type MoneyClassification = (typeof MONEY_CLASSIFICATION_VALUES)[number];

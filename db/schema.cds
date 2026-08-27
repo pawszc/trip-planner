@@ -106,6 +106,61 @@ type FreshnessType : String(24) enum {
   INTERNAL_RULE;
 }
 
+type SourceType : String(24) enum {
+  LIVE;
+  FIXTURE;
+  INTERNAL_RULE;
+}
+
+type OfferScope : String(24) enum {
+  TRANSPORT;
+  ACCOMMODATION;
+}
+
+type OfferChargeKind : String(24) enum {
+  CONDITIONAL;
+  OPTIONAL;
+}
+
+type ConditionalChargePayableAt : String(24) enum {
+  BOOKING;
+  PROPERTY;
+  AIRPORT;
+  UNKNOWN;
+}
+
+type ChargeCollectionCompleteness : String(16) enum {
+  COMPLETE;
+  PARTIAL;
+  UNKNOWN;
+}
+
+type ProviderOperation : String(32) enum {
+  TRANSPORT_SEARCH;
+  ACCOMMODATION_SEARCH;
+  PLACES_SEARCH;
+}
+
+type ProviderFailureCategory : String(40) enum {
+  CANCELLED;
+  TIMEOUT;
+  RATE_LIMITED;
+  UPSTREAM_4XX;
+  UPSTREAM_5XX;
+  NETWORK;
+  INVALID_SCHEMA;
+  PARTIAL_DESTINATION;
+  CALL_BUDGET_EXCEEDED;
+  INVALID_EXECUTION_POLICY;
+}
+
+type ProviderCallAuditStatus : String(16) enum {
+  SUCCEEDED;
+  FAILED;
+  CANCELLED;
+  BLOCKED;
+}
+
 type OptionNoteKind : String(16) enum {
   ADVANTAGE;
   TRADEOFF;
@@ -261,10 +316,17 @@ entity PlanningRuns : cuid, managed {
   tripRequest : Association to one TripRequests not null;
   workflowRun : Association to one WorkflowRuns not null;
   requestFingerprint : String(64) not null;
+  // Nullable/no-default: v0/v1 history remains exact and is never silently backfilled.
+  requestFingerprintVersion : String(80);
   status : PlanningRunStatus not null;
   // Nullable bez defaultu: legacy row nie może otrzymać wersji, której nie da się udowodnić.
   currencyContractVersion : String(80);
-  providerFixtureVersion : String(80) not null;
+  // Legacy fixture lineage remains populated only for explicit fixture configurations.
+  providerFixtureVersion : String(80);
+  providerManifestVersion : String(80);
+  providerManifestFingerprint : String(64);
+  providerManifestJson : LargeString;
+  offerPricingContractVersion : String(80);
   engineVersion : String(80) not null;
   scoringVersion : String(120) not null;
   startedAt : Timestamp not null;
@@ -276,6 +338,8 @@ entity PlanningRuns : cuid, managed {
   validCandidateCount : Integer not null;
   rejectedCandidateCount : Integer not null;
   selectedOptionCount : Integer not null;
+  // Exact terminal audit length for current v2 rows; nullable/no-default preserves legacy.
+  providerExecutionCallCount : Integer;
   errorCode : String(80);
   errorMessage : String(500);
 }
@@ -486,7 +550,10 @@ entity RankedOptions : cuid, managed {
   tripRequest : Association to one TripRequests not null;
   workflowRun : Association to one WorkflowRuns not null;
   planningRun : Association to one PlanningRuns not null;
-  providerFixtureVersion : String(80) not null;
+  providerFixtureVersion : String(80);
+  providerManifestVersion : String(80);
+  providerManifestFingerprint : String(64);
+  offerPricingContractVersion : String(80);
   scoringVersion : String(120) not null;
   rank : Integer not null;
   role : SelectionRole not null;
@@ -518,6 +585,15 @@ entity RankedOptions : cuid, managed {
   totalAmountMinor : Integer64 not null;
   costPerPersonMinor : Integer64 not null;
   remainingBudgetMinor : Integer64 not null;
+  // Additive/no-default for legacy cards. New v2 cards persist both provider all-in totals.
+  transportMandatoryTotalMinor : Integer64;
+  transportMandatoryTotalPriceType : PriceType;
+  transportMandatoryTotalClassification : MoneyClassification;
+  transportMandatoryTotalSourceKey : String(500);
+  accommodationMandatoryTotalMinor : Integer64;
+  accommodationMandatoryTotalPriceType : PriceType;
+  accommodationMandatoryTotalClassification : MoneyClassification;
+  accommodationMandatoryTotalSourceKey : String(500);
   totalScore : Decimal(5, 2) not null;
   budgetFitScore : Decimal(5, 2) not null;
   travelTimeScore : Decimal(5, 2) not null;
@@ -536,16 +612,30 @@ entity SourceSnapshots : cuid, managed {
   workflowRun : Association to one WorkflowRuns not null;
   planningRun : Association to one PlanningRuns not null;
   rankedOption : Association to one RankedOptions not null;
-  providerFixtureVersion : String(80) not null;
+  providerFixtureVersion : String(80);
+  providerManifestVersion : String(80);
+  providerManifestFingerprint : String(64);
   scoringVersion : String(120) not null;
   sourceKey : String(500) not null;
+  sourceContractVersion : String(80);
+  sourceType : SourceType;
   provider : String(120) not null;
+  adapterVersion : String(120);
+  providerVersion : String(120);
+  upstreamApiVersion : String(120);
+  upstreamSchemaFingerprint : String(64);
+  queryFingerprint : String(64);
+  resultFingerprint : String(64);
   externalItemId : String(250) not null;
   fetchedAt : Timestamp not null;
-  sourceUrl : String(500) not null;
+  expiresAt : Timestamp;
+  sourceUrl : String(500);
+  attribution : String(500);
   freshnessType : FreshnessType not null;
-  currency : String(3) not null;
-  fixtureVersion : String(80) not null;
+  currency : String(3);
+  fixtureVersion : String(80);
+  // Nullable/no-default for historical rows; every source-snapshot-v2 write sets it.
+  termsPolicyVersion : String(120);
   contexts : String(1000) not null;
   demonstrationData : Boolean not null;
 }
@@ -557,7 +647,9 @@ entity BudgetItems : cuid, managed {
   planningRun : Association to one PlanningRuns not null;
   rankedOption : Association to one RankedOptions not null;
   sourceSnapshot : Association to one SourceSnapshots;
-  providerFixtureVersion : String(80) not null;
+  providerFixtureVersion : String(80);
+  providerManifestVersion : String(80);
+  providerManifestFingerprint : String(64);
   scoringVersion : String(120) not null;
   category : BudgetCategory not null;
   priceType : PriceType not null;
@@ -586,7 +678,9 @@ entity RejectionReasons : cuid, managed {
   tripRequest : Association to one TripRequests not null;
   workflowRun : Association to one WorkflowRuns not null;
   planningRun : Association to one PlanningRuns not null;
-  providerFixtureVersion : String(80) not null;
+  providerFixtureVersion : String(80);
+  providerManifestVersion : String(80);
+  providerManifestFingerprint : String(64);
   scoringVersion : String(120) not null;
   candidateId : String(500) not null;
   code : String(80) not null;
@@ -601,9 +695,82 @@ entity RejectionSummaries : cuid, managed {
   tripRequest : Association to one TripRequests not null;
   workflowRun : Association to one WorkflowRuns not null;
   planningRun : Association to one PlanningRuns not null;
-  providerFixtureVersion : String(80) not null;
+  providerFixtureVersion : String(80);
+  providerManifestVersion : String(80);
+  providerManifestFingerprint : String(64);
   scoringVersion : String(120) not null;
   code : String(80) not null;
   candidateCount : Integer not null;
   occurrenceCount : Integer not null;
+}
+
+// Explicit non-additive disclosure state. COMPLETE+0 means known none; UNKNOWN+0 means
+// the provider did not disclose completeness. These rows never participate in BudgetItems.
+@assert.unique.offerChargeCollection: [rankedOption, scope, kind]
+entity OfferChargeCollections : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  rankedOption : Association to one RankedOptions not null;
+  providerFixtureVersion : String(80);
+  providerManifestVersion : String(80);
+  providerManifestFingerprint : String(64);
+  offerPricingContractVersion : String(80) not null;
+  scoringVersion : String(120) not null;
+  scope : OfferScope not null;
+  kind : OfferChargeKind not null;
+  completeness : ChargeCollectionCompleteness not null;
+  itemCount : Integer not null;
+}
+
+@assert.unique.offerChargeItem: [collection, chargeId]
+entity OfferChargeDisclosures : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  rankedOption : Association to one RankedOptions not null;
+  collection : Association to one OfferChargeCollections not null;
+  sourceSnapshot : Association to one SourceSnapshots;
+  offerPricingContractVersion : String(80) not null;
+  chargeId : String(120) not null;
+  code : String(120) not null;
+  label : String(240) not null;
+  // Required only for CONDITIONAL rows; OPTIONAL rows persist null for all three fields.
+  condition : String(500);
+  payableAt : ConditionalChargePayableAt;
+  mandatoryWhenConditionMet : Boolean;
+  priceType : PriceType not null;
+  classification : MoneyClassification not null;
+  currency : String(3) not null;
+  amountMinor : Integer64;
+  includedInBudget : Boolean not null default false;
+}
+
+// Internal provider-call audit: only closed metadata and fingerprints, never raw payloads/errors.
+@assert.unique.providerCallSequence: [planningRun, sequence]
+entity ProviderExecutionRecords : cuid, managed {
+  tripRequest : Association to one TripRequests not null;
+  workflowRun : Association to one WorkflowRuns not null;
+  planningRun : Association to one PlanningRuns not null;
+  sequence : Integer not null;
+  providerManifestVersion : String(80) not null;
+  providerManifestFingerprint : String(64) not null;
+  policyVersion : String(80) not null;
+  providerKey : String(160) not null;
+  operation : ProviderOperation not null;
+  destinationCode : String(12);
+  status : ProviderCallAuditStatus not null;
+  providerCallAttempted : Boolean not null;
+  attempts : Integer not null;
+  latencyMs : Integer not null;
+  queryFingerprint : String(64) not null;
+  resultFingerprint : String(64);
+  resultCount : Integer;
+  failureCategory : ProviderFailureCategory;
+  underlyingFailureCategory : ProviderFailureCategory;
+  httpStatus : Integer;
+  rateLimitRetryAfterMs : Integer64;
+  rateLimitLimit : Integer64;
+  rateLimitRemaining : Integer64;
+  rateLimitResetAt : Timestamp;
 }

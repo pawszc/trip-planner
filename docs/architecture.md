@@ -7,7 +7,8 @@ Backend wykorzystuje SAP CAP 10, TypeScript ESM i lokalny adapter SQLite. Fronte
 - `domain/` — typy, błędy domenowe i czysta maszyna stanów workflow;
 - `validation/` — czysta, testowalna walidacja briefu, hard constraints i soft preferences;
 - `orchestration/` — ograniczony pipeline pobierania danych i budowania kandydatów;
-- `providers/` — typowane kontrakty providerów oraz stabilne adaptery fixture;
+- `providers/` — typowane kontrakty providerów, manifest/provenance i ograniczone wykonanie
+  oraz stabilne adaptery fixture;
 - `ai/` — task-aware profile LLM, routing, adaptery SDK, lokalna walidacja, redakcja,
   fail-closed recorder i wewnętrzna persistence `AiRuns`;
 - `narratives/` — deterministyczny grounded context i model-safe view, fact IDs,
@@ -38,18 +39,23 @@ innymi 29 lutego w roku nieprzestępnym oraz nieistniejące dni miesiąca.
 Status `TripRequest` opisuje lifecycle briefu: `DRAFT` oznacza wersję roboczą, a `CONSTRAINTS_CONFIRMED` potwierdzony zestaw ograniczeń. Postęp planowania przechowuje osobna encja `WorkflowRuns`, powiązana jeden-do-jednego z `TripRequest`. Rekord workflow zawiera bieżący stan, kontrolowane informacje o błędzie i znaczniki czasu. Projekcja OData workflow jest tylko do odczytu; klient nie może ominąć maszyny stanów przez bezpośredni zapis. Dzięki temu etap wykonania nie zmienia znaczenia statusu briefu ani zasad jego edycji.
 
 Każde deterministyczne wykonanie ma osobny `PlanningRun`, powiązany z `TripRequest` i
-`WorkflowRun`. Każdy nowy run zapisuje fingerprint v1 pełnego wejścia, dokładną wersję
-kontraktu walut, wersję fixture providerów, wersję silnika i scoringu, liczniki kandydatów
-oraz kontrolowany status. Unikalność fingerprintu zapewnia idempotencję dla
+`WorkflowRun`. Każdy nowy run zapisuje `planning-request-fingerprint-v2` pełnego wejścia,
+dokładną wersję kontraktu walut i ceny oferty, kanoniczny provider manifest z jego SHA-256, wersję silnika i
+scoringu, liczniki kandydatów oraz kontrolowany status. Manifest opisuje dokładnie jedną
+konfigurację dla każdej roli `TRANSPORT`, `ACCOMMODATION` i `PLACES`, wraz z trybem
+`FIXTURE`/`LIVE`, wersjami providera/adaptera/upstream schema oraz polityką wykonania.
+Run utrwala także dokładny `providerExecutionCallCount`; replay wymaga całej sekwencji audytu,
+nie tylko poprawnego prefiksu. Unikalność fingerprintu zapewnia idempotencję dla
 nieedytowalnego, potwierdzonego briefu.
 
-Replay stosuje dual-read/single-write. Najpierw szuka v1. Dopiero po jego braku i wyłącznie
-dla `OPTIONS_READY` oblicza osobnym, zamrożonym algorytmem exact v0 z `main@1b8a852`.
-Historyczny run jest zwracany tylko wtedy, gdy pozostaje nieoznaczony
-`currencyContractVersion: null`, ma `SUCCEEDED`, dokładne linkage i historyczne wersje,
-`selectedOptionCount: 3` oraz dokładnie trzy spójne `RankedOptions`. Nie ma UPDATE,
-backfillu ani provider call. `INSUFFICIENT_OPTIONS` nie korzysta z fallbacku, a każda
-niespójność kończy się 409 `PLANNING_STATE_INCONSISTENT`.
+Replay stosuje multi-read/single-write. Najpierw szuka v2. Po jego braku zamrożony exact v1 z
+`main@ad7a909` obsługuje sukces przy `OPTIONS_READY` oraz historyczny niedobór przy
+`CONSTRAINTS_CONFIRMED`; exact v0 z `main@1b8a852` pozostaje success-only. Historyczny run jest
+zwracany tylko po fail-closed sprawdzeniu statusu,
+linkage, wersji, liczników i dokładnie trzech spójnych `RankedOptions`. Odczyt v1/v0 jest
+ponadto dostępny wyłącznie dla manifestu identycznego z zamkniętym manifestem fixture; live
+ani konfiguracja mieszana nie mogą odziedziczyć wyniku fixture. Nie ma UPDATE, backfillu,
+migracji ani provider call. Każda niespójność kończy się 409 `PLANNING_STATE_INCONSISTENT`.
 
 Równoległe wywołania `startPlanning` dla tego samego briefu są koaleskowane przez serwis do
 jednego aktywnego wykonania. Pierwszy request jest właścicielem transakcji, a kolejne czekają
@@ -71,12 +77,18 @@ Niedozwolone przejście zgłasza `DomainError` z kodem, stanem źródłowym, sta
 Akcja `confirmConstraints` waliduje podstawowy brief i oba profile, wymaga statusu `DRAFT`, a następnie w jednej transakcji ustawia status briefu oraz tworzy albo aktualizuje powiązany `WorkflowRun` do `CONSTRAINTS_CONFIRMED`. Błąd w dowolnym kroku wycofuje całą operację. Ponowne potwierdzenie pozostaje niedozwolone.
 
 Akcja `startPlanning` ponownie waliduje cały brief i profile, tworzy kontekst w integer
-minor units, wywołuje providery przez interfejsy 2B i uruchamia pipeline. Providerzy są
-wywoływani przed pierwszym zapisem. Udany wynik zapisuje atomowo run, przejścia, dokładnie
-trzy opcje, budżety, źródła, notatki i odrzucenia. Awaria providera zwraca kontrolowane
-`PROVIDER_SEARCH_FAILED` i pozostawia workflow w `CONSTRAINTS_CONFIRMED` bez wyników.
-Zaakceptowany replay v1 albo exact v0 kończy się przed konstrukcją providerów i nie wykonuje
-żadnego zapisu.
+minor units, wiąże wykonanie z provider manifestem, wywołuje providery przez ograniczony
+run-scoped execution scope i uruchamia pipeline. Providerzy są wywoływani przed pierwszym
+zapisem. Udany wynik zapisuje atomowo run, przejścia, dokładnie trzy opcje, budżety, źródła,
+disclosures opłat, bezpieczny audit wykonania, notatki i odrzucenia. Awaria providera zwraca
+kontrolowane `PROVIDER_SEARCH_FAILED`, anuluje sibling calls i pozostawia workflow w
+`CONSTRAINTS_CONFIRMED` bez wyników. Zaakceptowany replay v2, exact v1 albo exact v0 kończy
+się przed konstrukcją providerów i nie wykonuje żadnego zapisu.
+
+Phase 4B0 nie zmienia topologii transakcji requestu CAP: odczyt i provider fan-out nadal
+odbywają się po utworzeniu `cds.tx(request)`, choć przed pierwszym zapisem. Docelowe krótkie
+read → network bez otwartej transakcji → krótkie write z ponowną walidacją stanu i
+idempotencji należy do 4B1.
 
 ## Deterministyczny silnik kandydatów
 
@@ -87,11 +99,34 @@ podróży, a wyniki używają typów domenowych. Kod domenowy i ranking nie znaj
 wersjonowanych fixture'ów generowanych względem dat briefu, dlatego nie zależą od
 internetu ani zegara systemowego.
 
+Phase 4B0 dodaje `planning-provider-manifest-v1` i
+`provider-execution-policy-v1`. Domyślna polityka ogranicza run do 25 rzeczywistych
+source/upstream calls, timeoutu
+10 000 ms, concurrency 4 i jednego attemptu. Kolejka jest FIFO, rate limit działa
+fail-fast, a fallback ma stałą wartość `NONE`; konfiguracja może te limity tylko obniżyć.
+Adapter live wykonuje każdy create/poll/page/fan-out request przez run-scoped executor, więc
+requesty wewnątrz jednego logicznego `search()` dzielą ten sam budżet i concurrency. Pierwszy
+błąd anuluje sibling calls. Zamknięte błędy i wewnętrzne eventy audytowe zawierają
+wyłącznie bezpieczne metadata i fingerprinty, nigdy raw request/response/error ani headers.
+Manifest live lub mieszany nie uruchamia legacy fixture replay.
+Instancja adaptera live musi przed fan-outem potwierdzić dokładną tożsamość z manifestu, także
+dla pustego wyniku; źródła wybranych fixture są związane z faktycznie wykonanym query.
+
 Kwoty są dyskryminowaną unią `Money`: znane ceny przechowują bezpieczną całkowitą
 liczbę minor units, natomiast `UNKNOWN` ma `amountMinor: null`. Każda cena ma
-`PriceType` i `SourceSnapshot`. Reguły kosztów lokalnych są estymacjami z własnym,
-wersjonowanym snapshotem `INTERNAL_FIXTURE`. Silnik nie wykonuje przewalutowania;
-inna waluta powoduje odrzucenie kandydata.
+`PriceType` i `source-snapshot-v2` z jawnym typem `LIVE`, `FIXTURE` albo
+`INTERNAL_RULE`, wersjami adaptera/providera, kanonicznym query/result fingerprintem,
+opcjonalnym expiry, nullable URL/attribution/currency i wymaganą wersją terms policy. Reguły
+kosztów lokalnych są estymacjami z własnym wersjonowanym
+snapshotem `INTERNAL_RULE`. Silnik nie wykonuje przewalutowania; inna waluta powoduje
+odrzucenie kandydata.
+
+`offer-price-v2` zachowuje `price` jako obowiązkowy subtotal i `additionalFees` jako
+obowiązkowe podatki/opłaty, a dodatkowo wymaga zgodnego `mandatoryTotal`. Nieznana wymagana
+wartość nadal odrzuca kandydata. Warunkowe opłaty zachowują label, condition, payable-at i
+mandatory-when-met, a opcjonalne ancillary własny label. Obie kolekcje mają osobne stany
+kompletności `COMPLETE`/`PARTIAL`/`UNKNOWN` i są utrwalanymi disclosures, ale nie są
+dodawane do siedmiu kategorii budżetu, bufora, score ani hard constraints.
 
 Candidate builder tworzy wariant z destynacji, transportu, noclegu i kosztów lokalnych.
 Konfigurowalne limity liczby transportów, noclegów oraz kandydatów na destynację
@@ -159,8 +194,13 @@ Faza 2C integruje ten sam czysty pipeline z CAP i UI bez zmiany zasad rankingu. 
 payloady providerów nie są zapisywane. `RankedOptions` zawierają wyłącznie wybrane fakty
 domenowe i komponenty score; `BudgetItems` zachowują kategorię, price type, klasyfikację
 oraz części confirmed/estimated;
-`SourceSnapshots` przechowują kontrolowany kontrakt pochodzenia. `OptionNotes` powstają z
-deterministycznych szablonów.
+`SourceSnapshots` przechowują kontrolowany kontrakt pochodzenia. `OfferChargeCollections` i
+`OfferChargeDisclosures` zachowują nieaddytywne opłaty oraz ich kompletność, a wewnętrzne
+`ProviderExecutionRecords` — zamknięty audit bez payloadów. `OptionNotes` powstają z
+deterministycznych szablonów. Legacy `providerFixtureVersion` pozostaje tylko aliasem dla
+jednorodnego manifestu fixture; dla konfiguracji live/mieszanej jest `null`. Istniejący
+`grounded-option-context-v1` nie otrzymuje w 4B0 cichego rozszerzenia na live i może odrzucić
+taki przyszły run fail-closed.
 
 Przy mniej niż trzech poprawnych wariantach zapisuje się `PlanningRun` ze statusem
 `INSUFFICIENT_OPTIONS`, diagnostyki `RejectionReasons` i `RejectionSummaries`, ale zero
@@ -186,9 +226,11 @@ Bound action na `RankedOptions`:
   wybranej opcji i zwraca `NarrativeRun`.
 
 Projekcje tylko do odczytu: `WorkflowRuns`, `PlanningRuns`, `WorkflowTransitions`,
-`RankedOptions`, `BudgetBreakdowns`, `BudgetItems`, `SourceSnapshots`, `OptionNotes`,
-`RejectionReasons` i `RejectionSummaries`. Klient pobiera zbiory filtrem po
-`tripRequest_ID` albo `planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników.
+`RankedOptions`, `BudgetBreakdowns`, `BudgetItems`, `SourceSnapshots`,
+`OfferChargeCollections`, `OfferChargeDisclosures`, `OptionNotes`, `RejectionReasons` i
+`RejectionSummaries`. Klient pobiera zbiory filtrem po `tripRequest_ID` albo
+`planningRun_ID`; nie może bezpośrednio zmienić workflow ani wyników. Wewnętrzne
+`ProviderExecutionRecords` nie są publikowane przez serwis.
 
 `NarrativeRuns`, `OptionNarratives` i `NarrativeFactReferences` są projekcjami tylko do
 odczytu i zachowują publiczny kontrakt 3B2: `NarrativeRuns` pokazuje historyczny generate

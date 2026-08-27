@@ -2,15 +2,21 @@ import { describe, expect, it } from 'vitest';
 import type { RankedOption, TripCandidate } from '../../srv/domain/candidate.ts';
 import { CURRENCY_CONTRACT_VERSION } from '../../srv/domain/currency.ts';
 import { createMoney } from '../../srv/domain/money.ts';
+import { OFFER_PRICING_CONTRACT_VERSION } from '../../srv/domain/offer-pricing.ts';
 import {
   buildGroundedOptionContext,
   type GroundedBudgetItemRecord,
+  type GroundedPlanningRunRecord,
   type GroundedRankedOptionRecord,
   type GroundedSourceSnapshotRecord,
 } from '../../srv/narratives/grounded-option-context.ts';
 import type { CandidateEngineResult } from '../../srv/orchestration/candidate-engine.ts';
 import { createPlanningFingerprint } from '../../srv/orchestration/planning-request.ts';
 import { buildPlanningPersistenceBundle } from '../../srv/persistence/planning-result-records.ts';
+import {
+  MOCK_PROVIDER_MANIFEST,
+  providerManifestLineage,
+} from '../../srv/providers/provider-manifest.ts';
 import { calculateBudgetBreakdown } from '../../srv/ranking/budget.ts';
 import { scoreCandidate } from '../../srv/ranking/candidate-scoring.ts';
 import { DEFAULT_CANDIDATE_ENGINE_CONFIG } from '../../srv/ranking/config.ts';
@@ -30,6 +36,15 @@ function candidateWithMixedAdditionalFees(): TripCandidate {
   const stay = {
     ...base.stay,
     additionalFees: createMoney(6_000, 'PLN', 'ESTIMATE', base.stay.additionalFees.sourceSnapshot),
+    pricing: {
+      ...base.stay.pricing,
+      mandatoryTotal: createMoney(
+        base.stay.pricing.mandatoryTotal.amountMinor!,
+        'PLN',
+        'ESTIMATE',
+        base.stay.pricing.mandatoryTotal.sourceSnapshot,
+      ),
+    },
   };
   return {
     ...base,
@@ -67,6 +82,10 @@ function successfulResult(candidate: TripCandidate): CandidateEngineResult {
     rankedCandidates: [{ candidate, score }],
     options,
     shortage: null,
+    providerExecution: {
+      policyVersion: 'provider-execution-policy-v1',
+      calls: [],
+    },
   };
 }
 
@@ -84,16 +103,24 @@ describe('mixed additional-fee persistence', () => {
 
     const versions = {
       currencyContractVersion: CURRENCY_CONTRACT_VERSION,
-      providerFixtureVersion: 'candidate-test-v1',
+      offerPricingContractVersion: OFFER_PRICING_CONTRACT_VERSION,
+      providerManifestVersion: providerManifestLineage(MOCK_PROVIDER_MANIFEST).manifestVersion,
+      providerManifestFingerprint:
+        providerManifestLineage(MOCK_PROVIDER_MANIFEST).manifestFingerprint,
       engineVersion: DEFAULT_CANDIDATE_ENGINE_CONFIG.version,
       scoringVersion: 'candidate-score-v1',
     };
+    const providerLineage = providerManifestLineage(MOCK_PROVIDER_MANIFEST);
     const bundle = buildPlanningPersistenceBundle({
       tripRequestId: candidateContext.tripRequestId,
       workflowRunId: '50000000-0000-4000-8000-000000000001',
       requestFingerprint: createPlanningFingerprint(candidateContext, versions),
       currencyContractVersion: versions.currencyContractVersion,
-      providerFixtureVersion: versions.providerFixtureVersion,
+      offerPricingContractVersion: versions.offerPricingContractVersion,
+      providerFixtureVersion: 'candidate-test-v1',
+      providerManifestVersion: providerLineage.manifestVersion,
+      providerManifestFingerprint: providerLineage.manifestFingerprint,
+      providerManifestJson: providerLineage.manifestJson,
       startedAt: '2026-08-14T12:00:00.000Z',
       completedAt: '2026-08-14T12:00:01.000Z',
       context: candidateContext,
@@ -124,7 +151,7 @@ describe('mixed additional-fee persistence', () => {
         totalBudget: '4500.00',
         currency: candidateContext.currency,
       },
-      planningRun: bundle.planningRun,
+      planningRun: bundle.planningRun as GroundedPlanningRunRecord,
       rankedOption,
       budgetItems,
       sourceSnapshots,
