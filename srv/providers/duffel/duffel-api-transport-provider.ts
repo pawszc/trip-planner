@@ -27,7 +27,8 @@ import {
 } from './duffel-search-policy.ts';
 import {
   DUFFEL_UPSTREAM_SCHEMA_FINGERPRINT,
-  duffelOfferRequestResponseSchema,
+  duffelOfferRequestEnvelopeSchema,
+  duffelOfferSchema,
 } from './duffel-schemas.ts';
 
 export interface DuffelApiTransportProviderOptions {
@@ -181,19 +182,26 @@ export class DuffelApiTransportProvider implements TransportProvider {
               throw error;
             }
 
-            const parsed = duffelOfferRequestResponseSchema.safeParse(unknownResponse);
-            if (!parsed.success || parsed.data.data.live_mode !== (this.environment === 'LIVE')) {
+            const parsedEnvelope = duffelOfferRequestEnvelopeSchema.safeParse(unknownResponse);
+            if (
+              !parsedEnvelope.success ||
+              parsedEnvelope.data.data.live_mode !== (this.environment === 'LIVE')
+            ) {
               throw safeProviderFailure('INVALID_SCHEMA', plan.destination.code);
             }
             const fetchedAt = this.clock().toISOString();
+            let schemaValidOfferCount = 0;
             const mapped: Array<{
               option: TransportOption;
               upstreamOffer: DuffelOffer;
             }> = [];
-            for (const offer of parsed.data.data.offers) {
+            for (const unknownOffer of parsedEnvelope.data.data.offers) {
+              const parsedOffer = duffelOfferSchema.safeParse(unknownOffer);
+              if (!parsedOffer.success) continue;
+              schemaValidOfferCount += 1;
               try {
                 mapped.push({
-                  option: mapDuffelOffer(offer, {
+                  option: mapDuffelOffer(parsedOffer.data, {
                     destinationCode: plan.destination.code,
                     originCode,
                     currency: request.currency,
@@ -201,12 +209,15 @@ export class DuffelApiTransportProvider implements TransportProvider {
                     queryFingerprint: plan.queryFingerprint,
                     fetchedAt,
                   }),
-                  upstreamOffer: offer,
+                  upstreamOffer: parsedOffer.data,
                 });
               } catch {
                 // One malformed, ambiguous, stale-shaped or currency-incompatible offer is
                 // rejected locally; the destination remains usable if other offers are valid.
               }
+            }
+            if (parsedEnvelope.data.data.offers.length > 0 && schemaValidOfferCount === 0) {
+              throw safeProviderFailure('INVALID_SCHEMA', plan.destination.code);
             }
             return stableOffers(mapped, DUFFEL_MAX_OFFERS_PER_DESTINATION);
           },

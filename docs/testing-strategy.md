@@ -126,8 +126,11 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   origin catalog związany z manifest/query identity, destination IATA allowlist, maksymalny
   fan-out i limit 9 adults, odrzucenie błędnych dat/waluty/pustych destinations przed tokenem i
   siecią, headers, two-slice/segments/timezones/carriers, PLN/EUR minor units, mandatory
-  arithmetic, optional services, pełny segmentowy sort/dedup/truncation, exact manifest identity
-  przed pustym wynikiem oraz TEST lineage jako `LIVE`;
+  arithmetic, `UNKNOWN` services dla endpointowej fixture oraz osobną syntetyczną fixture
+  services, envelope/per-offer validation z zachowaniem poprawnych siblings, ponad 200 ofert
+  bez sztucznego limitu elementów, limit 64 MiB odpowiedzi, pełny segmentowy
+  sort/dedup/truncation, exact manifest identity przed pustym wynikiem oraz TEST lineage jako
+  `LIVE`;
 - zamknięte 429/5xx/network/invalid JSON/schema/timeout/cancellation/partial-destination bez
   raw body, provider text, headerów, stack trace lub tokenu oraz dokładnie jeden
   `executeUpstream` permit per fizyczny request;

@@ -604,16 +604,22 @@ function assertCurrentPlanningReplayDescendants(
     const manifestEntry = providerManifest.entries.find(
       (entry) => entry.providerKey === record.providerKey,
     );
+    const exactDestinationScope =
+      manifestEntry?.role === 'TRANSPORT'
+        ? manifestEntry.mode === 'LIVE'
+          ? record.destinationCode !== null
+          : record.destinationCode === null
+        : record.destinationCode !== null;
     const exactOperation =
       (manifestEntry?.role === 'TRANSPORT' &&
         record.operation === 'TRANSPORT_SEARCH' &&
-        record.destinationCode === null) ||
+        exactDestinationScope) ||
       (manifestEntry?.role === 'ACCOMMODATION' &&
         record.operation === 'ACCOMMODATION_SEARCH' &&
-        record.destinationCode !== null) ||
+        exactDestinationScope) ||
       (manifestEntry?.role === 'PLACES' &&
         record.operation === 'PLACES_SEARCH' &&
-        record.destinationCode !== null);
+        exactDestinationScope);
     return (
       hasReplayAssociationLineage(record, tripRequestId, workflowRun.ID, planningRun.ID) &&
       record.providerManifestVersion === manifest.manifestVersion &&

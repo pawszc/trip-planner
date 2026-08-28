@@ -68,11 +68,19 @@ export const duffelOfferSchema = z.object({
   available_services: z.array(availableServiceSchema).max(100).optional(),
 });
 
+export const duffelOfferRequestEnvelopeSchema = z.object({
+  data: z.object({
+    id: safeId('orq'),
+    live_mode: z.boolean(),
+    offers: z.array(z.unknown()),
+  }),
+});
+
 export const duffelOfferRequestResponseSchema = z.object({
   data: z.object({
     id: safeId('orq'),
     live_mode: z.boolean(),
-    offers: z.array(duffelOfferSchema).max(200),
+    offers: z.array(duffelOfferSchema),
   }),
 });
 

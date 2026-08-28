@@ -116,9 +116,13 @@ invariants requestu i lokalny limit 9 dorosłych są sprawdzane przed tokenem i 
 offer request per destynacja używa platformowego fetch wyłącznie przez `executeUpstream`;
 Search Policy v1 zamraża adults/economy/two-slice/no-split-ticket oraz bounded fan-out.
 Wstrzykiwany, wersjonowany katalog origin jest częścią identity manifestu i query. Zod stripuje
-payload do allowlisty, a mapper zachowuje wyłącznie jawne route/carrier/time/money/service
-facts. Test-mode lineage pozostaje `LIVE`, bez `fixtureVersion`, a domyślny profil produktu
-pozostaje fixture bez silent fallbacku.
+envelope do allowlisty i waliduje każdą ofertę niezależnie, a mapper zachowuje wyłącznie jawne
+route/carrier/time/money/service facts. Pojedyncza błędna oferta nie usuwa poprawnych siblings,
+ale niepusta odpowiedź bez poprawnej oferty jest błędem schematu. Granicą zasobów jest
+strumieniowy limit 64 MiB odpowiedzi po dekompresji, związany z Search Policy identity, a nie
+arbitralny limit liczby ofert. Brak `available_services` w odpowiedzi Offer Request zachowuje
+kompletność ancillary `UNKNOWN`. Test-mode lineage pozostaje `LIVE`, bez `fixtureVersion`, a
+domyślny profil produktu pozostaje fixture bez silent fallbacku.
 Instancja adaptera live musi przed fan-outem potwierdzić dokładną tożsamość z manifestu, także
 dla pustego wyniku; źródła wybranych fixture są związane z faktycznie wykonanym query.
 

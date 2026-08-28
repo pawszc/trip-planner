@@ -1,5 +1,6 @@
 import type { Destination } from '../../domain/candidate.ts';
 import type { TransportSearchRequest } from '../contracts.ts';
+import { DUFFEL_MAX_RESPONSE_BYTES } from '../http/provider-http-client.ts';
 import { createProviderFingerprint, type ProviderJsonValue } from '../provider-fingerprint.ts';
 import { validateTransportSearchRequest } from '../provider-request-validation.ts';
 import {
@@ -94,6 +95,7 @@ export function createDuffelSearchPolicyIdentity(originCatalog: DuffelOriginCata
     maximumAdults: DUFFEL_MAX_ADULTS_PER_SEARCH,
     maximumDestinations: DUFFEL_MAX_DESTINATIONS_PER_SEARCH,
     maximumOffersPerDestination: DUFFEL_MAX_OFFERS_PER_DESTINATION,
+    maximumResponseBytes: DUFFEL_MAX_RESPONSE_BYTES,
     originCatalog: {
       version: catalog.version,
       cityToIata: { ...catalog.cityToIata },

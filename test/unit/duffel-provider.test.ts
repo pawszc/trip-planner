@@ -22,6 +22,7 @@ import {
 import { duffelOfferRequestResponseSchema } from '../../srv/providers/duffel/duffel-schemas.js';
 import {
   DUFFEL_API_BASE_URL,
+  DUFFEL_MAX_RESPONSE_BYTES,
   ProviderHttpClient,
   type ProviderHttpTransport,
 } from '../../srv/providers/http/provider-http-client.js';
@@ -31,6 +32,7 @@ import { ProviderExecutionError } from '../../srv/providers/provider-errors.js';
 import { createProviderFingerprint } from '../../srv/providers/provider-fingerprint.js';
 import {
   duffelFixture,
+  duffelFixtureWithAvailableServices,
   validDuffelOfferRequestResponse,
 } from '../fixtures/duffel-offer-response.js';
 
@@ -284,7 +286,7 @@ describe('Duffel Search Policy v1', () => {
 
 describe('Duffel schemas and mapper', () => {
   it('validates used fields and strips every non-allowlisted provider field', () => {
-    const parsed = duffelOfferRequestResponseSchema.parse(validDuffelOfferRequestResponse);
+    const parsed = duffelOfferRequestResponseSchema.parse(duffelFixtureWithAvailableServices());
     expect(parsed).not.toHaveProperty('meta_debug_value');
     expect(parsed.data).not.toHaveProperty('ignored_provider_field');
     expect(parsed.data.offers[0]).not.toHaveProperty('ignored_offer_field');
@@ -336,7 +338,7 @@ describe('Duffel schemas and mapper', () => {
   });
 
   it('maps exact money, two slices, carrier attribution, services and SourceSnapshot v2', () => {
-    const parsed = duffelOfferRequestResponseSchema.parse(validDuffelOfferRequestResponse);
+    const parsed = duffelOfferRequestResponseSchema.parse(duffelFixtureWithAvailableServices());
     const option = mapDuffelOffer(parsed.data.offers[0]!, {
       destinationCode: 'PRG',
       originCode: 'WRO',
@@ -390,7 +392,7 @@ describe('Duffel schemas and mapper', () => {
   });
 
   it('maps EUR with exact decimal-string minor units and no FX', () => {
-    const fixture = duffelFixture();
+    const fixture = duffelFixtureWithAvailableServices();
     const offer = fixture.data.offers[0]!;
     offer.base_currency = 'EUR';
     offer.tax_currency = 'EUR';
@@ -410,6 +412,23 @@ describe('Duffel schemas and mapper', () => {
     expect(option.pricing.mandatoryTotal).toMatchObject({
       amountMinor: 12_000,
       currency: 'EUR',
+    });
+  });
+
+  it('keeps Offer Request ancillary completeness unknown when services are absent', () => {
+    const parsed = duffelOfferRequestResponseSchema.parse(validDuffelOfferRequestResponse);
+    const option = mapDuffelOffer(parsed.data.offers[0]!, {
+      destinationCode: 'PRG',
+      originCode: 'WRO',
+      currency: 'PLN',
+      environment: 'TEST',
+      queryFingerprint: createProviderFingerprint({ query: 'offer-request-ancillaries' }),
+      fetchedAt: clock().toISOString(),
+    });
+
+    expect(option.pricing.optionalAncillaries).toEqual({
+      completeness: 'UNKNOWN',
+      items: [],
     });
   });
 
@@ -602,6 +621,21 @@ describe('Duffel HTTP/provider boundary', () => {
     ).resolves.toEqual([]);
   });
 
+  it('keeps schema-valid siblings when one upstream offer is malformed', async () => {
+    const fixture = duffelFixture();
+    (fixture.data.offers as unknown[]).push({ malformed: 'offer' });
+    const scope = new ProviderExecutionScope();
+
+    const results = await provider(
+      async () => new Response(JSON.stringify(fixture), { status: 200 }),
+    ).search(request, executionOptions(scope));
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.id).toBe('duffel:off_000000validoffer');
+    expect(scope.getAuditEvents()).toHaveLength(1);
+    expect(scope.getAuditEvents()[0]?.status).toBe('SUCCEEDED');
+  });
+
   it.each([
     [
       '429',
@@ -618,6 +652,16 @@ describe('Duffel HTTP/provider boundary', () => {
       async () => new Response('provider text secret-test-token', { status: 503 }),
       'UPSTREAM_5XX',
       503,
+    ],
+    [
+      'oversized JSON',
+      async () =>
+        new Response('{}', {
+          status: 200,
+          headers: { 'content-length': String(DUFFEL_MAX_RESPONSE_BYTES + 1) },
+        }),
+      'INVALID_SCHEMA',
+      null,
     ],
     [
       'invalid JSON',
@@ -704,6 +748,24 @@ describe('Duffel HTTP/provider boundary', () => {
     expect(scope.getAuditEvents()).toHaveLength(1);
   });
 
+  it('accepts more than 200 offers before local truncation', async () => {
+    const fixture = duffelFixture();
+    const template = fixture.data.offers[0]!;
+    fixture.data.offers = Array.from({ length: 201 }, (_value, index) => {
+      const offer = structuredClone(template);
+      offer.id = `off_000000sorted${index}`;
+      offer.base_amount = `${100 + index}.00`;
+      offer.total_amount = `${120 + index}.00`;
+      return offer;
+    });
+
+    const results = await provider(
+      async () => new Response(JSON.stringify(fixture), { status: 200 }),
+    ).search(request, executionOptions(new ProviderExecutionScope()));
+
+    expect(results).toHaveLength(6);
+  });
+
   it('deduplicates, sorts and truncates before upstream-order-independent output', async () => {
     const fixture = duffelFixture();
     const template = fixture.data.offers[0]!;
@@ -765,7 +827,7 @@ describe('Duffel HTTP/provider boundary', () => {
   });
 
   it('keeps different expiry and ancillary completeness during semantic deduplication', async () => {
-    const fixture = duffelFixture();
+    const fixture = duffelFixtureWithAvailableServices();
     const complete = fixture.data.offers[0]!;
     complete.available_services = [];
 

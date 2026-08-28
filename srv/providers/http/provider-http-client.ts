@@ -1,4 +1,5 @@
 export const DUFFEL_API_BASE_URL = 'https://api.duffel.com';
+export const DUFFEL_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 export type ProviderHttpTransport = (input: string | URL, init: RequestInit) => Promise<Response>;
 
@@ -53,6 +54,50 @@ function safeToken(value: unknown): value is string {
   );
 }
 
+function declaredResponseLength(response: Response): number | null {
+  const value = response.headers.get('content-length');
+  if (value === null || !/^\d{1,12}$/.test(value)) return null;
+  const length = Number(value);
+  return Number.isSafeInteger(length) ? length : null;
+}
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  const declaredLength = declaredResponseLength(response);
+  if (declaredLength !== null && declaredLength > DUFFEL_MAX_RESPONSE_BYTES) {
+    throw new ProviderHttpClientError({ kind: 'INVALID_JSON' });
+  }
+  if (response.body === null) {
+    throw new ProviderHttpClientError({ kind: 'INVALID_JSON' });
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let receivedBytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      receivedBytes += chunk.value.byteLength;
+      if (receivedBytes > DUFFEL_MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new ProviderHttpClientError({ kind: 'INVALID_JSON' });
+      }
+      chunks.push(chunk.value);
+    }
+
+    const bytes = new Uint8Array(receivedBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  } catch (error) {
+    if (error instanceof ProviderHttpClientError) throw error;
+    throw new ProviderHttpClientError({ kind: 'INVALID_JSON' });
+  }
+}
+
 export class ProviderHttpClient {
   private readonly token: ProviderToken;
   private readonly transport: ProviderHttpTransport;
@@ -103,10 +148,6 @@ export class ProviderHttpClient {
             : null,
       });
     }
-    try {
-      return await response.json();
-    } catch {
-      throw new ProviderHttpClientError({ kind: 'INVALID_JSON' });
-    }
+    return readBoundedJson(response);
   }
 }

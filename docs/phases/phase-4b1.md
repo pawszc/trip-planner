@@ -53,7 +53,9 @@ Tracker: GitHub #23; parent tracker: #21. Branch:
 - Wysyłać `Duffel-Version: v2`, `Accept: application/json`, JSON content type i gzip.
   Authorization nie może pojawić się w błędzie, logu, teście ani persistence.
 - Odpowiedź jest dekodowana do `unknown`, walidowana przez Zod i redukowana do jawnej
-  allowlisty. Raw request/response/error i headers nie są zapisywane.
+  allowlisty. Odczyt ma limit 64 MiB po dekompresji, egzekwowany zarówno z bezpiecznego
+  `Content-Length`, jak i na strumieniu; limit jest częścią Search Policy identity. Raw
+  request/response/error i headers nie są zapisywane.
 - 429, timeout, 5xx, invalid JSON/schema, network i cancellation mapują się do zamkniętych
   kategorii bez provider-controlled message lub stack trace.
 
@@ -71,7 +73,9 @@ Tracker: GitHub #23; parent tracker: #21. Branch:
 - Brak założenia o checked baggage, self-transfer lub airport change. Niejednoznaczny
   przypadek jest odrzucany, a nie naprawiany.
 - Wyniki są lokalnie deduplikowane i stabilnie sortowane przed truncation; upstream order
-  nie wpływa na wynik.
+  nie wpływa na wynik. Liczba ofert w poprawnej odpowiedzi nie ma sztucznego limitu schematu;
+  granicą zasobów jest rozmiar odpowiedzi, a dopiero poprawne oferty są redukowane do
+  lokalnego limitu wyników.
 
 ### 4B1.3 — schemat i mapper
 
@@ -80,12 +84,16 @@ Tracker: GitHub #23; parent tracker: #21. Branch:
 - Walidować offer ID, `expires_at`, `live_mode`, dwie slices i segments, czasy,
   origins/destinations, jawne carrier facts, `base_amount`/currency,
   `tax_amount`/currency, `total_amount`/currency oraz mapowane services.
+- Envelope requestu i każda oferta są walidowane osobno. Błędna oferta nie odrzuca poprawnych
+  siblings; niepusta odpowiedź bez choć jednej oferty zgodnej ze schematem kończy się
+  kontrolowanym `INVALID_SCHEMA`.
 - Decimal strings przechodzą do integer minor units bez floating point.
 - `price` = jawny base amount, `additionalFees` = jawny tax amount, `mandatoryTotal` = jawny
   total amount. Waluty muszą być identyczne i `base + tax = total`; niespójność odrzuca
   ofertę zamiast wymyślać wartość.
 - Jawne available services są optional disclosures i nie są dodawane do mandatory total.
-  Niekompletne dane pozostają `PARTIAL` lub `UNKNOWN`.
+  Endpoint Create Offer Request nie deklaruje ich w odpowiedzi, więc ich brak pozostaje
+  `UNKNOWN`; osobna syntetyczna fixture mappera pokrywa przypadek jawnych services.
 - Każdy `TransportOption` reprezentuje dwie slices. Duration powstaje z jawnego pola albo z
   jednej udokumentowanej różnicy poprawnych timestampów; connections = segments - 1.
 - Source używa stabilnego Duffel offer ID, `source-snapshot-v2`, `expires_at`, bezpiecznej

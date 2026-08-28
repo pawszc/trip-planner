@@ -16,15 +16,6 @@ export const validDuffelOfferRequestResponse = Object.freeze({
         total_amount: '120.00',
         total_currency: 'PLN',
         ignored_offer_field: 'must be stripped',
-        available_services: [
-          {
-            id: 'ase_000000baggage',
-            type: 'baggage',
-            total_amount: '25.00',
-            total_currency: 'PLN',
-            ignored_service_field: 'must be stripped',
-          },
-        ],
         slices: [
           {
             id: 'sli_000000outbound',
@@ -78,4 +69,29 @@ export const validDuffelOfferRequestResponse = Object.freeze({
 
 export function duffelFixture(): typeof validDuffelOfferRequestResponse {
   return structuredClone(validDuffelOfferRequestResponse);
+}
+
+/** Synthetic mapper fixture: Create Offer Request responses do not include available_services. */
+export function duffelFixtureWithAvailableServices() {
+  const fixture = duffelFixture();
+  return {
+    ...fixture,
+    data: {
+      ...fixture.data,
+      offers: [
+        {
+          ...fixture.data.offers[0]!,
+          available_services: [
+            {
+              id: 'ase_000000baggage',
+              type: 'baggage' as const,
+              total_amount: '25.00',
+              total_currency: 'PLN',
+              ignored_service_field: 'must be stripped',
+            },
+          ],
+        },
+      ],
+    },
+  };
 }

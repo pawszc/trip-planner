@@ -1401,6 +1401,9 @@ describe('TripPlannerService', () => {
         providerExecutionCallCount: 24,
       });
       expect(transport).toHaveBeenCalledTimes(8);
+      const replay = await startReferencePlanning(tripRequest.ID);
+      expect(replay.ID).toBe(planningRun.ID);
+      expect(transport).toHaveBeenCalledTimes(8);
       const options = await readPlanningCollection<RankedOptionResponse>(
         'RankedOptions',
         'planningRun_ID',
