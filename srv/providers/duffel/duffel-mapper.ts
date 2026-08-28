@@ -310,6 +310,7 @@ export function duffelOfferSemanticFingerprint(
   option: TransportOption,
 ): string {
   return createProviderFingerprint({
+    expiresAt: offer.expires_at,
     slices: offer.slices.map((slice) => ({
       duration: slice.duration,
       origin: slice.origin.iata_code,
@@ -331,6 +332,7 @@ export function duffelOfferSemanticFingerprint(
     feesAmountMinor: option.additionalFees.amountMinor,
     totalAmountMinor: option.pricing.mandatoryTotal.amountMinor,
     currency: option.price.currency,
+    optionalAncillariesCompleteness: option.pricing.optionalAncillaries.completeness,
     optionalAncillaries: [...option.pricing.optionalAncillaries.items]
       .sort(
         (left, right) =>

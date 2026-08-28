@@ -69,10 +69,18 @@ export function buildDuffelOfferRequestPlans(
     throw new TypeError('Duffel search request is outside Search Policy v1.');
   }
 
-  const destinations = [...request.destinations].sort(
+  const destinationsByCode = new Map<string, Destination>();
+  for (const destination of [...request.destinations].sort(
     (left, right) =>
-      left.code.localeCompare(right.code, 'en') || left.city.localeCompare(right.city, 'en'),
-  );
+      left.code.localeCompare(right.code, 'en') ||
+      left.city.localeCompare(right.city, 'en') ||
+      left.countryCode.localeCompare(right.countryCode, 'en'),
+  )) {
+    if (!destinationsByCode.has(destination.code)) {
+      destinationsByCode.set(destination.code, destination);
+    }
+  }
+  const destinations = [...destinationsByCode.values()];
   return Object.freeze(
     destinations.map((destination) => {
       const body: ProviderJsonValue = {

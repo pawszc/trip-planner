@@ -527,6 +527,28 @@ describe('Duffel HTTP/provider boundary', () => {
     expect(adapter.manifestEntry).toEqual(createDuffelTransportManifestEntry('TEST'));
   });
 
+  it('deduplicates repeated destinations before executeUpstream fan-out', async () => {
+    const transport = vi.fn<ProviderHttpTransport>(
+      async () =>
+        new Response(JSON.stringify(validDuffelOfferRequestResponse), {
+          status: 200,
+        }),
+    );
+    const scope = new ProviderExecutionScope();
+
+    const results = await provider(transport).search(
+      {
+        ...request,
+        destinations: [destination, { code: 'PRG', city: 'Prague duplicate', countryCode: 'CZ' }],
+      },
+      executionOptions(scope),
+    );
+
+    expect(results).toHaveLength(1);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(scope.getAuditEvents()).toHaveLength(1);
+  });
+
   it('deduplicates, sorts and truncates before upstream-order-independent output', async () => {
     const fixture = duffelFixture();
     const template = fixture.data.offers[0]!;
@@ -584,6 +606,38 @@ describe('Duffel HTTP/provider boundary', () => {
     expect(results.map((offer) => offer.id).sort()).toEqual([
       'duffel:off_000000distinctflight',
       'duffel:off_000000validoffer',
+    ]);
+  });
+
+  it('keeps different expiry and ancillary completeness during semantic deduplication', async () => {
+    const fixture = duffelFixture();
+    const complete = fixture.data.offers[0]!;
+    complete.available_services = [];
+
+    const laterExpiry = structuredClone(complete);
+    laterExpiry.id = 'off_000000laterexpiry';
+    laterExpiry.expires_at = '2026-10-01T14:00:00.000Z';
+
+    const unknownAncillaries = structuredClone(complete);
+    unknownAncillaries.id = 'off_000000unknownservices';
+    Reflect.deleteProperty(unknownAncillaries, 'available_services');
+    fixture.data.offers.push(laterExpiry, unknownAncillaries);
+    const scope = new ProviderExecutionScope();
+
+    const results = await provider(
+      async () => new Response(JSON.stringify(fixture), { status: 200 }),
+    ).search(request, executionOptions(scope));
+
+    expect(results).toHaveLength(3);
+    expect(results.map((offer) => offer.sourceSnapshot?.expiresAt).sort()).toEqual([
+      '2026-10-01T13:00:00.000Z',
+      '2026-10-01T13:00:00.000Z',
+      '2026-10-01T14:00:00.000Z',
+    ]);
+    expect(results.map((offer) => offer.pricing.optionalAncillaries.completeness).sort()).toEqual([
+      'COMPLETE',
+      'COMPLETE',
+      'UNKNOWN',
     ]);
   });
 
