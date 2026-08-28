@@ -13,6 +13,7 @@ import {
 } from '../../srv/orchestration/planning-request.ts';
 import { MOCK_FIXTURE_VERSION } from '../../srv/providers/fixtures/fixture-source.js';
 import { createDuffelPlanningProfile } from '../../srv/providers/duffel/duffel-profile.js';
+import type { OfferFreshnessClock } from '../../srv/providers/offer-freshness.js';
 import {
   DUFFEL_API_BASE_URL,
   ProviderHttpClient,
@@ -1373,6 +1374,7 @@ describe('TripPlannerService', () => {
       }
       return new Response(JSON.stringify(response), { status: 200 });
     });
+    const providerClock = () => new Date('2026-10-01T12:00:00.000Z');
     const profile = createDuffelPlanningProfile({
       environment: 'TEST',
       httpClient: new ProviderHttpClient({
@@ -1381,16 +1383,20 @@ describe('TripPlannerService', () => {
         transport,
         now: () => new Date('2026-10-01T12:00:00.000Z'),
       }),
-      clock: () => new Date('2026-10-01T12:00:00.000Z'),
+      clock: providerClock,
     });
+    const candidateFreshnessClock = vi.fn(profile.freshnessClock);
     const service = cds.services.TripPlannerService as unknown as {
       createPlanningProviders(): CandidateEngineProviders;
       createPlanningProviderManifest(): ProviderConfigurationManifest;
+      createPlanningFreshnessClock(): OfferFreshnessClock;
     };
     const originalProviders = service.createPlanningProviders;
     const originalManifest = service.createPlanningProviderManifest;
+    const originalFreshnessClock = service.createPlanningFreshnessClock;
     service.createPlanningProviders = () => profile.providers;
     service.createPlanningProviderManifest = () => profile.manifest;
+    service.createPlanningFreshnessClock = () => candidateFreshnessClock;
 
     try {
       const planningRun = await startReferencePlanning(tripRequest.ID);
@@ -1400,6 +1406,7 @@ describe('TripPlannerService', () => {
         providerFixtureVersion: null,
         providerExecutionCallCount: 24,
       });
+      expect(candidateFreshnessClock).toHaveBeenCalled();
       expect(transport).toHaveBeenCalledTimes(8);
       const replay = await startReferencePlanning(tripRequest.ID);
       expect(replay.ID).toBe(planningRun.ID);
@@ -1418,6 +1425,7 @@ describe('TripPlannerService', () => {
     } finally {
       service.createPlanningProviders = originalProviders;
       service.createPlanningProviderManifest = originalManifest;
+      service.createPlanningFreshnessClock = originalFreshnessClock;
     }
   });
 
@@ -1561,6 +1569,44 @@ describe('TripPlannerService', () => {
           tripRequest.ID,
         ),
       ).resolves.toHaveLength(1);
+    } finally {
+      service.createPlanningProviders = originalFactory;
+    }
+  });
+
+  it('rejects current replay when a provider source query is not backed by its audit', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const planningRun = await startReferencePlanning(tripRequest.ID);
+    const sources = await readPlanningCollection<SourceSnapshotResponse>(
+      'SourceSnapshots',
+      'planningRun_ID',
+      planningRun.ID,
+    );
+    const providerSource = sources.find((source) => source.provider === 'MockTransportProvider');
+    if (providerSource === undefined) throw new TypeError('Expected persisted transport source.');
+    const tamperedFingerprint =
+      providerSource.queryFingerprint === 'f'.repeat(64) ? 'e'.repeat(64) : 'f'.repeat(64);
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.SourceSnapshots')
+        .set({ queryFingerprint: tamperedFingerprint })
+        .where({ ID: providerSource.ID }),
+    );
+
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviders(): CandidateEngineProviders;
+    };
+    const originalFactory = service.createPlanningProviders;
+    let providerFactoryCalls = 0;
+    service.createPlanningProviders = () => {
+      providerFactoryCalls += 1;
+      return originalFactory.call(service);
+    };
+    try {
+      await expect(POST(startPlanningActionUrl(tripRequest.ID), {})).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      expect(providerFactoryCalls).toBe(0);
     } finally {
       service.createPlanningProviders = originalFactory;
     }

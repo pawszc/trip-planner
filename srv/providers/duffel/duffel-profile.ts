@@ -12,6 +12,7 @@ import {
   DuffelApiTransportProvider,
 } from './duffel-api-transport-provider.ts';
 import type { ProviderHttpClient } from '../http/provider-http-client.ts';
+import { systemOfferFreshnessClock, type OfferFreshnessClock } from '../offer-freshness.ts';
 import { DEFAULT_DUFFEL_ORIGIN_CATALOG, type DuffelOriginCatalog } from './duffel-search-policy.ts';
 
 export { createDuffelTransportManifestEntry };
@@ -33,30 +34,33 @@ export interface DuffelPlanningProfileOptions {
   readonly environment: DuffelEnvironment;
   readonly httpClient: ProviderHttpClient;
   readonly originCatalog?: DuffelOriginCatalog;
-  readonly clock?: () => Date;
+  readonly clock?: OfferFreshnessClock;
 }
 
 export interface DuffelPlanningProfile {
   readonly manifest: ProviderConfigurationManifest;
   readonly providers: CandidateEngineProviders;
+  readonly freshnessClock: OfferFreshnessClock;
 }
 
 export function createDuffelPlanningProfile(
   options: DuffelPlanningProfileOptions,
 ): DuffelPlanningProfile {
   const originCatalog = options.originCatalog ?? DEFAULT_DUFFEL_ORIGIN_CATALOG;
+  const freshnessClock = options.clock ?? systemOfferFreshnessClock;
   const manifest = createDuffelPlanningProviderManifest(options.environment, originCatalog);
   const transportEntry = manifest.entries.find((entry) => entry.role === 'TRANSPORT');
   if (transportEntry === undefined) throw new TypeError('Duffel transport manifest is missing.');
   return Object.freeze({
     manifest,
+    freshnessClock,
     providers: Object.freeze({
       transport: new DuffelApiTransportProvider({
         environment: options.environment,
         httpClient: options.httpClient,
         manifestEntry: transportEntry,
         originCatalog,
-        ...(options.clock === undefined ? {} : { clock: options.clock }),
+        clock: freshnessClock,
       }),
       accommodation: new MockAccommodationProvider(),
       places: new MockPlacesProvider(),

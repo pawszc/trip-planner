@@ -100,6 +100,10 @@ import { MOCK_FIXTURE_VERSION, MOCK_PROVIDER_NAMES } from './providers/fixtures/
 import { MockAccommodationProvider } from './providers/mock-accommodation-provider.ts';
 import { MockPlacesProvider } from './providers/mock-places-provider.ts';
 import { MockTransportProvider } from './providers/mock-transport-provider.ts';
+import {
+  systemOfferFreshnessClock,
+  type OfferFreshnessClock,
+} from './providers/offer-freshness.ts';
 import type { ProviderCallAuditEvent } from './providers/provider-execution.ts';
 import {
   isLegacyFixtureCompatibleManifest,
@@ -145,6 +149,7 @@ interface PersistedPlanningRun {
 
 interface PersistedRankedOptionLineage {
   ID: string;
+  destinationCode: string;
   tripRequest_ID: string;
   workflowRun_ID: string;
   planningRun_ID: string;
@@ -445,6 +450,7 @@ function assertCurrentPlanningReplayDescendants(
   descendants: PlanningReplayDescendants,
 ): void {
   const optionIds = new Set(rankedOptions.map((option) => option.ID));
+  const rankedOptionById = new Map(rankedOptions.map((option) => [option.ID, option] as const));
   const sourceById = new Map(
     descendants.sourceSnapshots.map((source) => [source.ID, source] as const),
   );
@@ -488,18 +494,49 @@ function assertCurrentPlanningReplayDescendants(
       source.upstreamSchemaFingerprint === null &&
       source.expiresAt === null &&
       source.fixtureVersion === INTERNAL_COST_FIXTURE_VERSION;
-    const exactProviderSource =
+    const matchingProviderEntries = providerManifest.entries.filter(
+      (providerEntry) =>
+        providerEntry.providerName === source.provider &&
+        source.sourceType === (providerEntry.mode === 'LIVE' ? 'LIVE' : 'FIXTURE') &&
+        source.adapterVersion === providerEntry.adapterVersion &&
+        source.providerVersion === providerEntry.providerVersion &&
+        source.upstreamApiVersion === providerEntry.upstreamApiVersion &&
+        source.upstreamSchemaFingerprint === providerEntry.upstreamSchemaFingerprint &&
+        source.fixtureVersion === providerEntry.fixtureVersion,
+    );
+    const providerEntry =
+      matchingProviderEntries.length === 1 ? matchingProviderEntries[0] : undefined;
+    const rankedOption = rankedOptionById.get(source.rankedOption_ID);
+    const providerOperation =
+      providerEntry?.role === 'TRANSPORT'
+        ? 'TRANSPORT_SEARCH'
+        : providerEntry?.role === 'ACCOMMODATION'
+          ? 'ACCOMMODATION_SEARCH'
+          : providerEntry?.role === 'PLACES'
+            ? 'PLACES_SEARCH'
+            : undefined;
+    const providerDestinationCode =
+      providerEntry?.role === 'TRANSPORT' && providerEntry.mode === 'FIXTURE'
+        ? null
+        : rankedOption?.destinationCode;
+    const exactProviderAuditBinding =
       exactInternalSource ||
-      providerManifest.entries.some(
-        (providerEntry) =>
-          providerEntry.providerName === source.provider &&
-          source.sourceType === (providerEntry.mode === 'LIVE' ? 'LIVE' : 'FIXTURE') &&
-          source.adapterVersion === providerEntry.adapterVersion &&
-          source.providerVersion === providerEntry.providerVersion &&
-          source.upstreamApiVersion === providerEntry.upstreamApiVersion &&
-          source.upstreamSchemaFingerprint === providerEntry.upstreamSchemaFingerprint &&
-          source.fixtureVersion === providerEntry.fixtureVersion,
-      );
+      (providerEntry !== undefined &&
+        providerOperation !== undefined &&
+        rankedOption !== undefined &&
+        descendants.providerExecutionRecords.filter(
+          (record) =>
+            record.providerKey === providerEntry.providerKey &&
+            record.operation === providerOperation &&
+            record.destinationCode === providerDestinationCode &&
+            record.status === 'SUCCEEDED' &&
+            record.providerCallAttempted &&
+            record.queryFingerprint === source.queryFingerprint &&
+            record.resultFingerprint !== null &&
+            record.resultCount !== null &&
+            record.resultCount > 0,
+        ).length === 1);
+    const exactProviderSource = exactInternalSource || providerEntry !== undefined;
     return (
       hasCurrentReplayManifestLineage(
         source,
@@ -513,7 +550,8 @@ function assertCurrentPlanningReplayDescendants(
       source.contexts.length <= 1_000 &&
       /^[A-Z0-9_:, ]+$/.test(source.contexts) &&
       source.demonstrationData === (source.sourceType !== 'LIVE') &&
-      exactProviderSource
+      exactProviderSource &&
+      exactProviderAuditBinding
     );
   });
   const everyOptionHasSources = [...optionIds].every((optionId) =>
@@ -1171,6 +1209,11 @@ export default class TripPlannerService extends cds.ApplicationService {
     };
   }
 
+  /** One run-scoped seam keeps live-offer selection deterministic in offline tests. */
+  public createPlanningFreshnessClock(): OfferFreshnessClock {
+    return systemOfferFreshnessClock;
+  }
+
   /** Pure lineage seam; replay can validate configuration without constructing a provider. */
   public createPlanningProviderManifest(): ProviderConfigurationManifest {
     return MOCK_PROVIDER_MANIFEST;
@@ -1643,6 +1686,7 @@ export default class TripPlannerService extends cds.ApplicationService {
           destinations: REFERENCE_DESTINATIONS,
           providers: this.createPlanningProviders(),
           providerManifest,
+          freshnessClock: this.createPlanningFreshnessClock(),
         });
         const bundle = buildPlanningPersistenceBundle({
           tripRequestId: ID,
