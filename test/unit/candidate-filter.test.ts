@@ -18,6 +18,55 @@ function reasonsFor(candidate: TripCandidate): readonly RejectionReason[] {
 }
 
 describe('candidate hard filtering', () => {
+  it.each([
+    ['expired', '2026-10-01T12:00:00.000Z'],
+    ['missing expiry', null],
+  ] as const)('rejects LIVE transport with %s before ranking', (_label, expiresAt) => {
+    const candidate = candidateFixture();
+    const fixtureSource = candidate.transport.sourceSnapshot;
+    if (fixtureSource === null) throw new Error('Missing transport source fixture.');
+    const liveSource: SourceSnapshot = {
+      ...fixtureSource,
+      sourceType: 'LIVE',
+      provider: 'Duffel',
+      freshnessType: 'LIVE',
+      fixtureVersion: null,
+      sourceUrl: 'https://duffel.com',
+      expiresAt,
+    };
+    const withSource = <T extends { sourceSnapshot: SourceSnapshot | null }>(money: T): T => ({
+      ...money,
+      sourceSnapshot: liveSource,
+    });
+    const transport = {
+      ...candidate.transport,
+      sourceSnapshot: liveSource,
+      price: withSource(candidate.transport.price),
+      additionalFees: withSource(candidate.transport.additionalFees),
+      pricing: {
+        ...candidate.transport.pricing,
+        mandatoryTotal: withSource(candidate.transport.pricing.mandatoryTotal),
+      },
+    };
+    const result = validateCandidate(
+      { ...candidate, transport },
+      candidateContext,
+      {},
+      () => new Date('2026-10-01T12:00:00.000Z'),
+    );
+
+    expect(result.reasons.map((reason) => reason.code)).toContain('INCOMPLETE_DATA');
+    expect(result.reasons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          details: expect.objectContaining({
+            fields: expect.arrayContaining([expect.stringMatching(/^sourceFreshness:transport:/u)]),
+          }),
+        }),
+      ]),
+    );
+  });
+
   const cases: readonly {
     code: RejectionCode;
     evaluate: () => readonly RejectionReason[];

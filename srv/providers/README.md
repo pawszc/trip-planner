@@ -1,10 +1,10 @@
 # Provider adapters
 
 Interfejsy transportu, noclegów i miejsc izolują domenę od formatu konkretnego API.
-Obecne implementacje fixture działają bez internetu, generują dane względem dat jawnego
-requestu i pozostają jedynymi skonfigurowanymi adapterami Phase 4B0. Celowo niepoprawne
-rekordy służą testom filtrów. Phase 4B0 nie implementuje `DuffelApiTransportProvider` ani
-żadnego innego live adaptera.
+Implementacje fixture działają bez internetu i generują dane względem dat jawnego requestu.
+Phase 4B1 dodaje `DuffelApiTransportProvider` jako jawny profil `LIVE`, lecz nie włącza go
+domyślnie i nie dodaje fallbacku. Standardowy profil produktu pozostaje fixture; testy Duffel
+używają wyłącznie wstrzykniętego transportu HTTP w pamięci.
 
 ## Kontrakty 4B0
 
@@ -44,14 +44,35 @@ nigdy nie może użyć historycznego wyniku fixture. Nie istnieje silent live �
 Frozen v1 replay obejmuje również historyczny `INSUFFICIENT_OPTIONS`; liczba eventów audytu
 nowego runu jest związana z `PlanningRun`, więc utrata końcowego suffixu failuje replay.
 
-## Granica przyszłej integracji
+## Adapter Duffel Phase 4B1
 
-Adapter live powinien być małym modułem REST-first. Transport HTTP, authentication,
-pagination, rate-limit metadata, provider-specific schema i mapowanie pozostają wewnątrz
-adaptera. Dopiero lokalnie zwalidowany, znormalizowany wynik może przejść do candidate engine.
-Użycie oficjalnego SDK wymaga osobnego uzasadnienia i nie zmienia tej granicy.
+- `http/provider-http-client.ts` używa platformowego `fetch`, allowlistuje wyłącznie
+  `https://api.duffel.com`, pobiera token dopiero w chwili requestu i nigdy nie przenosi body,
+  headerów, tokenu ani raw błędu do wyjątku. Każdy request adaptera jest wykonywany przez
+  run-scoped `executeUpstream`.
+- `duffel-search-policy.ts` zamraża `duffel-search-policy-v1`: code-owned origin IATA,
+  adults-only, economy, dwie slices, brak split ticket, maksymalnie jedna przesiadka, jeden
+  offer request per destynacja, `return_offers=true`, `view=offers` i 8 s supplier timeout.
+- `duffel-schemas.ts` waliduje wszystkie używane fakty Zod i stripuje pola spoza allowlisty.
+  Mapper przyjmuje tylko spójne waluty PLN/EUR, dokładne `base + tax = total`, jednoznaczne
+  lokalne timestampy z IANA timezone, ciągłe segmenty bez airport change oraz dwie odwrócone
+  slices. Optional services pozostają disclosure i nie zwiększają mandatory total.
+- Profil `TEST` nadal zapisuje `sourceType: LIVE`; jawne środowisko jest częścią
+  `providerVersion` w manifeście i snapshotach. `fixtureVersion` pozostaje `null`.
+- Sort, semantic dedup i truncation są lokalne i niezależne od upstream order. Pojedyncza
+  niepoprawna oferta jest odrzucana, a błąd destynacji kończy cały search bez częściowego
+  wyniku i bez fallbacku.
 
-Implementacja live, opt-in/credentials oraz refaktor `startPlanning` do krótkiego read →
-network bez otwartej transakcji → krótkiego write należą do 4B1. Nie są częścią 4B0. Pełna
-decyzja i zasady migracji są opisane w
+Kontrakty oparto na oficjalnych opisach Duffel:
+[Offer Requests v2](https://duffel.com/docs/api/v2/offer-requests),
+[Offers](https://duffel.com/docs/api/offers),
+[Making requests](https://duffel.com/docs/api/overview/making-requests) i
+[Response handling](https://duffel.com/docs/api/overview/response-handling).
+
+`startPlanning` wykonuje krótki committed read/replay checkpoint, provider work bez aktywnej
+transakcji DB oraz krótki write z rewalidacją briefu, workflow, manifestu, fingerprintu i
+równoległego wyniku. Pełna decyzja i zasady migracji są opisane w
 [ADR 0011](../../docs/decisions/0011-live-provider-contract-hardening.md).
+
+Dormant smoke command nie został dodany: jest opcjonalny, a offline adapter, profile i testy nie
+wymagają ścieżki odczytu credentials. Jakikolwiek przyszły smoke nadal wymaga osobnej zgody.

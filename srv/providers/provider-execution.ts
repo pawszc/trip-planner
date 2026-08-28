@@ -37,6 +37,7 @@ export interface ProviderUpstreamAttemptOptions {
 }
 
 export interface ProviderUpstreamCallDescriptor<T> {
+  destinationCode?: string | null;
   queryFingerprint: string;
   resultFingerprint: (result: T) => string;
   resultCount: (result: T) => number;

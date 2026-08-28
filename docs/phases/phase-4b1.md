@@ -9,7 +9,10 @@ respektować kontrakty 4B0 oraz przejść pełną weryfikację offline bez reque
 
 ## Status
 
-`IN_PROGRESS`
+`REVIEW — OFFLINE IMPLEMENTATION COMPLETE`
+
+Implementacja znajduje się w Draft PR #24. Pełna weryfikacja offline przeszła 2026-08-28;
+faza pozostaje w `REVIEW` do czasu review i osobnej decyzji o dalszym statusie.
 
 Faza została jawnie uruchomiona 2026-08-28 z
 `main@2a5362c8ffc7f53ca06c40615ca946620e789afb` po merge Phase 4B0 w PR #22.

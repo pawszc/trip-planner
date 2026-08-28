@@ -45,6 +45,7 @@ import {
   createSourceSnapshotResultFingerprint,
   isCompleteSourceSnapshot,
 } from '../providers/source-snapshot.ts';
+import type { OfferFreshnessClock } from '../providers/offer-freshness.ts';
 import { buildCandidates, type CandidateBuilderResult } from '../ranking/candidate-builder.ts';
 import { filterCandidates, type CandidateValidationResult } from '../ranking/candidate-filter.ts';
 import { rankCandidates, type ScoredCandidate } from '../ranking/candidate-scoring.ts';
@@ -68,6 +69,7 @@ export interface CandidateEngineInput {
   destinations: readonly Destination[];
   providers: CandidateEngineProviders;
   providerManifest: ProviderConfigurationManifest;
+  freshnessClock?: OfferFreshnessClock;
   signal?: AbortSignal;
   config?: CandidateEngineConfigOverride;
 }
@@ -340,6 +342,7 @@ function providerResultFingerprint<T extends { id: string }>(
   normalizedResult: (value: T) => ProviderJsonValue,
   moneyValues: (value: T) => readonly Money[] = () => [],
   liveShape: (value: T) => boolean = () => true,
+  liveQueryFingerprints: () => ReadonlySet<string> = () => new Set([queryFingerprint]),
 ): string {
   if (!Array.isArray(values)) {
     throw new TypeError('Provider result failed the local array schema.');
@@ -393,7 +396,7 @@ function providerResultFingerprint<T extends { id: string }>(
       return (
         sourceSnapshot.sourceType === 'LIVE' &&
         exactConfiguredLineage(sourceSnapshot) &&
-        sourceSnapshot.queryFingerprint === queryFingerprint &&
+        liveQueryFingerprints().has(sourceSnapshot.queryFingerprint) &&
         sourceSnapshot.fixtureVersion === null &&
         sourceSnapshot.resultFingerprint ===
           createSourceSnapshotResultFingerprint(sourceSnapshot, normalizedResults[index]!)
@@ -535,10 +538,12 @@ export async function runCandidateEngine(
       policy: input.providerManifest.executionPolicy,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
-    execution.assertCallBudget(1 + destinations.length * 2);
     transportEntry = providerEntry(input.providerManifest, 'TRANSPORT');
     accommodationEntry = providerEntry(input.providerManifest, 'ACCOMMODATION');
     placesEntry = providerEntry(input.providerManifest, 'PLACES');
+    execution.assertCallBudget(
+      (transportEntry.mode === 'LIVE' ? destinations.length : 1) + destinations.length * 2,
+    );
     assertProviderBinding(input.providers.transport, transportEntry);
     assertProviderBinding(input.providers.accommodation, accommodationEntry);
     assertProviderBinding(input.providers.places, placesEntry);
@@ -571,6 +576,18 @@ export async function runCandidateEngine(
           transportResultView,
           offerMoneys,
           liveTransportShape,
+          () =>
+            new Set(
+              execution
+                .getAuditEvents()
+                .filter(
+                  (event) =>
+                    event.providerKey === transportEntry.providerKey &&
+                    event.operation === 'TRANSPORT_SEARCH' &&
+                    event.status === 'SUCCEEDED',
+                )
+                .map((event) => event.queryFingerprint),
+            ),
         ),
       resultCount: (result) => result.length,
     },
@@ -665,7 +682,12 @@ export async function runCandidateEngine(
     places: placeGroups.flat(),
     config,
   });
-  const filtered = filterCandidates(builder.candidates, input.context, config);
+  const filtered = filterCandidates(
+    builder.candidates,
+    input.context,
+    config,
+    input.freshnessClock,
+  );
   try {
     assertSelectedFixtureQueryLineage(
       filtered.validCandidates,

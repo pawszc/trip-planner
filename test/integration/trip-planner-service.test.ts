@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Request } from '@sap/cds';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CURRENCY_CONTRACT_VERSION, SUPPORTED_CURRENCY_CODES } from '../../srv/domain/currency.ts';
 import { OFFER_PRICING_CONTRACT_VERSION } from '../../srv/domain/offer-pricing.ts';
 import type { HardConstraints, SoftPreferences } from '../../srv/domain/trip-request.js';
@@ -12,6 +12,12 @@ import {
   PLANNING_REQUEST_FINGERPRINT_VERSION,
 } from '../../srv/orchestration/planning-request.ts';
 import { MOCK_FIXTURE_VERSION } from '../../srv/providers/fixtures/fixture-source.js';
+import { createDuffelPlanningProfile } from '../../srv/providers/duffel/duffel-profile.js';
+import {
+  DUFFEL_API_BASE_URL,
+  ProviderHttpClient,
+  type ProviderHttpTransport,
+} from '../../srv/providers/http/provider-http-client.js';
 import {
   createProviderConfigurationManifest,
   MOCK_PROVIDER_MANIFEST,
@@ -25,12 +31,38 @@ import {
   referenceTripRequestODataPayload,
   validTripRequest,
 } from '../fixtures/trip-request.js';
+import { duffelFixture } from '../fixtures/duffel-offer-response.js';
 
 // CAP uruchamia rzeczywisty serwis OData na bazie SQLite przechowywanej w pamięci.
 process.env.CDS_TYPESCRIPT = 'true';
 const { default: cds } = await import('@sap/cds');
 const test = cds.test('serve', 'all', '--in-memory').in(process.cwd());
 const { DELETE: DELETE_REQUEST, GET, PATCH, POST } = test;
+
+interface CapTransactionState {
+  ready?: unknown;
+  _done?: 'committed' | 'rolled back';
+}
+
+interface CapContextWithTransactions {
+  context?: CapContextWithTransactions;
+  transactions?: Map<unknown, CapTransactionState>;
+}
+
+function hasActiveRequestDatabaseTransaction(): boolean {
+  if (!cds.db || !cds.context) return false;
+  const current = cds.context as unknown as CapContextWithTransactions;
+  const root = current.context ?? current;
+  const transaction = root.transactions?.get(cds.db);
+  if (transaction === undefined) return false;
+  return (
+    transaction.ready !== undefined &&
+    transaction.ready !== 'committed' &&
+    transaction.ready !== 'rolled back' &&
+    transaction._done !== 'committed' &&
+    transaction._done !== 'rolled back'
+  );
+}
 
 interface CreatedTripRequest {
   ID: string;
@@ -1118,6 +1150,204 @@ describe('TripPlannerService', () => {
       releaseProvider();
       concurrentPlanningRequestObserver = null;
       service.createPlanningProviders = originalFactory;
+    }
+  });
+
+  it('commits the read checkpoint before provider wait and uses a revalidated short write', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviders(): CandidateEngineProviders;
+    };
+    const originalFactory = service.createPlanningProviders;
+    const workingProviders = originalFactory.call(service);
+    let releaseProvider: () => void = () => undefined;
+    let signalProviderStarted: () => void = () => undefined;
+    let transactionActiveDuringProvider = true;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const providerStarted = new Promise<void>((resolve) => {
+      signalProviderStarted = resolve;
+    });
+    service.createPlanningProviders = () => ({
+      ...workingProviders,
+      transport: {
+        search: async (providerRequest) => {
+          transactionActiveDuringProvider = hasActiveRequestDatabaseTransaction();
+          signalProviderStarted();
+          await providerGate;
+          return workingProviders.transport.search(providerRequest);
+        },
+      },
+    });
+
+    try {
+      const planningPromise = startReferencePlanning(tripRequest.ID);
+      await providerStarted;
+      expect(transactionActiveDuringProvider).toBe(false);
+
+      const independentWrite = cds.db.tx(async (transaction) => {
+        const updated = await transaction.run(
+          cds.ql.UPDATE.entity('trip.planner.WorkflowRuns')
+            .set({ errorCode: 'CHECKPOINT_SENTINEL' })
+            .where({ tripRequest_ID: tripRequest.ID, state: 'CONSTRAINTS_CONFIRMED' }),
+        );
+        expect(updated).toBe(1);
+      });
+      await expect(
+        Promise.race([
+          independentWrite,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Independent SQLite write timed out.')), 1_000),
+          ),
+        ]),
+      ).resolves.toBeUndefined();
+
+      releaseProvider();
+      const planningRun = await planningPromise;
+      expect(planningRun.status).toBe('SUCCEEDED');
+      expect((await readWorkflowRuns(tripRequest.ID))[0]).toMatchObject({
+        state: 'OPTIONS_READY',
+        errorCode: null,
+      });
+    } finally {
+      releaseProvider();
+      service.createPlanningProviders = originalFactory;
+    }
+  });
+
+  it('fails closed when workflow state changes during provider wait without a matching run', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviders(): CandidateEngineProviders;
+    };
+    const originalFactory = service.createPlanningProviders;
+    const workingProviders = originalFactory.call(service);
+    let releaseProvider: () => void = () => undefined;
+    let signalProviderStarted: () => void = () => undefined;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const providerStarted = new Promise<void>((resolve) => {
+      signalProviderStarted = resolve;
+    });
+    service.createPlanningProviders = () => ({
+      ...workingProviders,
+      transport: {
+        search: async (providerRequest) => {
+          signalProviderStarted();
+          await providerGate;
+          return workingProviders.transport.search(providerRequest);
+        },
+      },
+    });
+
+    try {
+      const planningPromise = POST(startPlanningActionUrl(tripRequest.ID), {});
+      await providerStarted;
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.WorkflowRuns')
+          .set({ state: 'SEARCHING' })
+          .where({ tripRequest_ID: tripRequest.ID, state: 'CONSTRAINTS_CONFIRMED' }),
+      );
+      releaseProvider();
+
+      await expect(planningPromise).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      await expect(
+        readPlanningCollection<PlanningRunResponse>(
+          'PlanningRuns',
+          'tripRequest_ID',
+          tripRequest.ID,
+        ),
+      ).resolves.toHaveLength(0);
+    } finally {
+      releaseProvider();
+      service.createPlanningProviders = originalFactory;
+    }
+  });
+
+  it('injects the Duffel profile through TripPlannerService with real offline CAP persistence', async () => {
+    const created = await POST('/trip-planner/TripRequests', {
+      ...referenceTripRequestODataPayload,
+      hardConstraints_allowFlight: true,
+    });
+    const tripRequest = created.data as CreatedTripRequest;
+    await POST(actionUrl(tripRequest.ID), {});
+
+    const transport = vi.fn<ProviderHttpTransport>(async (_input, init) => {
+      const requestBody = JSON.parse(String(init.body)) as {
+        data: { slices: [{ destination: string }, { destination: string }] };
+      };
+      const destinationCode = requestBody.data.slices[0].destination;
+      const response = duffelFixture();
+      response.data.id = `orq_000000${destinationCode.toLowerCase()}request`;
+      if (destinationCode !== 'PRG') {
+        response.data.offers = [];
+      } else {
+        const template = response.data.offers[0]!;
+        response.data.offers = Array.from({ length: 3 }, (_value, index) => {
+          const offer = structuredClone(template);
+          offer.id = `off_000000integration${index}`;
+          offer.base_amount = `${100 + index * 10}.00`;
+          offer.total_amount = `${120 + index * 10}.00`;
+          const outboundHour = String(8 + index).padStart(2, '0');
+          const outboundArrivalHour = String(9 + index).padStart(2, '0');
+          const returnHour = String(18 + index).padStart(2, '0');
+          const returnArrivalHour = String(19 + index).padStart(2, '0');
+          offer.slices[0]!.segments[0]!.departing_at = `2026-10-10T${outboundHour}:00:00`;
+          offer.slices[0]!.segments[0]!.arriving_at = `2026-10-10T${outboundArrivalHour}:00:00`;
+          offer.slices[1]!.segments[0]!.departing_at = `2026-10-13T${returnHour}:00:00`;
+          offer.slices[1]!.segments[0]!.arriving_at = `2026-10-13T${returnArrivalHour}:00:00`;
+          return offer;
+        });
+      }
+      return new Response(JSON.stringify(response), { status: 200 });
+    });
+    const profile = createDuffelPlanningProfile({
+      environment: 'TEST',
+      httpClient: new ProviderHttpClient({
+        baseUrl: DUFFEL_API_BASE_URL,
+        token: () => 'offline-test-token',
+        transport,
+        now: () => new Date('2026-10-01T12:00:00.000Z'),
+      }),
+      clock: () => new Date('2026-10-01T12:00:00.000Z'),
+    });
+    const service = cds.services.TripPlannerService as unknown as {
+      createPlanningProviders(): CandidateEngineProviders;
+      createPlanningProviderManifest(): ProviderConfigurationManifest;
+    };
+    const originalProviders = service.createPlanningProviders;
+    const originalManifest = service.createPlanningProviderManifest;
+    service.createPlanningProviders = () => profile.providers;
+    service.createPlanningProviderManifest = () => profile.manifest;
+
+    try {
+      const planningRun = await startReferencePlanning(tripRequest.ID);
+      expect(planningRun).toMatchObject({
+        status: 'SUCCEEDED',
+        selectedOptionCount: 3,
+        providerFixtureVersion: null,
+        providerExecutionCallCount: 24,
+      });
+      expect(transport).toHaveBeenCalledTimes(8);
+      const options = await readPlanningCollection<RankedOptionResponse>(
+        'RankedOptions',
+        'planningRun_ID',
+        planningRun.ID,
+      );
+      expect(options.map((option) => option.role).sort()).toEqual([
+        'BEST_OVERALL',
+        'BEST_VALUE',
+        'MOST_CONVENIENT',
+      ]);
+      expect(options.every((option) => option.transportMode === 'FLIGHT')).toBe(true);
+    } finally {
+      service.createPlanningProviders = originalProviders;
+      service.createPlanningProviderManifest = originalManifest;
     }
   });
 

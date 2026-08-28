@@ -85,10 +85,11 @@ kontrolowane `PROVIDER_SEARCH_FAILED`, anuluje sibling calls i pozostawia workfl
 `CONSTRAINTS_CONFIRMED` bez wyników. Zaakceptowany replay v2, exact v1 albo exact v0 kończy
 się przed konstrukcją providerów i nie wykonuje żadnego zapisu.
 
-Phase 4B0 nie zmienia topologii transakcji requestu CAP: odczyt i provider fan-out nadal
-odbywają się po utworzeniu `cds.tx(request)`, choć przed pierwszym zapisem. Docelowe krótkie
-read → network bez otwartej transakcji → krótkie write z ponowną walidacją stanu i
-idempotencji należy do 4B1.
+Phase 4B1 rozdziela `startPlanning` na committed read/replay checkpoint, provider fan-out bez
+aktywnej transakcji DB oraz krótki request write. Writer ponownie odczytuje brief i workflow,
+przelicza fingerprint z aktualnego manifestu oraz przed INSERT sprawdza zgodny wynik
+równoległego wykonania. Replay v2/v1/v0 nadal kończy się w read checkpoint przed konstrukcją
+providerów i bez write.
 
 ## Deterministyczny silnik kandydatów
 
@@ -109,6 +110,12 @@ requesty wewnątrz jednego logicznego `search()` dzielą ten sam budżet i concu
 błąd anuluje sibling calls. Zamknięte błędy i wewnętrzne eventy audytowe zawierają
 wyłącznie bezpieczne metadata i fingerprinty, nigdy raw request/response/error ani headers.
 Manifest live lub mieszany nie uruchamia legacy fixture replay.
+`DuffelApiTransportProvider` jest konkretnym adapterem REST-first poza domeną. Jeden offer
+request per destynacja używa platformowego fetch wyłącznie przez `executeUpstream`; Search
+Policy v1 zamraża adults/economy/two-slice/no-split-ticket oraz bounded fan-out. Zod stripuje
+payload do allowlisty, a mapper zachowuje wyłącznie jawne route/carrier/time/money/service
+facts. Test-mode lineage pozostaje `LIVE`, bez `fixtureVersion`, a domyślny profil produktu
+pozostaje fixture bez silent fallbacku.
 Instancja adaptera live musi przed fan-outem potwierdzić dokładną tożsamość z manifestu, także
 dla pustego wyniku; źródła wybranych fixture są związane z faktycznie wykonanym query.
 

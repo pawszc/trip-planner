@@ -7,6 +7,11 @@ import {
 import { type Money, type SourceSnapshot } from '../domain/money.ts';
 import { offerPricingValidationIssues } from '../domain/offer-pricing.ts';
 import { canonicalSourceSnapshot, isCompleteSourceSnapshot } from '../providers/source-snapshot.ts';
+import {
+  sourceFreshnessValidationIssues,
+  systemOfferFreshnessClock,
+  type OfferFreshnessClock,
+} from '../providers/offer-freshness.ts';
 import { SOFT_PREFERENCE_KEYS } from '../domain/trip-request.ts';
 import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.ts';
@@ -229,6 +234,7 @@ export function validateCandidate(
   candidate: TripCandidate,
   context: PlanningContext,
   configOverride: CandidateEngineConfigOverride = {},
+  freshnessClock: OfferFreshnessClock = systemOfferFreshnessClock,
 ): CandidateValidationResult {
   const config = mergeCandidateEngineConfig(configOverride);
   const reasons: RejectionReason[] = [];
@@ -416,6 +422,14 @@ export function validateCandidate(
   }
 
   const missingFields = [...incompleteFields(candidate)];
+  for (const [path, source] of sourceEntries(candidate)) {
+    if (source === null) continue;
+    missingFields.push(
+      ...sourceFreshnessValidationIssues(source, freshnessClock).map(
+        (issue) => `sourceFreshness:${path}:${issue}`,
+      ),
+    );
+  }
   missingFields.push(
     ...offerPricingValidationIssues(
       candidate.transport.price,
@@ -467,9 +481,10 @@ export function filterCandidates(
   candidates: readonly TripCandidate[],
   context: PlanningContext,
   configOverride: CandidateEngineConfigOverride = {},
+  freshnessClock: OfferFreshnessClock = systemOfferFreshnessClock,
 ): CandidateFilterResult {
   const results = candidates.map((candidate) => {
-    const validation = validateCandidate(candidate, context, configOverride);
+    const validation = validateCandidate(candidate, context, configOverride, freshnessClock);
     return { ...validation, mutableReasons: [...validation.reasons] };
   });
   const bySignature = new Map<string, typeof results>();
