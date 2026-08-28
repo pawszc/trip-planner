@@ -6,8 +6,10 @@ import { mapDuffelOffer } from '../../srv/providers/duffel/duffel-mapper.js';
 import { createDuffelTransportManifestEntry } from '../../srv/providers/duffel/duffel-profile.js';
 import {
   buildDuffelOfferRequestPlans,
+  DUFFEL_DESTINATION_IATA_CATALOG_VERSION,
   DUFFEL_ORIGIN_CATALOG_VERSION,
 } from '../../srv/providers/duffel/duffel-search-policy.js';
+import { DUFFEL_MAX_DESTINATIONS_PER_SEARCH } from '../../srv/providers/duffel/duffel-contracts.js';
 import { duffelOfferRequestResponseSchema } from '../../srv/providers/duffel/duffel-schemas.js';
 import {
   DUFFEL_API_BASE_URL,
@@ -80,6 +82,8 @@ describe('Duffel Search Policy v1', () => {
       destinations: [{ code: 'VIE', city: 'Vienna', countryCode: 'AT' }, destination],
     });
     expect(DUFFEL_ORIGIN_CATALOG_VERSION).toBe('duffel-origin-iata-catalog-v1');
+    expect(DUFFEL_DESTINATION_IATA_CATALOG_VERSION).toBe('duffel-destination-iata-catalog-v1');
+    expect(DUFFEL_MAX_DESTINATIONS_PER_SEARCH).toBe(8);
     expect(plans.map((plan) => plan.destination.code)).toEqual(['PRG', 'VIE']);
     expect(plans[0]).toMatchObject({
       path: '/air/offer_requests?return_offers=true&supplier_timeout=8000&view=offers',
@@ -117,6 +121,34 @@ describe('Duffel Search Policy v1', () => {
       expect(transport).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    [
+      'a destination outside the versioned IATA catalog',
+      [{ code: 'ZZZ', city: 'Unknown', countryCode: 'ZZ' }],
+    ],
+    [
+      'destination fan-out above the policy maximum',
+      Array.from({ length: DUFFEL_MAX_DESTINATIONS_PER_SEARCH + 1 }, () => destination),
+    ],
+  ] as const)('rejects %s before token/network', async (_label, destinations) => {
+    const transport = vi.fn<ProviderHttpTransport>();
+    const token = vi.fn(() => 'secret-test-token');
+    const adapter = new DuffelApiTransportProvider({
+      environment: 'TEST',
+      httpClient: client(transport, token).httpClient,
+      manifestEntry: createDuffelTransportManifestEntry('TEST'),
+      clock,
+    });
+    const scope = new ProviderExecutionScope();
+
+    await expect(
+      adapter.search({ ...request, destinations }, executionOptions(scope)),
+    ).rejects.toThrow('Duffel search request is outside Search Policy v1.');
+    expect(token).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+    expect(scope.getAuditEvents()).toEqual([]);
+  });
 });
 
 describe('Duffel schemas and mapper', () => {
@@ -351,6 +383,27 @@ describe('Duffel schemas and mapper', () => {
 });
 
 describe('Duffel HTTP/provider boundary', () => {
+  it('rejects an environment-mismatched manifest before an empty-result request', () => {
+    const transport = vi.fn<ProviderHttpTransport>(async () => {
+      const empty = duffelFixture();
+      empty.data.offers = [];
+      return new Response(JSON.stringify(empty), { status: 200 });
+    });
+    const { httpClient, token } = client(transport);
+
+    expect(
+      () =>
+        new DuffelApiTransportProvider({
+          environment: 'TEST',
+          httpClient,
+          manifestEntry: createDuffelTransportManifestEntry('LIVE'),
+          clock,
+        }),
+    ).toThrow('Duffel adapter manifest identity does not match its environment.');
+    expect(token).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it('sends the exact v2 JSON/gzip headers without exposing the token in output', async () => {
     const transport = vi.fn<ProviderHttpTransport>(
       async () => new Response(JSON.stringify(validDuffelOfferRequestResponse), { status: 200 }),
@@ -503,6 +556,34 @@ describe('Duffel HTTP/provider boundary', () => {
     expect(reverse.map((offer) => offer.id)).toEqual(forward.map((offer) => offer.id));
     expect(forward.map((offer) => offer.pricing.mandatoryTotal.amountMinor)).toEqual([
       12_000, 12_100, 12_200, 12_300, 12_400, 12_500,
+    ]);
+  });
+
+  it('keeps different operating flights with identical aggregate times and prices', async () => {
+    const fixture = duffelFixture();
+    const distinctFlight = structuredClone(fixture.data.offers[0]!);
+    distinctFlight.id = 'off_000000distinctflight';
+    distinctFlight.slices.forEach((slice, sliceIndex) => {
+      slice.segments.forEach((segment) => {
+        segment.operating_carrier = {
+          id: 'arl_000000othercarrier',
+          name: 'Other Safe Airline',
+          iata_code: 'OS',
+        };
+        segment.operating_carrier_flight_number = `OS10${sliceIndex + 1}`;
+      });
+    });
+    fixture.data.offers.push(distinctFlight);
+    const scope = new ProviderExecutionScope();
+
+    const results = await provider(
+      async () => new Response(JSON.stringify(fixture), { status: 200 }),
+    ).search(request, executionOptions(scope));
+
+    expect(results).toHaveLength(2);
+    expect(results.map((offer) => offer.id).sort()).toEqual([
+      'duffel:off_000000distinctflight',
+      'duffel:off_000000validoffer',
     ]);
   });
 

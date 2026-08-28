@@ -305,15 +305,42 @@ export function mapDuffelOffer(offer: DuffelOffer, context: DuffelMapperContext)
   };
 }
 
-export function duffelOfferSemanticFingerprint(option: TransportOption): string {
+export function duffelOfferSemanticFingerprint(
+  offer: DuffelOffer,
+  option: TransportOption,
+): string {
   return createProviderFingerprint({
-    destinationCode: option.destinationCode,
-    mode: option.mode,
-    outbound: option.outbound,
-    return: option.return,
-    price: option.price.amountMinor,
-    fees: option.additionalFees.amountMinor,
-    total: option.pricing.mandatoryTotal.amountMinor,
+    slices: offer.slices.map((slice) => ({
+      duration: slice.duration,
+      origin: slice.origin.iata_code,
+      destination: slice.destination.iata_code,
+      segments: slice.segments.map((segment) => ({
+        origin: segment.origin.iata_code,
+        originTimeZone: segment.origin.time_zone,
+        destination: segment.destination.iata_code,
+        destinationTimeZone: segment.destination.time_zone,
+        departingAt: segment.departing_at,
+        arrivingAt: segment.arriving_at,
+        duration: segment.duration,
+        operatingCarrierId: segment.operating_carrier.id,
+        operatingCarrierIataCode: segment.operating_carrier.iata_code,
+        operatingCarrierFlightNumber: segment.operating_carrier_flight_number,
+      })),
+    })),
+    priceAmountMinor: option.price.amountMinor,
+    feesAmountMinor: option.additionalFees.amountMinor,
+    totalAmountMinor: option.pricing.mandatoryTotal.amountMinor,
     currency: option.price.currency,
-  } as unknown as ProviderJsonValue);
+    optionalAncillaries: [...option.pricing.optionalAncillaries.items]
+      .sort(
+        (left, right) =>
+          left.code.localeCompare(right.code, 'en') || left.id.localeCompare(right.id, 'en'),
+      )
+      .map((service) => ({
+        id: service.id,
+        code: service.code,
+        amountMinor: service.amount.amountMinor,
+        currency: service.amount.currency,
+      })),
+  });
 }

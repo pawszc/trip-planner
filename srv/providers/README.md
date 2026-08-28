@@ -51,17 +51,19 @@ nowego runu jest związana z `PlanningRun`, więc utrata końcowego suffixu fail
   headerów, tokenu ani raw błędu do wyjątku. Każdy request adaptera jest wykonywany przez
   run-scoped `executeUpstream`.
 - `duffel-search-policy.ts` zamraża `duffel-search-policy-v1`: code-owned origin IATA,
-  adults-only, economy, dwie slices, brak split ticket, maksymalnie jedna przesiadka, jeden
-  offer request per destynacja, `return_offers=true`, `view=offers` i 8 s supplier timeout.
+  wersjonowaną allowlistę ośmiu destination IATA, adults-only, economy, dwie slices, brak split
+  ticket, maksymalnie jedną przesiadkę, najwyżej osiem requestów per search, jeden offer request
+  per destynacja, `return_offers=true`, `view=offers` i 8 s supplier timeout.
 - `duffel-schemas.ts` waliduje wszystkie używane fakty Zod i stripuje pola spoza allowlisty.
   Mapper przyjmuje tylko spójne waluty PLN/EUR, dokładne `base + tax = total`, jednoznaczne
   lokalne timestampy z IANA timezone, ciągłe segmenty bez airport change oraz dwie odwrócone
   slices. Optional services pozostają disclosure i nie zwiększają mandatory total.
 - Profil `TEST` nadal zapisuje `sourceType: LIVE`; jawne środowisko jest częścią
-  `providerVersion` w manifeście i snapshotach. `fixtureVersion` pozostaje `null`.
-- Sort, semantic dedup i truncation są lokalne i niezależne od upstream order. Pojedyncza
-  niepoprawna oferta jest odrzucana, a błąd destynacji kończy cały search bez częściowego
-  wyniku i bez fallbacku.
+  `providerVersion` w manifeście i snapshotach. Adapter porównuje cały code-owned manifest entry
+  z wybranym środowiskiem przed fan-outem; `fixtureVersion` pozostaje `null`.
+- Sort, semantic dedup po pełnej sekwencji lotnisk, operating carriers, numerów lotów, czasów i
+  ceny oraz truncation są lokalne i niezależne od upstream order. Pojedyncza niepoprawna oferta
+  jest odrzucana, a błąd destynacji kończy cały search bez częściowego wyniku i bez fallbacku.
 
 Kontrakty oparto na oficjalnych opisach Duffel:
 [Offer Requests v2](https://duffel.com/docs/api/v2/offer-requests),

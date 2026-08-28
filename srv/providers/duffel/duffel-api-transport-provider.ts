@@ -1,15 +1,28 @@
 import type { TransportOption } from '../../domain/candidate.ts';
+import { SOURCE_SNAPSHOT_CONTRACT_VERSION } from '../../domain/money.ts';
 import type { TransportProvider, TransportSearchRequest } from '../contracts.ts';
 import { ProviderExecutionError, providerFailureFromHttpMetadata } from '../provider-errors.ts';
 import type { ProviderCallOptions } from '../provider-execution.ts';
 import { ProviderHttpClientError, type ProviderHttpClient } from '../http/provider-http-client.ts';
 import { transportResultView } from '../normalized-result.ts';
-import { createProviderFingerprint } from '../provider-fingerprint.ts';
+import { createProviderFingerprint, type ProviderJsonValue } from '../provider-fingerprint.ts';
 import type { ProviderManifestEntry } from '../provider-manifest.ts';
-import { DUFFEL_MAX_OFFERS_PER_DESTINATION, type DuffelEnvironment } from './duffel-contracts.ts';
+import {
+  DUFFEL_ADAPTER_ID,
+  DUFFEL_ADAPTER_VERSION,
+  DUFFEL_API_VERSION,
+  DUFFEL_MAX_OFFERS_PER_DESTINATION,
+  DUFFEL_SEARCH_POLICY_VERSION,
+  DUFFEL_UPSTREAM_SCHEMA_VERSION,
+  type DuffelEnvironment,
+  type DuffelOffer,
+} from './duffel-contracts.ts';
 import { duffelOfferSemanticFingerprint, mapDuffelOffer } from './duffel-mapper.ts';
 import { buildDuffelOfferRequestPlans, resolveDuffelOriginIata } from './duffel-search-policy.ts';
-import { duffelOfferRequestResponseSchema } from './duffel-schemas.ts';
+import {
+  DUFFEL_UPSTREAM_SCHEMA_FINGERPRINT,
+  duffelOfferRequestResponseSchema,
+} from './duffel-schemas.ts';
 
 export interface DuffelApiTransportProviderOptions {
   readonly environment: DuffelEnvironment;
@@ -34,22 +47,61 @@ function safeProviderFailure(
 }
 
 function stableOffers(
-  offers: readonly TransportOption[],
+  offers: readonly {
+    readonly option: TransportOption;
+    readonly upstreamOffer: DuffelOffer;
+  }[],
   maximum: number,
 ): readonly TransportOption[] {
   const ordered = [...offers].sort(
     (left, right) =>
-      (left.pricing.mandatoryTotal.amountMinor ?? Number.POSITIVE_INFINITY) -
-        (right.pricing.mandatoryTotal.amountMinor ?? Number.POSITIVE_INFINITY) ||
-      left.outbound.departureAt.localeCompare(right.outbound.departureAt, 'en') ||
-      left.id.localeCompare(right.id, 'en'),
+      (left.option.pricing.mandatoryTotal.amountMinor ?? Number.POSITIVE_INFINITY) -
+        (right.option.pricing.mandatoryTotal.amountMinor ?? Number.POSITIVE_INFINITY) ||
+      left.option.outbound.departureAt.localeCompare(right.option.outbound.departureAt, 'en') ||
+      left.option.id.localeCompare(right.option.id, 'en'),
   );
   const unique = new Map<string, TransportOption>();
-  for (const offer of ordered) {
-    const fingerprint = duffelOfferSemanticFingerprint(offer);
-    if (!unique.has(fingerprint)) unique.set(fingerprint, offer);
+  for (const { option, upstreamOffer } of ordered) {
+    const fingerprint = duffelOfferSemanticFingerprint(upstreamOffer, option);
+    if (!unique.has(fingerprint)) unique.set(fingerprint, option);
   }
   return Object.freeze([...unique.values()].slice(0, maximum));
+}
+
+export function createDuffelTransportManifestEntry(
+  environment: DuffelEnvironment,
+): ProviderManifestEntry {
+  return Object.freeze({
+    role: 'TRANSPORT',
+    mode: 'LIVE',
+    providerKey: 'duffel-flights',
+    providerName: 'Duffel',
+    providerVersion: `duffel-${environment.toLowerCase()}-offers-v2`,
+    adapterId: DUFFEL_ADAPTER_ID,
+    adapterVersion: DUFFEL_ADAPTER_VERSION,
+    sourceContractVersion: SOURCE_SNAPSHOT_CONTRACT_VERSION,
+    searchPolicyVersion: DUFFEL_SEARCH_POLICY_VERSION,
+    fixtureVersion: null,
+    upstreamApiVersion: DUFFEL_API_VERSION,
+    upstreamSchemaVersion: DUFFEL_UPSTREAM_SCHEMA_VERSION,
+    upstreamSchemaFingerprint: DUFFEL_UPSTREAM_SCHEMA_FINGERPRINT,
+  });
+}
+
+function hasExactDuffelManifestIdentity(
+  entry: ProviderManifestEntry,
+  environment: DuffelEnvironment,
+): boolean {
+  try {
+    return (
+      createProviderFingerprint(entry as unknown as ProviderJsonValue) ===
+      createProviderFingerprint(
+        createDuffelTransportManifestEntry(environment) as unknown as ProviderJsonValue,
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 export class DuffelApiTransportProvider implements TransportProvider {
@@ -60,8 +112,8 @@ export class DuffelApiTransportProvider implements TransportProvider {
   private readonly maxOffersPerDestination: number;
 
   constructor(options: DuffelApiTransportProviderOptions) {
-    if (options.manifestEntry.role !== 'TRANSPORT' || options.manifestEntry.mode !== 'LIVE') {
-      throw new TypeError('Duffel adapter requires a LIVE TRANSPORT manifest entry.');
+    if (!hasExactDuffelManifestIdentity(options.manifestEntry, options.environment)) {
+      throw new TypeError('Duffel adapter manifest identity does not match its environment.');
     }
     const maximum = options.maxOffersPerDestination ?? DUFFEL_MAX_OFFERS_PER_DESTINATION;
     if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 6) {
@@ -124,11 +176,14 @@ export class DuffelApiTransportProvider implements TransportProvider {
               throw safeProviderFailure('INVALID_SCHEMA', plan.destination.code);
             }
             const fetchedAt = this.clock().toISOString();
-            const mapped: TransportOption[] = [];
+            const mapped: Array<{
+              option: TransportOption;
+              upstreamOffer: DuffelOffer;
+            }> = [];
             for (const offer of parsed.data.data.offers) {
               try {
-                mapped.push(
-                  mapDuffelOffer(offer, {
+                mapped.push({
+                  option: mapDuffelOffer(offer, {
                     destinationCode: plan.destination.code,
                     originCode,
                     currency: request.currency,
@@ -136,7 +191,8 @@ export class DuffelApiTransportProvider implements TransportProvider {
                     queryFingerprint: plan.queryFingerprint,
                     fetchedAt,
                   }),
-                );
+                  upstreamOffer: offer,
+                });
               } catch {
                 // One malformed, ambiguous, stale-shaped or currency-incompatible offer is
                 // rejected locally; the destination remains usable if other offers are valid.

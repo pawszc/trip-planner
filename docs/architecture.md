@@ -87,9 +87,10 @@ się przed konstrukcją providerów i nie wykonuje żadnego zapisu.
 
 Phase 4B1 rozdziela `startPlanning` na committed read/replay checkpoint, provider fan-out bez
 aktywnej transakcji DB oraz krótki request write. Writer ponownie odczytuje brief i workflow,
-przelicza fingerprint z aktualnego manifestu oraz przed INSERT sprawdza zgodny wynik
-równoległego wykonania. Replay v2/v1/v0 nadal kończy się w read checkpoint przed konstrukcją
-providerów i bez write.
+przelicza fingerprint z aktualnego manifestu, a INSERT `PlanningRun` stanowi atomowy claim
+między instancjami. Przegrany writer po rollbacku sprawdza zgodny, committed wynik równoległego
+wykonania w nowej transakcji. Replay v2/v1/v0 nadal kończy się w read checkpoint przed
+konstrukcją providerów i bez write.
 
 ## Deterministyczny silnik kandydatów
 
