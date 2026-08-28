@@ -22,7 +22,7 @@ const locationSchema = z.object({
 const carrierSchema = z.object({
   id: safeId('arl'),
   name: safeText,
-  iata_code: carrierIataCode,
+  iata_code: carrierIataCode.nullable(),
 });
 
 const segmentSchema = z.object({

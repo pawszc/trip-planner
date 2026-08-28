@@ -1153,6 +1153,73 @@ describe('TripPlannerService', () => {
     }
   });
 
+  it('replays the committed winner when two service instances race to claim one fingerprint', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const service = cds.services.TripPlannerService as unknown as {
+      activePlanningRequests: Map<string, Promise<unknown>>;
+      createPlanningProviders(): CandidateEngineProviders;
+    };
+    const originalFactory = service.createPlanningProviders;
+    const workingProviders = originalFactory.call(service);
+    let planningExecutionCount = 0;
+    let providerStartedCount = 0;
+    let releaseProviders: () => void = () => undefined;
+    let signalFirstProviderStarted: () => void = () => undefined;
+    let signalBothProvidersStarted: () => void = () => undefined;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProviders = resolve;
+    });
+    const firstProviderStarted = new Promise<void>((resolve) => {
+      signalFirstProviderStarted = resolve;
+    });
+    const bothProvidersStarted = new Promise<void>((resolve) => {
+      signalBothProvidersStarted = resolve;
+    });
+    service.createPlanningProviders = () => {
+      planningExecutionCount += 1;
+      return {
+        ...workingProviders,
+        transport: {
+          search: async (providerRequest) => {
+            providerStartedCount += 1;
+            if (providerStartedCount === 1) signalFirstProviderStarted();
+            if (providerStartedCount === 2) signalBothProvidersStarted();
+            await providerGate;
+            return workingProviders.transport.search(providerRequest);
+          },
+        },
+      };
+    };
+
+    try {
+      const firstPromise = startReferencePlanning(tripRequest.ID);
+      await firstProviderStarted;
+
+      // Emulate another process, which has no access to this instance-local single-flight map.
+      service.activePlanningRequests.clear();
+      const secondPromise = startReferencePlanning(tripRequest.ID);
+      await bothProvidersStarted;
+      releaseProviders();
+
+      const [first, second] = await Promise.all([firstPromise, secondPromise]);
+      expect(planningExecutionCount).toBe(2);
+      expect(second.ID).toBe(first.ID);
+      await expect(
+        readPlanningCollection<PlanningRunResponse>(
+          'PlanningRuns',
+          'tripRequest_ID',
+          tripRequest.ID,
+        ),
+      ).resolves.toHaveLength(1);
+      await expect(
+        readPlanningCollection<RankedOptionResponse>('RankedOptions', 'planningRun_ID', first.ID),
+      ).resolves.toHaveLength(3);
+    } finally {
+      releaseProviders();
+      service.createPlanningProviders = originalFactory;
+    }
+  });
+
   it('commits the read checkpoint before provider wait and uses a revalidated short write', async () => {
     const tripRequest = await createConfirmedReferenceTrip();
     const service = cds.services.TripPlannerService as unknown as {

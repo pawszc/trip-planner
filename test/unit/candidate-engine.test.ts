@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TransportOption } from '../../srv/domain/candidate.js';
+import type { SourceSnapshot } from '../../srv/domain/money.js';
 import { runCandidateEngine } from '../../srv/orchestration/candidate-engine.js';
 import type {
   AccommodationProvider,
@@ -11,6 +12,7 @@ import { REFERENCE_PLANNING_CONTEXT } from '../../srv/providers/fixtures/referen
 import { MockAccommodationProvider } from '../../srv/providers/mock-accommodation-provider.js';
 import { MockPlacesProvider } from '../../srv/providers/mock-places-provider.js';
 import { MockTransportProvider } from '../../srv/providers/mock-transport-provider.js';
+import { transportResultView } from '../../srv/providers/normalized-result.js';
 import { resolveProviderExecutionPolicy } from '../../srv/providers/provider-execution.js';
 import { createProviderFingerprint } from '../../srv/providers/provider-fingerprint.js';
 import {
@@ -19,8 +21,13 @@ import {
   providerEntry,
   type ProviderConfigurationManifest,
 } from '../../srv/providers/provider-manifest.js';
+import { createSourceSnapshotResultFingerprint } from '../../srv/providers/source-snapshot.js';
 import { REJECTION_CODES } from '../../srv/ranking/rejection-reasons.js';
-import { candidateContext, candidateDestination } from './candidate-fixtures.js';
+import {
+  candidateContext,
+  candidateDestination,
+  candidateTransport,
+} from './candidate-fixtures.js';
 
 function liveTransportManifest(policy = MOCK_PROVIDER_MANIFEST.executionPolicy) {
   return createProviderConfigurationManifest(
@@ -409,6 +416,94 @@ describe('candidate engine orchestration', () => {
     });
 
     expect(transportSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds each live transport result to the successful query for its own destination', async () => {
+    const manifest = liveTransportManifest();
+    const configured = providerEntry(manifest, 'TRANSPORT');
+    const upstreamQueries = new Map<string, string>();
+    const bindLiveSource = (queryFingerprint: string): TransportOption => {
+      const fixture = candidateTransport('offline-live-prg');
+      const provisionalSource: SourceSnapshot = {
+        contractVersion: configured.sourceContractVersion,
+        id: 'offline-live-source-prg',
+        sourceType: 'LIVE',
+        provider: configured.providerName,
+        adapterVersion: configured.adapterVersion,
+        providerVersion: configured.providerVersion,
+        upstreamApiVersion: configured.upstreamApiVersion,
+        upstreamSchemaFingerprint: configured.upstreamSchemaFingerprint,
+        queryFingerprint,
+        resultFingerprint: createProviderFingerprint({ provisional: true }),
+        externalItemId: fixture.id,
+        fetchedAt: '2026-08-01T00:00:00.000Z',
+        expiresAt: '2026-10-01T00:00:00.000Z',
+        sourceUrl: 'https://example.test',
+        attribution: 'Offline live transport test',
+        freshnessType: 'LIVE',
+        currency: 'PLN',
+        fixtureVersion: null,
+        termsPolicyVersion: 'offline-live-transport-terms-v1',
+      };
+      const withSource = (source: SourceSnapshot): TransportOption => ({
+        ...fixture,
+        price: { ...fixture.price, sourceSnapshot: source },
+        additionalFees: { ...fixture.additionalFees, sourceSnapshot: source },
+        pricing: {
+          ...fixture.pricing,
+          mandatoryTotal: { ...fixture.pricing.mandatoryTotal, sourceSnapshot: source },
+        },
+        sourceSnapshot: source,
+      });
+      const provisional = withSource(provisionalSource);
+      const exactSource: SourceSnapshot = {
+        ...provisionalSource,
+        resultFingerprint: createSourceSnapshotResultFingerprint(
+          provisionalSource,
+          transportResultView(provisional),
+        ),
+      };
+      return withSource(exactSource);
+    };
+    const transport: TransportProvider = {
+      manifestEntry: configured,
+      search: async (providerRequest, options) => {
+        if (options === undefined) throw new Error('Missing upstream executor.');
+        for (const destination of providerRequest.destinations) {
+          const queryFingerprint = createProviderFingerprint({
+            upstreamDestination: destination.code,
+          });
+          upstreamQueries.set(destination.code, queryFingerprint);
+          await options.executeUpstream(
+            {
+              destinationCode: destination.code,
+              queryFingerprint,
+              resultFingerprint: () =>
+                createProviderFingerprint({ upstreamResult: destination.code }),
+              resultCount: (result) => result.length,
+            },
+            async () => [] as const,
+          );
+        }
+        return [bindLiveSource(upstreamQueries.get('VIE')!)];
+      },
+    };
+
+    await expect(
+      runCandidateEngine({
+        context: candidateContext,
+        destinations: [candidateDestination, { code: 'VIE', city: 'Vienna', countryCode: 'AT' }],
+        providers: {
+          transport,
+          accommodation: new MockAccommodationProvider(),
+          places: new MockPlacesProvider(),
+        },
+        providerManifest: manifest,
+      }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_SEARCH_FAILED',
+      message: 'Nie udało się pobrać danych do planowania.',
+    });
   });
 
   it('enforces concurrency across actual upstream requests made inside one live adapter search', async () => {

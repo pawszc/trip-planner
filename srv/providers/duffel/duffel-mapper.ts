@@ -135,6 +135,21 @@ function mapSlice(slice: DuffelSlice): TransportLeg {
       throw new TypeError('Duffel slice contains an airport change or discontinuity.');
     }
   }
+  let previousArrivalAt: string | null = null;
+  const mappedSegments = slice.segments.map((segment) => {
+    const departureAt = zonedInstant(segment.departing_at, segment.origin.time_zone);
+    const arrivalAt = zonedInstant(segment.arriving_at, segment.destination.time_zone);
+    const explicitDuration = durationMinutes(segment.duration);
+    const actualDuration = Math.floor((Date.parse(arrivalAt) - Date.parse(departureAt)) / 60_000);
+    if (actualDuration <= 0 || actualDuration !== explicitDuration) {
+      throw new TypeError('Duffel segment duration is inconsistent with explicit timestamps.');
+    }
+    if (previousArrivalAt !== null && Date.parse(previousArrivalAt) > Date.parse(departureAt)) {
+      throw new TypeError('Duffel slice contains overlapping or reversed segments.');
+    }
+    previousArrivalAt = arrivalAt;
+    return { departureAt, arrivalAt };
+  });
   const first = slice.segments[0]!;
   const last = slice.segments.at(-1)!;
   if (
@@ -143,8 +158,8 @@ function mapSlice(slice: DuffelSlice): TransportLeg {
   ) {
     throw new TypeError('Duffel slice endpoints are inconsistent.');
   }
-  const departureAt = zonedInstant(first.departing_at, first.origin.time_zone);
-  const arrivalAt = zonedInstant(last.arriving_at, last.destination.time_zone);
+  const departureAt = mappedSegments[0]!.departureAt;
+  const arrivalAt = mappedSegments.at(-1)!.arrivalAt;
   const explicitDuration = durationMinutes(slice.duration);
   if (Math.floor((Date.parse(arrivalAt) - Date.parse(departureAt)) / 60_000) !== explicitDuration) {
     throw new TypeError('Duffel slice duration is inconsistent with explicit timestamps.');

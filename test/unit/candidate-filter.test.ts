@@ -67,6 +67,42 @@ describe('candidate hard filtering', () => {
     );
   });
 
+  it('does not apply selectable-offer expiry rules to a live place snapshot', () => {
+    const candidate = candidateFixture();
+    const place = candidate.places[0];
+    if (place?.sourceSnapshot === null || place?.sourceSnapshot === undefined) {
+      throw new Error('Missing place source fixture.');
+    }
+    const livePlaceSource: SourceSnapshot = {
+      ...place.sourceSnapshot,
+      sourceType: 'LIVE',
+      provider: 'OfflineLivePlacesProvider',
+      freshnessType: 'LIVE',
+      fixtureVersion: null,
+      sourceUrl: 'https://example.test',
+      expiresAt: null,
+    };
+    const result = validateCandidate(
+      {
+        ...candidate,
+        places: [{ ...place, sourceSnapshot: livePlaceSource }, ...candidate.places.slice(1)],
+      },
+      candidateContext,
+      {},
+      () => new Date('2026-10-01T12:00:00.000Z'),
+    );
+
+    expect(result.reasons).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          details: expect.objectContaining({
+            fields: expect.arrayContaining([expect.stringMatching(/^sourceFreshness:place:/u)]),
+          }),
+        }),
+      ]),
+    );
+  });
+
   const cases: readonly {
     code: RejectionCode;
     evaluate: () => readonly RejectionReason[];

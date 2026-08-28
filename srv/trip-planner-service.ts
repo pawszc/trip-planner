@@ -1406,6 +1406,67 @@ export default class TripPlannerService extends cds.ApplicationService {
         )) as PersistedReplayManifestLineage[],
       });
 
+      const readCurrentReplay = async (
+        transaction: { run(query: object): Promise<unknown> },
+        workflowRun: PersistedWorkflowRun,
+        providerManifest: ProviderConfigurationManifest,
+        providerLineage: ReturnType<typeof providerManifestLineage>,
+        requestFingerprint: string,
+      ): Promise<unknown | undefined> => {
+        const existingRun = (await transaction.run(
+          SELECT.one.from(PersistedPlanningRuns).where({
+            tripRequest_ID: ID,
+            requestFingerprint,
+          }),
+        )) as PersistedPlanningRun | undefined;
+        if (!existingRun) return undefined;
+
+        const existingOptions = (await transaction.run(
+          SELECT.from(PersistedRankedOptions).where({ planningRun_ID: existingRun.ID }),
+        )) as PersistedRankedOptionLineage[];
+        if (existingRun.status === 'SUCCEEDED') {
+          assertCurrentPlanningReplay(
+            ID,
+            workflowRun,
+            existingRun,
+            providerLineage,
+            existingOptions,
+          );
+        } else if (
+          workflowRun.state !== 'CONSTRAINTS_CONFIRMED' ||
+          existingRun.selectedOptionCount !== 0 ||
+          existingOptions.length !== 0 ||
+          existingRun.requestFingerprintVersion !== PLANNING_REQUEST_FINGERPRINT_VERSION ||
+          existingRun.providerManifestVersion !== providerLineage.manifestVersion ||
+          existingRun.providerManifestFingerprint !== providerLineage.manifestFingerprint ||
+          existingRun.providerManifestJson !== providerLineage.manifestJson ||
+          existingRun.providerFixtureVersion !== providerLineage.fixtureVersion ||
+          existingRun.currencyContractVersion !== CURRENCY_CONTRACT_VERSION ||
+          existingRun.offerPricingContractVersion !== OFFER_PRICING_CONTRACT_VERSION ||
+          existingRun.engineVersion !== DEFAULT_CANDIDATE_ENGINE_CONFIG.version ||
+          existingRun.scoringVersion !== CURRENT_PLANNING_RUN_SCORING_VERSION ||
+          existingRun.providerExecutionCallCount === null ||
+          existingRun.providerExecutionCallCount <= 0
+        ) {
+          throw new DomainError(
+            'PLANNING_STATE_INCONSISTENT',
+            'Zapisany niedobór opcji nie spełnia kontraktu provider manifest v2.',
+          );
+        }
+        assertCurrentPlanningReplayDescendants(
+          ID,
+          workflowRun,
+          existingRun,
+          providerManifest,
+          providerLineage,
+          existingOptions,
+          await readReplayDescendants(transaction, existingRun.ID),
+        );
+        return transaction.run(
+          SELECT.one.from(PersistedPlanningRuns).where({ ID: existingRun.ID }),
+        );
+      };
+
       try {
         const database = cds.db;
         if (!database) throw new Error('The planning database is not connected.');
@@ -1446,62 +1507,19 @@ export default class TripPlannerService extends cds.ApplicationService {
             scoringVersion: SCORE_VERSION,
           };
           const requestFingerprint = createPlanningFingerprint(context, versions);
-          const existingRun = (await transaction.run(
-            SELECT.one.from(PersistedPlanningRuns).where({
-              tripRequest_ID: ID,
-              requestFingerprint,
-            }),
-          )) as PersistedPlanningRun | undefined;
-
           // Potwierdzony brief jest nieedytowalny, dlatego identyczny fingerprint oznacza
           // identyczny wynik. Zwracamy istniejący run zamiast duplikować opcje i diagnostyki.
-          if (existingRun) {
-            const existingOptions = (await transaction.run(
-              SELECT.from(PersistedRankedOptions).where({ planningRun_ID: existingRun.ID }),
-            )) as PersistedRankedOptionLineage[];
-            if (existingRun.status === 'SUCCEEDED') {
-              assertCurrentPlanningReplay(
-                ID,
-                workflowRun,
-                existingRun,
-                providerLineage,
-                existingOptions,
-              );
-            } else if (
-              workflowRun.state !== 'CONSTRAINTS_CONFIRMED' ||
-              existingRun.selectedOptionCount !== 0 ||
-              existingOptions.length !== 0 ||
-              existingRun.requestFingerprintVersion !== PLANNING_REQUEST_FINGERPRINT_VERSION ||
-              existingRun.providerManifestVersion !== providerLineage.manifestVersion ||
-              existingRun.providerManifestFingerprint !== providerLineage.manifestFingerprint ||
-              existingRun.providerManifestJson !== providerLineage.manifestJson ||
-              existingRun.providerFixtureVersion !== providerLineage.fixtureVersion ||
-              existingRun.currencyContractVersion !== CURRENCY_CONTRACT_VERSION ||
-              existingRun.offerPricingContractVersion !== OFFER_PRICING_CONTRACT_VERSION ||
-              existingRun.engineVersion !== DEFAULT_CANDIDATE_ENGINE_CONFIG.version ||
-              existingRun.scoringVersion !== CURRENT_PLANNING_RUN_SCORING_VERSION ||
-              existingRun.providerExecutionCallCount === null ||
-              existingRun.providerExecutionCallCount <= 0
-            ) {
-              throw new DomainError(
-                'PLANNING_STATE_INCONSISTENT',
-                'Zapisany niedobór opcji nie spełnia kontraktu provider manifest v2.',
-              );
-            }
-            assertCurrentPlanningReplayDescendants(
-              ID,
-              workflowRun,
-              existingRun,
-              providerManifest,
-              providerLineage,
-              existingOptions,
-              await readReplayDescendants(transaction, existingRun.ID),
-            );
+          const currentReplay = await readCurrentReplay(
+            transaction,
+            workflowRun,
+            providerManifest,
+            providerLineage,
+            requestFingerprint,
+          );
+          if (currentReplay !== undefined) {
             return {
               kind: 'REPLAY' as const,
-              run: await transaction.run(
-                SELECT.one.from(PersistedPlanningRuns).where({ ID: existingRun.ID }),
-              ),
+              run: currentReplay,
             };
           }
 
@@ -1636,182 +1654,186 @@ export default class TripPlannerService extends cds.ApplicationService {
           result,
         });
 
-        const transaction = cds.tx(request);
-        const writeCurrent = (await transaction.run(
-          SELECT.one.from(TripRequests).where({ ID }),
-        )) as PersistedTripRequest | undefined;
-        if (!writeCurrent || writeCurrent.status !== 'CONSTRAINTS_CONFIRMED') {
-          throw new DomainError(
-            'PLANNING_STATE_INCONSISTENT',
-            'Brief zmienił się po zakończeniu wyszukiwania providerów.',
-          );
-        }
-        const writeNormalized = normalizeTripRequest(writeCurrent);
-        validateTripRequest(writeNormalized);
-        const writeWorkflowRun = (await transaction.run(
-          SELECT.one.from(PersistedWorkflowRuns).where({ tripRequest_ID: ID }),
-        )) as PersistedWorkflowRun | undefined;
-        if (!writeWorkflowRun || writeWorkflowRun.ID !== workflowRun.ID) {
-          throw new DomainError(
-            'PLANNING_STATE_INCONSISTENT',
-            'WorkflowRun zmienił się po zakończeniu wyszukiwania providerów.',
-          );
-        }
+        try {
+          return await database.tx(async (transaction) => {
+            const writeCurrent = (await transaction.run(
+              SELECT.one.from(TripRequests).where({ ID }),
+            )) as PersistedTripRequest | undefined;
+            if (!writeCurrent || writeCurrent.status !== 'CONSTRAINTS_CONFIRMED') {
+              throw new DomainError(
+                'PLANNING_STATE_INCONSISTENT',
+                'Brief zmienił się po zakończeniu wyszukiwania providerów.',
+              );
+            }
+            const writeNormalized = normalizeTripRequest(writeCurrent);
+            validateTripRequest(writeNormalized);
+            const writeWorkflowRun = (await transaction.run(
+              SELECT.one.from(PersistedWorkflowRuns).where({ tripRequest_ID: ID }),
+            )) as PersistedWorkflowRun | undefined;
+            if (!writeWorkflowRun || writeWorkflowRun.ID !== workflowRun.ID) {
+              throw new DomainError(
+                'PLANNING_STATE_INCONSISTENT',
+                'WorkflowRun zmienił się po zakończeniu wyszukiwania providerów.',
+              );
+            }
 
-        const writeContext = createPlanningContext(writeCurrent);
-        const writeProviderManifest = this.createPlanningProviderManifest();
-        const writeProviderLineage = providerManifestLineage(writeProviderManifest);
-        const writeRequestFingerprint = createPlanningFingerprint(writeContext, {
-          currencyContractVersion: CURRENCY_CONTRACT_VERSION,
-          offerPricingContractVersion: OFFER_PRICING_CONTRACT_VERSION,
-          providerManifestVersion: writeProviderLineage.manifestVersion,
-          providerManifestFingerprint: writeProviderLineage.manifestFingerprint,
-          engineVersion: DEFAULT_CANDIDATE_ENGINE_CONFIG.version,
-          scoringVersion: SCORE_VERSION,
-        });
-        if (
-          writeRequestFingerprint !== requestFingerprint ||
-          writeProviderLineage.manifestFingerprint !== providerLineage.manifestFingerprint ||
-          writeProviderLineage.manifestJson !== providerLineage.manifestJson
-        ) {
-          throw new DomainError(
-            'PLANNING_STATE_INCONSISTENT',
-            'Fingerprint planowania zmienił się podczas wyszukiwania providerów.',
-          );
-        }
+            const writeContext = createPlanningContext(writeCurrent);
+            const writeProviderManifest = this.createPlanningProviderManifest();
+            const writeProviderLineage = providerManifestLineage(writeProviderManifest);
+            const writeRequestFingerprint = createPlanningFingerprint(writeContext, {
+              currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+              offerPricingContractVersion: OFFER_PRICING_CONTRACT_VERSION,
+              providerManifestVersion: writeProviderLineage.manifestVersion,
+              providerManifestFingerprint: writeProviderLineage.manifestFingerprint,
+              engineVersion: DEFAULT_CANDIDATE_ENGINE_CONFIG.version,
+              scoringVersion: SCORE_VERSION,
+            });
+            if (
+              writeRequestFingerprint !== requestFingerprint ||
+              writeProviderLineage.manifestFingerprint !== providerLineage.manifestFingerprint ||
+              writeProviderLineage.manifestJson !== providerLineage.manifestJson
+            ) {
+              throw new DomainError(
+                'PLANNING_STATE_INCONSISTENT',
+                'Fingerprint planowania zmienił się podczas wyszukiwania providerów.',
+              );
+            }
 
-        // A different service instance may have committed the same immutable run while this
-        // request was waiting on providers. Validate and reuse it instead of writing a duplicate.
-        const parallelRun = (await transaction.run(
-          SELECT.one.from(PersistedPlanningRuns).where({
-            tripRequest_ID: ID,
-            requestFingerprint,
-          }),
-        )) as PersistedPlanningRun | undefined;
-        if (parallelRun) {
-          const parallelOptions = (await transaction.run(
-            SELECT.from(PersistedRankedOptions).where({ planningRun_ID: parallelRun.ID }),
-          )) as PersistedRankedOptionLineage[];
-          if (parallelRun.status === 'SUCCEEDED') {
-            assertCurrentPlanningReplay(
-              ID,
-              writeWorkflowRun,
-              parallelRun,
-              providerLineage,
-              parallelOptions,
+            if (writeWorkflowRun.state !== 'CONSTRAINTS_CONFIRMED') {
+              throw new DomainError(
+                'PLANNING_STATE_INCONSISTENT',
+                'WorkflowRun zmienił się podczas wyszukiwania providerów.',
+              );
+            }
+
+            // INSERT is the cross-instance claim. The unique planning fingerprint arbitrates the
+            // winner; a loser rolls this transaction back and validates the committed winner below.
+            await transaction.run(INSERT.into(PersistedPlanningRuns).entries(bundle.planningRun));
+            if (bundle.providerExecutionRecords.length > 0) {
+              await transaction.run(
+                INSERT.into(PersistedProviderExecutionRecords).entries(
+                  ...bundle.providerExecutionRecords,
+                ),
+              );
+            }
+            if (bundle.rejectionReasons.length > 0) {
+              await transaction.run(
+                INSERT.into(PersistedRejectionReasons).entries(...bundle.rejectionReasons),
+              );
+            }
+            if (bundle.rejectionSummaries.length > 0) {
+              await transaction.run(
+                INSERT.into(PersistedRejectionSummaries).entries(...bundle.rejectionSummaries),
+              );
+            }
+
+            // Niedobór jest trwałym, kontrolowanym wynikiem. Nie zapisujemy nawet dwóch
+            // częściowych kart i pozostawiamy WorkflowRun gotowy do świadomej zmiany briefu.
+            if (bundle.planningRun.status === 'INSUFFICIENT_OPTIONS') {
+              return transaction.run(
+                SELECT.one.from(PersistedPlanningRuns).where({ ID: bundle.planningRun.ID }),
+              );
+            }
+
+            if (bundle.rankedOptions.length !== 3 || bundle.workflowTransitions.length !== 3) {
+              throw new DomainError(
+                'INVALID_PLANNING_RESULT',
+                'Udany wynik musi zawierać dokładnie trzy opcje i trzy przejścia workflow.',
+              );
+            }
+
+            let workflowState = workflowRun.state;
+            for (const targetState of [
+              'SEARCHING',
+              'CANDIDATES_VALIDATED',
+              'OPTIONS_READY',
+            ] as const) {
+              const nextState = transitionWorkflowState(workflowState, targetState);
+              const updatedRows = (await transaction.run(
+                UPDATE.entity(PersistedWorkflowRuns)
+                  .set({ state: nextState, errorCode: null, errorMessage: null })
+                  .where({ ID: workflowRun.ID, state: workflowState }),
+              )) as number;
+              if (updatedRows !== 1) {
+                throw new DomainError(
+                  'PLANNING_STATE_INCONSISTENT',
+                  'WorkflowRun zmienił się podczas atomowego zapisu planowania.',
+                );
+              }
+              workflowState = nextState;
+            }
+            await transaction.run(
+              INSERT.into(PersistedWorkflowTransitions).entries(...bundle.workflowTransitions),
             );
-          } else if (
-            writeWorkflowRun.state !== 'CONSTRAINTS_CONFIRMED' ||
-            parallelRun.selectedOptionCount !== 0 ||
-            parallelOptions.length !== 0 ||
-            parallelRun.requestFingerprintVersion !== PLANNING_REQUEST_FINGERPRINT_VERSION ||
-            parallelRun.providerManifestVersion !== providerLineage.manifestVersion ||
-            parallelRun.providerManifestFingerprint !== providerLineage.manifestFingerprint ||
-            parallelRun.providerManifestJson !== providerLineage.manifestJson ||
-            parallelRun.providerFixtureVersion !== providerLineage.fixtureVersion ||
-            parallelRun.currencyContractVersion !== CURRENCY_CONTRACT_VERSION ||
-            parallelRun.offerPricingContractVersion !== OFFER_PRICING_CONTRACT_VERSION ||
-            parallelRun.engineVersion !== DEFAULT_CANDIDATE_ENGINE_CONFIG.version ||
-            parallelRun.scoringVersion !== CURRENT_PLANNING_RUN_SCORING_VERSION ||
-            parallelRun.providerExecutionCallCount === null ||
-            parallelRun.providerExecutionCallCount <= 0
-          ) {
-            throw new DomainError(
-              'PLANNING_STATE_INCONSISTENT',
-              'Równoległy niedobór opcji nie spełnia kontraktu provider manifest v2.',
+            await transaction.run(
+              INSERT.into(PersistedRankedOptions).entries(...bundle.rankedOptions),
             );
-          }
-          assertCurrentPlanningReplayDescendants(
-            ID,
-            writeWorkflowRun,
-            parallelRun,
-            providerManifest,
-            providerLineage,
-            parallelOptions,
-            await readReplayDescendants(transaction, parallelRun.ID),
-          );
-          return transaction.run(
-            SELECT.one.from(PersistedPlanningRuns).where({ ID: parallelRun.ID }),
-          );
-        }
-        if (writeWorkflowRun.state !== 'CONSTRAINTS_CONFIRMED') {
-          throw new DomainError(
-            'PLANNING_STATE_INCONSISTENT',
-            'WorkflowRun zmienił się bez zgodnego wyniku równoległego planowania.',
-          );
-        }
-
-        await transaction.run(INSERT.into(PersistedPlanningRuns).entries(bundle.planningRun));
-        if (bundle.providerExecutionRecords.length > 0) {
-          await transaction.run(
-            INSERT.into(PersistedProviderExecutionRecords).entries(
-              ...bundle.providerExecutionRecords,
-            ),
-          );
-        }
-        if (bundle.rejectionReasons.length > 0) {
-          await transaction.run(
-            INSERT.into(PersistedRejectionReasons).entries(...bundle.rejectionReasons),
-          );
-        }
-        if (bundle.rejectionSummaries.length > 0) {
-          await transaction.run(
-            INSERT.into(PersistedRejectionSummaries).entries(...bundle.rejectionSummaries),
-          );
-        }
-
-        // Niedobór jest trwałym, kontrolowanym wynikiem. Nie zapisujemy nawet dwóch
-        // częściowych kart i pozostawiamy WorkflowRun gotowy do świadomej zmiany briefu.
-        if (bundle.planningRun.status === 'INSUFFICIENT_OPTIONS') {
-          return transaction.run(
-            SELECT.one.from(PersistedPlanningRuns).where({ ID: bundle.planningRun.ID }),
-          );
-        }
-
-        if (bundle.rankedOptions.length !== 3 || bundle.workflowTransitions.length !== 3) {
-          throw new DomainError(
-            'INVALID_PLANNING_RESULT',
-            'Udany wynik musi zawierać dokładnie trzy opcje i trzy przejścia workflow.',
-          );
-        }
-
-        let workflowState = workflowRun.state;
-        for (const targetState of ['SEARCHING', 'CANDIDATES_VALIDATED', 'OPTIONS_READY'] as const) {
-          const nextState = transitionWorkflowState(workflowState, targetState);
-          const updatedRows = (await transaction.run(
-            UPDATE.entity(PersistedWorkflowRuns)
-              .set({ state: nextState, errorCode: null, errorMessage: null })
-              .where({ ID: workflowRun.ID, state: workflowState }),
-          )) as number;
-          if (updatedRows !== 1) {
-            throw new DomainError(
-              'PLANNING_STATE_INCONSISTENT',
-              'WorkflowRun zmienił się podczas atomowego zapisu planowania.',
+            await transaction.run(
+              INSERT.into(PersistedSourceSnapshots).entries(...bundle.sourceSnapshots),
             );
-          }
-          workflowState = nextState;
-        }
-        await transaction.run(
-          INSERT.into(PersistedWorkflowTransitions).entries(...bundle.workflowTransitions),
-        );
-        await transaction.run(INSERT.into(PersistedRankedOptions).entries(...bundle.rankedOptions));
-        await transaction.run(
-          INSERT.into(PersistedSourceSnapshots).entries(...bundle.sourceSnapshots),
-        );
-        await transaction.run(INSERT.into(PersistedBudgetItems).entries(...bundle.budgetItems));
-        await transaction.run(
-          INSERT.into(PersistedOfferChargeCollections).entries(...bundle.offerChargeCollections),
-        );
-        if (bundle.offerChargeDisclosures.length > 0) {
-          await transaction.run(
-            INSERT.into(PersistedOfferChargeDisclosures).entries(...bundle.offerChargeDisclosures),
-          );
-        }
-        await transaction.run(INSERT.into(PersistedOptionNotes).entries(...bundle.optionNotes));
+            await transaction.run(INSERT.into(PersistedBudgetItems).entries(...bundle.budgetItems));
+            await transaction.run(
+              INSERT.into(PersistedOfferChargeCollections).entries(
+                ...bundle.offerChargeCollections,
+              ),
+            );
+            if (bundle.offerChargeDisclosures.length > 0) {
+              await transaction.run(
+                INSERT.into(PersistedOfferChargeDisclosures).entries(
+                  ...bundle.offerChargeDisclosures,
+                ),
+              );
+            }
+            await transaction.run(INSERT.into(PersistedOptionNotes).entries(...bundle.optionNotes));
 
-        return transaction.run(
-          SELECT.one.from(PersistedPlanningRuns).where({ ID: bundle.planningRun.ID }),
-        );
+            return transaction.run(
+              SELECT.one.from(PersistedPlanningRuns).where({ ID: bundle.planningRun.ID }),
+            );
+          });
+        } catch (writeError) {
+          // The failed claim is rolled back before this fresh read transaction starts. A matching
+          // committed run is reusable only after the same state, manifest and descendant checks
+          // as a normal replay; otherwise the original write failure remains authoritative.
+          const concurrentReplay = await database.tx(async (transaction) => {
+            const current = (await transaction.run(SELECT.one.from(TripRequests).where({ ID }))) as
+              PersistedTripRequest | undefined;
+            if (!current || current.status !== 'CONSTRAINTS_CONFIRMED') return undefined;
+            validateTripRequest(normalizeTripRequest(current));
+
+            const currentWorkflowRun = (await transaction.run(
+              SELECT.one.from(PersistedWorkflowRuns).where({ tripRequest_ID: ID }),
+            )) as PersistedWorkflowRun | undefined;
+            if (!currentWorkflowRun || currentWorkflowRun.ID !== workflowRun.ID) return undefined;
+
+            const currentContext = createPlanningContext(current);
+            const currentProviderManifest = this.createPlanningProviderManifest();
+            const currentProviderLineage = providerManifestLineage(currentProviderManifest);
+            const currentRequestFingerprint = createPlanningFingerprint(currentContext, {
+              currencyContractVersion: CURRENCY_CONTRACT_VERSION,
+              offerPricingContractVersion: OFFER_PRICING_CONTRACT_VERSION,
+              providerManifestVersion: currentProviderLineage.manifestVersion,
+              providerManifestFingerprint: currentProviderLineage.manifestFingerprint,
+              engineVersion: DEFAULT_CANDIDATE_ENGINE_CONFIG.version,
+              scoringVersion: SCORE_VERSION,
+            });
+            if (
+              currentRequestFingerprint !== requestFingerprint ||
+              currentProviderLineage.manifestFingerprint !== providerLineage.manifestFingerprint ||
+              currentProviderLineage.manifestJson !== providerLineage.manifestJson
+            ) {
+              return undefined;
+            }
+            return readCurrentReplay(
+              transaction,
+              currentWorkflowRun,
+              currentProviderManifest,
+              currentProviderLineage,
+              currentRequestFingerprint,
+            );
+          });
+          if (concurrentReplay !== undefined) return concurrentReplay;
+          throw writeError;
+        }
       } catch (error) {
         return rejectDomainError(request, error);
       }

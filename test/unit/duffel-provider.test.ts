@@ -130,6 +130,26 @@ describe('Duffel schemas and mapper', () => {
     );
   });
 
+  it('accepts a non-IATA operating carrier with a null IATA code', () => {
+    const fixture = duffelFixture();
+    const carrier = fixture.data.offers[0]!.slices[0]!.segments[0]!
+      .operating_carrier as unknown as { iata_code: string | null };
+    carrier.iata_code = null;
+
+    const parsed = duffelOfferRequestResponseSchema.parse(fixture);
+    expect(parsed.data.offers[0]!.slices[0]!.segments[0]!.operating_carrier.iata_code).toBeNull();
+    expect(() =>
+      mapDuffelOffer(parsed.data.offers[0]!, {
+        destinationCode: 'PRG',
+        originCode: 'WRO',
+        currency: 'PLN',
+        environment: 'TEST',
+        queryFingerprint: createProviderFingerprint({ query: 'null-carrier-iata' }),
+        fetchedAt: clock().toISOString(),
+      }),
+    ).not.toThrow();
+  });
+
   it.each([
     [
       'missing expiry',
@@ -260,6 +280,15 @@ describe('Duffel schemas and mapper', () => {
         fixture.data.offers[0]!.slices[0]!.segments[0]!.destination.iata_code = 'BER';
       },
     ],
+    [
+      'segment duration mismatch',
+      (fixture: ReturnType<typeof duffelFixture>) => {
+        const segment = fixture.data.offers[0]!.slices[0]!.segments[0]! as unknown as {
+          duration: string;
+        };
+        segment.duration = 'PT2H';
+      },
+    ],
   ] as const)('fails closed for %s', (_label, mutate) => {
     const fixture = duffelFixture();
     mutate(fixture);
@@ -274,6 +303,50 @@ describe('Duffel schemas and mapper', () => {
         fetchedAt: clock().toISOString(),
       }),
     ).toThrow();
+  });
+
+  it('rejects a multi-segment slice whose connection departs before the prior arrival', () => {
+    const fixture = duffelFixture();
+    const slice = fixture.data.offers[0]!.slices[0]! as unknown as {
+      duration: string;
+      segments: Array<{
+        id: string;
+        departing_at: string;
+        arriving_at: string;
+        duration: string;
+        origin: { iata_code: string; time_zone: string };
+        destination: { iata_code: string; time_zone: string };
+        operating_carrier: { id: string; name: string; iata_code: string | null };
+        operating_carrier_flight_number: string;
+      }>;
+    };
+    const first = slice.segments[0]!;
+    first.arriving_at = '2026-10-10T12:00:00';
+    first.duration = 'PT4H';
+    first.destination = { iata_code: 'BER', time_zone: 'Europe/Berlin' };
+    slice.segments.push({
+      ...structuredClone(first),
+      id: 'seg_000000connection',
+      departing_at: '2026-10-10T09:00:00',
+      arriving_at: '2026-10-10T10:00:00',
+      duration: 'PT1H',
+      origin: { iata_code: 'BER', time_zone: 'Europe/Berlin' },
+      destination: { iata_code: 'PRG', time_zone: 'Europe/Prague' },
+      operating_carrier_flight_number: 'LO103',
+    });
+    slice.duration = 'PT2H';
+
+    const parsed = duffelOfferRequestResponseSchema.parse(fixture);
+    expect(() =>
+      mapDuffelOffer(parsed.data.offers[0]!, {
+        destinationCode: 'PRG',
+        originCode: 'WRO',
+        currency: 'PLN',
+        environment: 'TEST',
+        queryFingerprint: createProviderFingerprint({ query: 'reversed-connection' }),
+        fetchedAt: clock().toISOString(),
+      }),
+    ).toThrow('Duffel slice contains overlapping or reversed segments.');
   });
 });
 

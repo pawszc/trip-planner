@@ -342,7 +342,7 @@ function providerResultFingerprint<T extends { id: string }>(
   normalizedResult: (value: T) => ProviderJsonValue,
   moneyValues: (value: T) => readonly Money[] = () => [],
   liveShape: (value: T) => boolean = () => true,
-  liveQueryFingerprints: () => ReadonlySet<string> = () => new Set([queryFingerprint]),
+  liveQueryFingerprint: (value: T) => string | undefined = () => queryFingerprint,
 ): string {
   if (!Array.isArray(values)) {
     throw new TypeError('Provider result failed the local array schema.');
@@ -390,19 +390,21 @@ function providerResultFingerprint<T extends { id: string }>(
       })),
     );
   }
-  const lineageIsExact = values.every((value, index) =>
-    sourceSnapshots(value).every((sourceSnapshot) => {
+  const lineageIsExact = values.every((value, index) => {
+    const expectedQueryFingerprint = liveQueryFingerprint(value);
+    return sourceSnapshots(value).every((sourceSnapshot) => {
       if (!isCompleteSourceSnapshot(sourceSnapshot)) return false;
       return (
+        expectedQueryFingerprint !== undefined &&
         sourceSnapshot.sourceType === 'LIVE' &&
         exactConfiguredLineage(sourceSnapshot) &&
-        liveQueryFingerprints().has(sourceSnapshot.queryFingerprint) &&
+        sourceSnapshot.queryFingerprint === expectedQueryFingerprint &&
         sourceSnapshot.fixtureVersion === null &&
         sourceSnapshot.resultFingerprint ===
           createSourceSnapshotResultFingerprint(sourceSnapshot, normalizedResults[index]!)
       );
-    }),
-  );
+    });
+  });
   if (!lineageIsExact) {
     throw new TypeError('Provider result failed the local manifest/source lineage contract.');
   }
@@ -576,18 +578,18 @@ export async function runCandidateEngine(
           transportResultView,
           offerMoneys,
           liveTransportShape,
-          () =>
-            new Set(
-              execution
-                .getAuditEvents()
-                .filter(
-                  (event) =>
-                    event.providerKey === transportEntry.providerKey &&
-                    event.operation === 'TRANSPORT_SEARCH' &&
-                    event.status === 'SUCCEEDED',
-                )
-                .map((event) => event.queryFingerprint),
-            ),
+          (value) => {
+            const matchingCalls = execution
+              .getAuditEvents()
+              .filter(
+                (event) =>
+                  event.providerKey === transportEntry.providerKey &&
+                  event.operation === 'TRANSPORT_SEARCH' &&
+                  event.destinationCode === value.destinationCode &&
+                  event.status === 'SUCCEEDED',
+              );
+            return matchingCalls.length === 1 ? matchingCalls[0]!.queryFingerprint : undefined;
+          },
         ),
       resultCount: (result) => result.length,
     },

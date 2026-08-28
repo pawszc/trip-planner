@@ -76,7 +76,7 @@ export function candidateSemanticSignature(candidate: TripCandidate): string {
   ].join('|');
 }
 
-function moneyEntries(candidate: TripCandidate): readonly (readonly [string, Money])[] {
+function offerMoneyEntries(candidate: TripCandidate): readonly (readonly [string, Money])[] {
   return [
     ['transport.price', candidate.transport.price],
     ['transport.additionalFees', candidate.transport.additionalFees],
@@ -96,11 +96,29 @@ function moneyEntries(candidate: TripCandidate): readonly (readonly [string, Mon
     ...candidate.stay.pricing.optionalAncillaries.items.map(
       (charge) => [`stay.pricing.optionalAncillaries.${charge.id}`, charge.amount] as const,
     ),
+  ];
+}
+
+function moneyEntries(candidate: TripCandidate): readonly (readonly [string, Money])[] {
+  return [
+    ...offerMoneyEntries(candidate),
     ['budget.localTransport', candidate.budget.localTransport],
     ['budget.food', candidate.budget.food],
     ['budget.attractions', candidate.budget.attractions],
     ['budget.additionalFees', candidate.budget.additionalFees],
     ['budget.buffer', candidate.budget.buffer],
+  ];
+}
+
+function offerSourceEntries(
+  candidate: TripCandidate,
+): readonly (readonly [string, SourceSnapshot | null])[] {
+  return [
+    ['transport', candidate.transport.sourceSnapshot],
+    ['stay', candidate.stay.sourceSnapshot],
+    ...offerMoneyEntries(candidate).map(
+      ([path, money]) => [`money:${path}`, money.sourceSnapshot] as const,
+    ),
   ];
 }
 
@@ -422,7 +440,7 @@ export function validateCandidate(
   }
 
   const missingFields = [...incompleteFields(candidate)];
-  for (const [path, source] of sourceEntries(candidate)) {
+  for (const [path, source] of offerSourceEntries(candidate)) {
     if (source === null) continue;
     missingFields.push(
       ...sourceFreshnessValidationIssues(source, freshnessClock).map(
