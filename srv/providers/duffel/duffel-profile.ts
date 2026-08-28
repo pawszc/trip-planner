@@ -12,15 +12,19 @@ import {
   DuffelApiTransportProvider,
 } from './duffel-api-transport-provider.ts';
 import type { ProviderHttpClient } from '../http/provider-http-client.ts';
+import { DEFAULT_DUFFEL_ORIGIN_CATALOG, type DuffelOriginCatalog } from './duffel-search-policy.ts';
 
 export { createDuffelTransportManifestEntry };
 
 export function createDuffelPlanningProviderManifest(
   environment: DuffelEnvironment,
+  originCatalog: DuffelOriginCatalog = DEFAULT_DUFFEL_ORIGIN_CATALOG,
 ): ProviderConfigurationManifest {
   return createProviderConfigurationManifest(
     MOCK_PROVIDER_MANIFEST.entries.map((entry) =>
-      entry.role === 'TRANSPORT' ? createDuffelTransportManifestEntry(environment) : entry,
+      entry.role === 'TRANSPORT'
+        ? createDuffelTransportManifestEntry(environment, originCatalog)
+        : entry,
     ),
   );
 }
@@ -28,6 +32,7 @@ export function createDuffelPlanningProviderManifest(
 export interface DuffelPlanningProfileOptions {
   readonly environment: DuffelEnvironment;
   readonly httpClient: ProviderHttpClient;
+  readonly originCatalog?: DuffelOriginCatalog;
   readonly clock?: () => Date;
 }
 
@@ -39,7 +44,8 @@ export interface DuffelPlanningProfile {
 export function createDuffelPlanningProfile(
   options: DuffelPlanningProfileOptions,
 ): DuffelPlanningProfile {
-  const manifest = createDuffelPlanningProviderManifest(options.environment);
+  const originCatalog = options.originCatalog ?? DEFAULT_DUFFEL_ORIGIN_CATALOG;
+  const manifest = createDuffelPlanningProviderManifest(options.environment, originCatalog);
   const transportEntry = manifest.entries.find((entry) => entry.role === 'TRANSPORT');
   if (transportEntry === undefined) throw new TypeError('Duffel transport manifest is missing.');
   return Object.freeze({
@@ -49,6 +55,7 @@ export function createDuffelPlanningProfile(
         environment: options.environment,
         httpClient: options.httpClient,
         manifestEntry: transportEntry,
+        originCatalog,
         ...(options.clock === undefined ? {} : { clock: options.clock }),
       }),
       accommodation: new MockAccommodationProvider(),

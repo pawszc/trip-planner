@@ -50,10 +50,11 @@ nowego runu jest związana z `PlanningRun`, więc utrata końcowego suffixu fail
   `https://api.duffel.com`, pobiera token dopiero w chwili requestu i nigdy nie przenosi body,
   headerów, tokenu ani raw błędu do wyjątku. Każdy request adaptera jest wykonywany przez
   run-scoped `executeUpstream`.
-- `duffel-search-policy.ts` zamraża `duffel-search-policy-v1`: code-owned origin IATA,
-  wersjonowaną allowlistę ośmiu destination IATA, adults-only, economy, dwie slices, brak split
-  ticket, maksymalnie jedną przesiadkę, najwyżej osiem requestów per search, jeden offer request
-  per destynacja, `return_offers=true`, `view=offers` i 8 s supplier timeout.
+- `duffel-search-policy.ts` zamraża `duffel-search-policy-v1`: wstrzykiwany, zamknięty i
+  wersjonowany katalog origin IATA związany z manifestem i fingerprintem query, wersjonowaną
+  allowlistę ośmiu destination IATA, adults-only z lokalnym limitem 9 pasażerów, economy, dwie
+  slices, brak split ticket, maksymalnie jedną przesiadkę, najwyżej osiem requestów per search,
+  jeden offer request per destynacja, `return_offers=true`, `view=offers` i 8 s supplier timeout.
 - `duffel-schemas.ts` waliduje wszystkie używane fakty Zod i stripuje pola spoza allowlisty.
   Mapper przyjmuje tylko spójne waluty PLN/EUR, dokładne `base + tax = total`, jednoznaczne
   lokalne timestampy z IANA timezone, ciągłe segmenty bez airport change oraz dwie odwrócone

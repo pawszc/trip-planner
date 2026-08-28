@@ -3,13 +3,22 @@ import type { Destination } from '../../srv/domain/candidate.js';
 import type { TransportSearchRequest } from '../../srv/providers/contracts.js';
 import { DuffelApiTransportProvider } from '../../srv/providers/duffel/duffel-api-transport-provider.js';
 import { mapDuffelOffer } from '../../srv/providers/duffel/duffel-mapper.js';
-import { createDuffelTransportManifestEntry } from '../../srv/providers/duffel/duffel-profile.js';
+import {
+  createDuffelPlanningProfile,
+  createDuffelTransportManifestEntry,
+} from '../../srv/providers/duffel/duffel-profile.js';
 import {
   buildDuffelOfferRequestPlans,
+  createDuffelOriginCatalog,
+  createDuffelSearchPolicyIdentity,
+  DEFAULT_DUFFEL_ORIGIN_CATALOG,
   DUFFEL_DESTINATION_IATA_CATALOG_VERSION,
   DUFFEL_ORIGIN_CATALOG_VERSION,
 } from '../../srv/providers/duffel/duffel-search-policy.js';
-import { DUFFEL_MAX_DESTINATIONS_PER_SEARCH } from '../../srv/providers/duffel/duffel-contracts.js';
+import {
+  DUFFEL_MAX_ADULTS_PER_SEARCH,
+  DUFFEL_MAX_DESTINATIONS_PER_SEARCH,
+} from '../../srv/providers/duffel/duffel-contracts.js';
 import { duffelOfferRequestResponseSchema } from '../../srv/providers/duffel/duffel-schemas.js';
 import {
   DUFFEL_API_BASE_URL,
@@ -53,6 +62,7 @@ function provider(transport: ProviderHttpTransport) {
     environment: 'TEST',
     httpClient: client(transport).httpClient,
     manifestEntry: createDuffelTransportManifestEntry('TEST'),
+    originCatalog: DEFAULT_DUFFEL_ORIGIN_CATALOG,
     clock,
   });
 }
@@ -77,12 +87,16 @@ function executionOptions(scope: ProviderExecutionScope): ProviderCallOptions {
 
 describe('Duffel Search Policy v1', () => {
   it('builds one adults-only economy return request per stable destination', () => {
-    const plans = buildDuffelOfferRequestPlans({
-      ...request,
-      destinations: [{ code: 'VIE', city: 'Vienna', countryCode: 'AT' }, destination],
-    });
+    const plans = buildDuffelOfferRequestPlans(
+      {
+        ...request,
+        destinations: [{ code: 'VIE', city: 'Vienna', countryCode: 'AT' }, destination],
+      },
+      DEFAULT_DUFFEL_ORIGIN_CATALOG,
+    );
     expect(DUFFEL_ORIGIN_CATALOG_VERSION).toBe('duffel-origin-iata-catalog-v1');
     expect(DUFFEL_DESTINATION_IATA_CATALOG_VERSION).toBe('duffel-destination-iata-catalog-v1');
+    expect(DUFFEL_MAX_ADULTS_PER_SEARCH).toBe(9);
     expect(DUFFEL_MAX_DESTINATIONS_PER_SEARCH).toBe(8);
     expect(plans.map((plan) => plan.destination.code)).toEqual(['PRG', 'VIE']);
     expect(plans[0]).toMatchObject({
@@ -111,6 +125,7 @@ describe('Duffel Search Policy v1', () => {
         environment: 'TEST',
         httpClient: client(transport, token).httpClient,
         manifestEntry: createDuffelTransportManifestEntry('TEST'),
+        originCatalog: DEFAULT_DUFFEL_ORIGIN_CATALOG,
         clock,
       });
       const scope = new ProviderExecutionScope();
@@ -138,6 +153,7 @@ describe('Duffel Search Policy v1', () => {
       environment: 'TEST',
       httpClient: client(transport, token).httpClient,
       manifestEntry: createDuffelTransportManifestEntry('TEST'),
+      originCatalog: DEFAULT_DUFFEL_ORIGIN_CATALOG,
       clock,
     });
     const scope = new ProviderExecutionScope();
@@ -148,6 +164,121 @@ describe('Duffel Search Policy v1', () => {
     expect(token).not.toHaveBeenCalled();
     expect(transport).not.toHaveBeenCalled();
     expect(scope.getAuditEvents()).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a nonexistent start date',
+      { ...request, startDate: '2026-02-30' } as TransportSearchRequest,
+      'INVALID_START_DATE',
+    ],
+    [
+      'a reversed date range',
+      { ...request, endDate: '2026-10-09' } as TransportSearchRequest,
+      'INVALID_DATE_RANGE',
+    ],
+    [
+      'an unsupported currency',
+      { ...request, currency: 'USD' } as unknown as TransportSearchRequest,
+      'INVALID_CURRENCY',
+    ],
+    [
+      'an empty destination list',
+      { ...request, destinations: [] } as TransportSearchRequest,
+      'DESTINATIONS_REQUIRED',
+    ],
+  ] as const)(
+    'rejects common invalid input (%s) before token/network',
+    async (_label, invalid, code) => {
+      const transport = vi.fn<ProviderHttpTransport>();
+      const token = vi.fn(() => 'secret-test-token');
+      const scope = new ProviderExecutionScope();
+      const error = await new DuffelApiTransportProvider({
+        environment: 'TEST',
+        httpClient: client(transport, token).httpClient,
+        manifestEntry: createDuffelTransportManifestEntry('TEST'),
+        originCatalog: DEFAULT_DUFFEL_ORIGIN_CATALOG,
+        clock,
+      })
+        .search(invalid, executionOptions(scope))
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ code });
+      expect(token).not.toHaveBeenCalled();
+      expect(transport).not.toHaveBeenCalled();
+      expect(scope.getAuditEvents()).toEqual([]);
+    },
+  );
+
+  it('rejects passenger allocation above the local policy bound before token/network', async () => {
+    const transport = vi.fn<ProviderHttpTransport>();
+    const token = vi.fn(() => 'secret-test-token');
+    const scope = new ProviderExecutionScope();
+    const adapter = new DuffelApiTransportProvider({
+      environment: 'TEST',
+      httpClient: client(transport, token).httpClient,
+      manifestEntry: createDuffelTransportManifestEntry('TEST'),
+      originCatalog: DEFAULT_DUFFEL_ORIGIN_CATALOG,
+      clock,
+    });
+
+    await expect(
+      adapter.search(
+        { ...request, adults: DUFFEL_MAX_ADULTS_PER_SEARCH + 1 },
+        executionOptions(scope),
+      ),
+    ).rejects.toThrow('Duffel search request is outside Search Policy v1.');
+    expect(token).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+    expect(scope.getAuditEvents()).toEqual([]);
+  });
+
+  it('injects a versioned origin catalog and binds it to manifest and request identity', async () => {
+    const originCatalog = createDuffelOriginCatalog({
+      version: 'duffel-origin-iata-catalog-test-v1',
+      cityToIata: { Poznań: 'POZ' },
+    });
+    const response = duffelFixture();
+    response.data.offers = [];
+    const transport = vi.fn<ProviderHttpTransport>(
+      async () => new Response(JSON.stringify(response), { status: 200 }),
+    );
+    const profile = createDuffelPlanningProfile({
+      environment: 'TEST',
+      httpClient: client(transport).httpClient,
+      originCatalog,
+      clock,
+    });
+    const scope = new ProviderExecutionScope();
+
+    await expect(
+      profile.providers.transport.search(
+        { ...request, originCity: 'Poznań' },
+        executionOptions(scope),
+      ),
+    ).resolves.toEqual([]);
+
+    const transportManifest = profile.manifest.entries.find((entry) => entry.role === 'TRANSPORT');
+    expect(transportManifest?.searchPolicyVersion).toBe(
+      createDuffelSearchPolicyIdentity(originCatalog),
+    );
+    expect(transportManifest?.searchPolicyVersion).not.toBe(
+      createDuffelSearchPolicyIdentity(DEFAULT_DUFFEL_ORIGIN_CATALOG),
+    );
+    const [, init] = transport.mock.calls[0]!;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      data: {
+        slices: [
+          { origin: 'POZ', destination: 'PRG' },
+          { origin: 'PRG', destination: 'POZ' },
+        ],
+      },
+    });
+    expect(scope.getAuditEvents()).toHaveLength(1);
+    expect(scope.getAuditEvents()[0]?.queryFingerprint).toBe(
+      buildDuffelOfferRequestPlans({ ...request, originCity: 'Poznań' }, originCatalog)[0]
+        ?.queryFingerprint,
+    );
   });
 });
 
@@ -397,6 +528,29 @@ describe('Duffel HTTP/provider boundary', () => {
           environment: 'TEST',
           httpClient,
           manifestEntry: createDuffelTransportManifestEntry('LIVE'),
+          originCatalog: DEFAULT_DUFFEL_ORIGIN_CATALOG,
+          clock,
+        }),
+    ).toThrow('Duffel adapter manifest identity does not match its environment.');
+    expect(token).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('rejects a manifest built for another origin catalog before token/network', () => {
+    const originCatalog = createDuffelOriginCatalog({
+      version: 'duffel-origin-iata-catalog-test-v1',
+      cityToIata: { Poznań: 'POZ' },
+    });
+    const transport = vi.fn<ProviderHttpTransport>();
+    const { httpClient, token } = client(transport);
+
+    expect(
+      () =>
+        new DuffelApiTransportProvider({
+          environment: 'TEST',
+          httpClient,
+          manifestEntry: createDuffelTransportManifestEntry('TEST'),
+          originCatalog,
           clock,
         }),
     ).toThrow('Duffel adapter manifest identity does not match its environment.');
@@ -414,6 +568,7 @@ describe('Duffel HTTP/provider boundary', () => {
       environment: 'TEST',
       httpClient,
       manifestEntry: createDuffelTransportManifestEntry('TEST'),
+      originCatalog: DEFAULT_DUFFEL_ORIGIN_CATALOG,
       clock,
     }).search(request, executionOptions(scope));
     expect(results).toHaveLength(1);

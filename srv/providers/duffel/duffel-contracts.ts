@@ -6,6 +6,7 @@ export const DUFFEL_UPSTREAM_SCHEMA_VERSION = 'duffel-offer-request-offers-v2';
 export const DUFFEL_TERMS_POLICY_VERSION = 'duffel-flight-offer-display-terms-v1';
 export const DUFFEL_SUPPLIER_TIMEOUT_MS = 8_000;
 export const DUFFEL_MAX_DESTINATIONS_PER_SEARCH = 8;
+export const DUFFEL_MAX_ADULTS_PER_SEARCH = 9;
 export const DUFFEL_MAX_OFFERS_PER_DESTINATION = 6;
 
 export type DuffelEnvironment = 'TEST' | 'LIVE';

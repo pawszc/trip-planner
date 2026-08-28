@@ -59,7 +59,8 @@ Tracker: GitHub #23; parent tracker: #21. Branch:
 
 ### 4B1.2 — Search Policy v1
 
-- Adults only, economy, return journey z dwiema slices i ograniczony fan-out.
+- Adults only z lokalnym limitem 9 pasażerów, economy, return journey z dwiema slices i
+  ograniczony fan-out.
 - Jeden offer request per destynacja, `return_offers=true`, `view=offers` i jawny
   `supplier_timeout` krótszy od zewnętrznego timeoutu. Każdy request zużywa osobny call.
 - Origin nie używa LLM ani geocoding. Wersjonowany, wstrzykiwany katalog mapuje wspierane
@@ -143,7 +144,8 @@ Tracker: GitHub #23; parent tracker: #21. Branch:
 ## Required tests
 
 - Valid/malformed Duffel fixtures i allowlisted schema projection.
-- Policy: adults, economy, two slices, origin mapping, IATA i fan-out.
+- Policy: wspólne request invariants, limit adults, economy, two slices, wstrzykiwany origin
+  mapping związany z manifest/query identity, IATA i fan-out.
 - Header/token redaction oraz brak credential access przy import/build/test.
 - Slices, segments, duration, connections, IDs i carrier facts.
 - Decimal parsing, PLN/EUR, currency mismatch i arithmetic mismatch.

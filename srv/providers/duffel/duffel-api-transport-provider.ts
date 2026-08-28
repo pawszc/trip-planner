@@ -12,13 +12,19 @@ import {
   DUFFEL_ADAPTER_VERSION,
   DUFFEL_API_VERSION,
   DUFFEL_MAX_OFFERS_PER_DESTINATION,
-  DUFFEL_SEARCH_POLICY_VERSION,
   DUFFEL_UPSTREAM_SCHEMA_VERSION,
   type DuffelEnvironment,
   type DuffelOffer,
 } from './duffel-contracts.ts';
 import { duffelOfferSemanticFingerprint, mapDuffelOffer } from './duffel-mapper.ts';
-import { buildDuffelOfferRequestPlans, resolveDuffelOriginIata } from './duffel-search-policy.ts';
+import {
+  buildDuffelOfferRequestPlans,
+  createDuffelOriginCatalog,
+  createDuffelSearchPolicyIdentity,
+  DEFAULT_DUFFEL_ORIGIN_CATALOG,
+  resolveDuffelOriginIata,
+  type DuffelOriginCatalog,
+} from './duffel-search-policy.ts';
 import {
   DUFFEL_UPSTREAM_SCHEMA_FINGERPRINT,
   duffelOfferRequestResponseSchema,
@@ -28,8 +34,8 @@ export interface DuffelApiTransportProviderOptions {
   readonly environment: DuffelEnvironment;
   readonly httpClient: ProviderHttpClient;
   readonly manifestEntry: ProviderManifestEntry;
+  readonly originCatalog: DuffelOriginCatalog;
   readonly clock?: () => Date;
-  readonly maxOffersPerDestination?: number;
 }
 
 function safeProviderFailure(
@@ -70,6 +76,7 @@ function stableOffers(
 
 export function createDuffelTransportManifestEntry(
   environment: DuffelEnvironment,
+  originCatalog: DuffelOriginCatalog = DEFAULT_DUFFEL_ORIGIN_CATALOG,
 ): ProviderManifestEntry {
   return Object.freeze({
     role: 'TRANSPORT',
@@ -80,7 +87,7 @@ export function createDuffelTransportManifestEntry(
     adapterId: DUFFEL_ADAPTER_ID,
     adapterVersion: DUFFEL_ADAPTER_VERSION,
     sourceContractVersion: SOURCE_SNAPSHOT_CONTRACT_VERSION,
-    searchPolicyVersion: DUFFEL_SEARCH_POLICY_VERSION,
+    searchPolicyVersion: createDuffelSearchPolicyIdentity(originCatalog),
     fixtureVersion: null,
     upstreamApiVersion: DUFFEL_API_VERSION,
     upstreamSchemaVersion: DUFFEL_UPSTREAM_SCHEMA_VERSION,
@@ -91,12 +98,16 @@ export function createDuffelTransportManifestEntry(
 function hasExactDuffelManifestIdentity(
   entry: ProviderManifestEntry,
   environment: DuffelEnvironment,
+  originCatalog: DuffelOriginCatalog,
 ): boolean {
   try {
     return (
       createProviderFingerprint(entry as unknown as ProviderJsonValue) ===
       createProviderFingerprint(
-        createDuffelTransportManifestEntry(environment) as unknown as ProviderJsonValue,
+        createDuffelTransportManifestEntry(
+          environment,
+          originCatalog,
+        ) as unknown as ProviderJsonValue,
       )
     );
   } catch {
@@ -108,22 +119,21 @@ export class DuffelApiTransportProvider implements TransportProvider {
   public readonly manifestEntry: ProviderManifestEntry;
   private readonly environment: DuffelEnvironment;
   private readonly httpClient: ProviderHttpClient;
+  private readonly originCatalog: DuffelOriginCatalog;
   private readonly clock: () => Date;
-  private readonly maxOffersPerDestination: number;
 
   constructor(options: DuffelApiTransportProviderOptions) {
-    if (!hasExactDuffelManifestIdentity(options.manifestEntry, options.environment)) {
+    const originCatalog = createDuffelOriginCatalog(options.originCatalog);
+    if (
+      !hasExactDuffelManifestIdentity(options.manifestEntry, options.environment, originCatalog)
+    ) {
       throw new TypeError('Duffel adapter manifest identity does not match its environment.');
-    }
-    const maximum = options.maxOffersPerDestination ?? DUFFEL_MAX_OFFERS_PER_DESTINATION;
-    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 6) {
-      throw new TypeError('Duffel result limit is outside Search Policy v1.');
     }
     this.environment = options.environment;
     this.httpClient = options.httpClient;
     this.manifestEntry = options.manifestEntry;
+    this.originCatalog = originCatalog;
     this.clock = options.clock ?? (() => new Date());
-    this.maxOffersPerDestination = maximum;
   }
 
   public async search(
@@ -133,8 +143,8 @@ export class DuffelApiTransportProvider implements TransportProvider {
     if (options === undefined) {
       throw new TypeError('Duffel adapter requires the run-scoped upstream executor.');
     }
-    const originCode = resolveDuffelOriginIata(request.originCity);
-    const plans = buildDuffelOfferRequestPlans(request);
+    const plans = buildDuffelOfferRequestPlans(request, this.originCatalog);
+    const originCode = resolveDuffelOriginIata(request.originCity, this.originCatalog);
     if (originCode === null) throw new TypeError('Duffel origin is unsupported.');
 
     const groups = await Promise.all(
@@ -198,7 +208,7 @@ export class DuffelApiTransportProvider implements TransportProvider {
                 // rejected locally; the destination remains usable if other offers are valid.
               }
             }
-            return stableOffers(mapped, this.maxOffersPerDestination);
+            return stableOffers(mapped, DUFFEL_MAX_OFFERS_PER_DESTINATION);
           },
         ),
       ),

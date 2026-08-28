@@ -111,9 +111,11 @@ requesty wewnątrz jednego logicznego `search()` dzielą ten sam budżet i concu
 błąd anuluje sibling calls. Zamknięte błędy i wewnętrzne eventy audytowe zawierają
 wyłącznie bezpieczne metadata i fingerprinty, nigdy raw request/response/error ani headers.
 Manifest live lub mieszany nie uruchamia legacy fixture replay.
-`DuffelApiTransportProvider` jest konkretnym adapterem REST-first poza domeną. Jeden offer
-request per destynacja używa platformowego fetch wyłącznie przez `executeUpstream`; Search
-Policy v1 zamraża adults/economy/two-slice/no-split-ticket oraz bounded fan-out. Zod stripuje
+`DuffelApiTransportProvider` jest konkretnym adapterem REST-first poza domeną. Wspólne
+invariants requestu i lokalny limit 9 dorosłych są sprawdzane przed tokenem i siecią. Jeden
+offer request per destynacja używa platformowego fetch wyłącznie przez `executeUpstream`;
+Search Policy v1 zamraża adults/economy/two-slice/no-split-ticket oraz bounded fan-out.
+Wstrzykiwany, wersjonowany katalog origin jest częścią identity manifestu i query. Zod stripuje
 payload do allowlisty, a mapper zachowuje wyłącznie jawne route/carrier/time/money/service
 facts. Test-mode lineage pozostaje `LIVE`, bez `fixtureVersion`, a domyślny profil produktu
 pozostaje fixture bez silent fallbacku.

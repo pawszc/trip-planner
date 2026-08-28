@@ -122,11 +122,12 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - blokadę live smoke, brak credentiali i dokładnie jedno wywołanie po jawnym opt-in.
 - `offer-freshness-policy-v1` z injected clock: LIVE przed/na/po expiry i `null`, zerowy
   margines oraz brak odczytu zegara dla fixture i `INTERNAL_RULE`;
-- Duffel v2 offline: allowlisted Zod projection, Search Policy v1, origin i wersjonowana
-  destination IATA allowlist, maksymalny fan-out, headers, two-slice/segments/timezones/carriers,
-  PLN/EUR minor units, mandatory arithmetic, optional services, pełny segmentowy
-  sort/dedup/truncation, exact manifest identity przed pustym wynikiem oraz TEST lineage jako
-  `LIVE`;
+- Duffel v2 offline: allowlisted Zod projection, Search Policy v1, wstrzykiwany i wersjonowany
+  origin catalog związany z manifest/query identity, destination IATA allowlist, maksymalny
+  fan-out i limit 9 adults, odrzucenie błędnych dat/waluty/pustych destinations przed tokenem i
+  siecią, headers, two-slice/segments/timezones/carriers, PLN/EUR minor units, mandatory
+  arithmetic, optional services, pełny segmentowy sort/dedup/truncation, exact manifest identity
+  przed pustym wynikiem oraz TEST lineage jako `LIVE`;
 - zamknięte 429/5xx/network/invalid JSON/schema/timeout/cancellation/partial-destination bez
   raw body, provider text, headerów, stack trace lub tokenu oraz dokładnie jeden
   `executeUpstream` permit per fizyczny request;
