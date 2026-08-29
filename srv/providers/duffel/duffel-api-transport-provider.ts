@@ -59,6 +59,7 @@ function stableOffers(
     readonly upstreamOffer: DuffelOffer;
   }[],
   maximum: number,
+  destinationCode: string,
 ): readonly TransportOption[] {
   const ordered = [...offers].sort(
     (left, right) =>
@@ -68,8 +69,14 @@ function stableOffers(
       left.option.id.localeCompare(right.option.id, 'en'),
   );
   const unique = new Map<string, TransportOption>();
+  const semanticFingerprintByOfferId = new Map<string, string>();
   for (const { option, upstreamOffer } of ordered) {
     const fingerprint = duffelOfferSemanticFingerprint(upstreamOffer, option);
+    const previousFingerprint = semanticFingerprintByOfferId.get(option.id);
+    if (previousFingerprint !== undefined && previousFingerprint !== fingerprint) {
+      throw safeProviderFailure('INVALID_SCHEMA', destinationCode);
+    }
+    semanticFingerprintByOfferId.set(option.id, fingerprint);
     if (!unique.has(fingerprint)) unique.set(fingerprint, option);
   }
   return Object.freeze([...unique.values()].slice(0, maximum));
@@ -219,7 +226,7 @@ export class DuffelApiTransportProvider implements TransportProvider {
             if (parsedEnvelope.data.data.offers.length > 0 && schemaValidOfferCount === 0) {
               throw safeProviderFailure('INVALID_SCHEMA', plan.destination.code);
             }
-            return stableOffers(mapped, DUFFEL_MAX_OFFERS_PER_DESTINATION);
+            return stableOffers(mapped, DUFFEL_MAX_OFFERS_PER_DESTINATION, plan.destination.code);
           },
         ),
       ),

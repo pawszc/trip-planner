@@ -101,6 +101,7 @@ import { MockAccommodationProvider } from './providers/mock-accommodation-provid
 import { MockPlacesProvider } from './providers/mock-places-provider.ts';
 import { MockTransportProvider } from './providers/mock-transport-provider.ts';
 import {
+  sourceFreshnessValidationIssues,
   systemOfferFreshnessClock,
   type OfferFreshnessClock,
 } from './providers/offer-freshness.ts';
@@ -448,6 +449,7 @@ function assertCurrentPlanningReplayDescendants(
   manifest: ReturnType<typeof providerManifestLineage>,
   rankedOptions: readonly PersistedRankedOptionLineage[],
   descendants: PlanningReplayDescendants,
+  freshnessClock: OfferFreshnessClock,
 ): void {
   const optionIds = new Set(rankedOptions.map((option) => option.ID));
   const rankedOptionById = new Map(rankedOptions.map((option) => [option.ID, option] as const));
@@ -537,6 +539,10 @@ function assertCurrentPlanningReplayDescendants(
             record.resultCount > 0,
         ).length === 1);
     const exactProviderSource = exactInternalSource || providerEntry !== undefined;
+    const selectableOfferIsFresh =
+      providerEntry?.mode !== 'LIVE' ||
+      (providerEntry.role !== 'TRANSPORT' && providerEntry.role !== 'ACCOMMODATION') ||
+      sourceFreshnessValidationIssues(snapshot, freshnessClock).length === 0;
     return (
       hasCurrentReplayManifestLineage(
         source,
@@ -551,7 +557,8 @@ function assertCurrentPlanningReplayDescendants(
       /^[A-Z0-9_:, ]+$/.test(source.contexts) &&
       source.demonstrationData === (source.sourceType !== 'LIVE') &&
       exactProviderSource &&
-      exactProviderAuditBinding
+      exactProviderAuditBinding &&
+      selectableOfferIsFresh
     );
   });
   const everyOptionHasSources = [...optionIds].every((optionId) =>
@@ -1461,6 +1468,7 @@ export default class TripPlannerService extends cds.ApplicationService {
         providerManifest: ProviderConfigurationManifest,
         providerLineage: ReturnType<typeof providerManifestLineage>,
         requestFingerprint: string,
+        freshnessClock: OfferFreshnessClock,
       ): Promise<unknown | undefined> => {
         const existingRun = (await transaction.run(
           SELECT.one.from(PersistedPlanningRuns).where({
@@ -1510,6 +1518,7 @@ export default class TripPlannerService extends cds.ApplicationService {
           providerLineage,
           existingOptions,
           await readReplayDescendants(transaction, existingRun.ID),
+          freshnessClock,
         );
         return transaction.run(
           SELECT.one.from(PersistedPlanningRuns).where({ ID: existingRun.ID }),
@@ -1519,6 +1528,7 @@ export default class TripPlannerService extends cds.ApplicationService {
       try {
         const database = cds.db;
         if (!database) throw new Error('The planning database is not connected.');
+        const freshnessClock = this.createPlanningFreshnessClock();
         const checkpoint = await database.tx(async (transaction) => {
           const current = (await transaction.run(SELECT.one.from(TripRequests).where({ ID }))) as
             PersistedTripRequest | undefined;
@@ -1564,6 +1574,7 @@ export default class TripPlannerService extends cds.ApplicationService {
             providerManifest,
             providerLineage,
             requestFingerprint,
+            freshnessClock,
           );
           if (currentReplay !== undefined) {
             return {
@@ -1686,7 +1697,7 @@ export default class TripPlannerService extends cds.ApplicationService {
           destinations: REFERENCE_DESTINATIONS,
           providers: this.createPlanningProviders(),
           providerManifest,
-          freshnessClock: this.createPlanningFreshnessClock(),
+          freshnessClock,
         });
         const bundle = buildPlanningPersistenceBundle({
           tripRequestId: ID,
@@ -1879,6 +1890,7 @@ export default class TripPlannerService extends cds.ApplicationService {
               currentProviderManifest,
               currentProviderLineage,
               currentRequestFingerprint,
+              freshnessClock,
             );
           });
           if (concurrentReplay !== undefined) return concurrentReplay;

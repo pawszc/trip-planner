@@ -53,6 +53,11 @@ function strictInstant(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function localCalendarDate(value: string): string | null {
+  const date = /^(\d{4}-\d{2}-\d{2})T/u.exec(value)?.[1] ?? '';
+  return parseStrictIsoDate(date) === null ? null : date;
+}
+
 /** Provider IDs do not participate in semantic transport + hotel identity. */
 export function candidateSemanticSignature(candidate: TripCandidate): string {
   const transport = candidate.transport;
@@ -141,21 +146,22 @@ function invalidDates(candidate: TripCandidate, context: PlanningContext): reado
   const outboundArrival = strictInstant(candidate.transport.outbound.arrivalAt);
   const returnDeparture = strictInstant(candidate.transport.return.departureAt);
   const returnArrival = strictInstant(candidate.transport.return.arrivalAt);
-  const tripStart = parseStrictIsoDate(context.startDate) ?? Number.NaN;
-  const tripEndStart = parseStrictIsoDate(context.endDate);
-  const tripEnd = tripEndStart === null ? Number.NaN : tripEndStart + 86_400_000 - 1;
+  const outboundDepartureDate = localCalendarDate(candidate.transport.outbound.departureAt);
+  const returnArrivalDate = localCalendarDate(candidate.transport.return.arrivalAt);
   if (
     outboundDeparture === null ||
     outboundArrival === null ||
     returnDeparture === null ||
-    returnArrival === null
+    returnArrival === null ||
+    outboundDepartureDate === null ||
+    returnArrivalDate === null
   ) {
     issues.push('transport-instant-format');
   } else {
     if (outboundDeparture >= outboundArrival) issues.push('outbound-order');
     if (outboundArrival >= returnDeparture) issues.push('stay-window-order');
     if (returnDeparture >= returnArrival) issues.push('return-order');
-    if (outboundDeparture < tripStart || returnArrival > tripEnd)
+    if (outboundDepartureDate < context.startDate || returnArrivalDate > context.endDate)
       issues.push('outside-trip-window');
     if (
       Math.floor((outboundArrival - outboundDeparture) / 60_000) !==

@@ -1337,7 +1337,7 @@ describe('TripPlannerService', () => {
     }
   });
 
-  it('injects the Duffel profile through TripPlannerService with real offline CAP persistence', async () => {
+  it('injects the Duffel profile and fails replay closed after selected offers expire', async () => {
     const created = await POST('/trip-planner/TripRequests', {
       ...referenceTripRequestODataPayload,
       hardConstraints_allowFlight: true,
@@ -1374,7 +1374,8 @@ describe('TripPlannerService', () => {
       }
       return new Response(JSON.stringify(response), { status: 200 });
     });
-    const providerClock = () => new Date('2026-10-01T12:00:00.000Z');
+    let freshnessNow = '2026-10-01T12:00:00.000Z';
+    const providerClock = () => new Date(freshnessNow);
     const profile = createDuffelPlanningProfile({
       environment: 'TEST',
       httpClient: new ProviderHttpClient({
@@ -1394,7 +1395,8 @@ describe('TripPlannerService', () => {
     const originalProviders = service.createPlanningProviders;
     const originalManifest = service.createPlanningProviderManifest;
     const originalFreshnessClock = service.createPlanningFreshnessClock;
-    service.createPlanningProviders = () => profile.providers;
+    const providerFactory = vi.fn(() => profile.providers);
+    service.createPlanningProviders = providerFactory;
     service.createPlanningProviderManifest = () => profile.manifest;
     service.createPlanningFreshnessClock = () => candidateFreshnessClock;
 
@@ -1411,6 +1413,15 @@ describe('TripPlannerService', () => {
       const replay = await startReferencePlanning(tripRequest.ID);
       expect(replay.ID).toBe(planningRun.ID);
       expect(transport).toHaveBeenCalledTimes(8);
+      expect(providerFactory).toHaveBeenCalledTimes(1);
+
+      freshnessNow = '2026-10-01T13:00:00.000Z';
+      await expect(startReferencePlanning(tripRequest.ID)).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      expect(transport).toHaveBeenCalledTimes(8);
+      expect(providerFactory).toHaveBeenCalledTimes(1);
       const options = await readPlanningCollection<RankedOptionResponse>(
         'RankedOptions',
         'planningRun_ID',
@@ -1422,6 +1433,13 @@ describe('TripPlannerService', () => {
         'MOST_CONVENIENT',
       ]);
       expect(options.every((option) => option.transportMode === 'FLIGHT')).toBe(true);
+      await expect(
+        readPlanningCollection<PlanningRunResponse>(
+          'PlanningRuns',
+          'tripRequest_ID',
+          tripRequest.ID,
+        ),
+      ).resolves.toHaveLength(1);
     } finally {
       service.createPlanningProviders = originalProviders;
       service.createPlanningProviderManifest = originalManifest;

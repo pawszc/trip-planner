@@ -908,6 +908,31 @@ describe('Duffel HTTP/provider boundary', () => {
     ]);
   });
 
+  it('rejects conflicting offers that reuse one Duffel offer ID', async () => {
+    const fixture = duffelFixture();
+    const conflicting = structuredClone(fixture.data.offers[0]!);
+    conflicting.expires_at = '2026-10-01T14:00:00.000Z';
+    fixture.data.offers.push(conflicting);
+    const scope = new ProviderExecutionScope();
+
+    const error = await provider(async () => new Response(JSON.stringify(fixture), { status: 200 }))
+      .search(request, executionOptions(scope))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ProviderExecutionError);
+    expect(error).toMatchObject({
+      category: 'PARTIAL_DESTINATION',
+      evidence: { underlyingCategory: 'INVALID_SCHEMA', destinationCode: 'PRG' },
+    });
+    expect(scope.getAuditEvents()).toEqual([
+      expect.objectContaining({
+        status: 'FAILED',
+        failureCategory: 'PARTIAL_DESTINATION',
+        underlyingFailureCategory: 'INVALID_SCHEMA',
+      }),
+    ]);
+  });
+
   it('keeps different operating flights with identical aggregate times and prices', async () => {
     const fixture = duffelFixture();
     const distinctFlight = structuredClone(fixture.data.offers[0]!);

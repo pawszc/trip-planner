@@ -484,4 +484,57 @@ describe('candidate hard filtering', () => {
     });
     expect(reasons.map((reason) => reason.code)).toContain('INVALID_DATES');
   });
+
+  it('uses the explicit local calendar date for a departure near the UTC boundary', () => {
+    const candidate = candidateFixture();
+    const result = validateCandidate(
+      {
+        ...candidate,
+        transport: {
+          ...candidate.transport,
+          outbound: {
+            ...candidate.transport.outbound,
+            departureAt: '2026-10-10T00:30:00.000+02:00',
+            arrivalAt: '2026-10-10T04:30:00.000+02:00',
+          },
+        },
+      },
+      {
+        ...candidateContext,
+        hardConstraints: { ...candidateContext.hardConstraints, earliestDepartureTime: null },
+      },
+    );
+
+    expect(result.reasons.map((reason) => reason.code)).not.toContain('INVALID_DATES');
+  });
+
+  it('rejects a return arriving on the next local calendar day even when its UTC day still fits', () => {
+    const candidate = candidateFixture();
+    const result = validateCandidate(
+      {
+        ...candidate,
+        transport: {
+          ...candidate.transport,
+          return: {
+            ...candidate.transport.return,
+            departureAt: '2026-10-13T20:30:00.000+02:00',
+            arrivalAt: '2026-10-14T00:30:00.000+02:00',
+          },
+        },
+      },
+      {
+        ...candidateContext,
+        hardConstraints: { ...candidateContext.hardConstraints, latestReturnTime: null },
+      },
+    );
+
+    expect(result.reasons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'INVALID_DATES',
+          details: { issues: expect.arrayContaining(['outside-trip-window']) },
+        }),
+      ]),
+    );
+  });
 });
