@@ -5,6 +5,7 @@ import { createProviderFingerprint, type ProviderJsonValue } from '../provider-f
 import { validateTransportSearchRequest } from '../provider-request-validation.ts';
 import {
   DUFFEL_MAX_ADULTS_PER_SEARCH,
+  DUFFEL_MAX_CONNECTIONS_PER_SLICE,
   DUFFEL_MAX_DESTINATIONS_PER_SEARCH,
   DUFFEL_MAX_OFFERS_PER_DESTINATION,
   DUFFEL_SEARCH_POLICY_VERSION,
@@ -93,6 +94,7 @@ export function createDuffelSearchPolicyIdentity(originCatalog: DuffelOriginCata
     policyVersion: DUFFEL_SEARCH_POLICY_VERSION,
     supplierTimeoutMs: DUFFEL_SUPPLIER_TIMEOUT_MS,
     maximumAdults: DUFFEL_MAX_ADULTS_PER_SEARCH,
+    maximumConnectionsPerSlice: DUFFEL_MAX_CONNECTIONS_PER_SLICE,
     maximumDestinations: DUFFEL_MAX_DESTINATIONS_PER_SEARCH,
     maximumOffersPerDestination: DUFFEL_MAX_OFFERS_PER_DESTINATION,
     maximumResponseBytes: DUFFEL_MAX_RESPONSE_BYTES,
@@ -177,7 +179,7 @@ export function buildDuffelOfferRequestPlans(
         data: {
           cabin_class: 'economy',
           include_split_ticket: false,
-          max_connections: 1,
+          max_connections: DUFFEL_MAX_CONNECTIONS_PER_SLICE,
           passengers: Array.from({ length: request.adults }, () => ({ type: 'adult' })),
           slices: [
             {

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createProviderFingerprint } from '../provider-fingerprint.ts';
+import { DUFFEL_MAX_AMOUNT_CHARACTERS, DUFFEL_MAX_SEGMENTS_PER_SLICE } from './duffel-contracts.ts';
 
 const safeId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9]{6,120}$`));
 const iataCode = z.string().regex(/^[A-Z]{3}$/);
@@ -9,7 +10,10 @@ const safeText = z
   .min(1)
   .max(160)
   .refine((value) => ![...value].some((character) => (character.codePointAt(0) ?? 0) <= 31));
-const amount = z.string().regex(/^\d+(?:\.\d{1,2})?$/);
+const amount = z
+  .string()
+  .max(DUFFEL_MAX_AMOUNT_CHARACTERS)
+  .regex(/^\d+(?:\.\d{1,2})?$/);
 const expiryInstant = z.string().datetime({ offset: true });
 const localInstant = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/);
 const duration = z.string().regex(/^PT(?=\d)(?:\d+H)?(?:\d+M)?$/);
@@ -41,7 +45,7 @@ const sliceSchema = z.object({
   duration,
   origin: locationSchema,
   destination: locationSchema,
-  segments: z.array(segmentSchema).min(1).max(8),
+  segments: z.array(segmentSchema).min(1).max(DUFFEL_MAX_SEGMENTS_PER_SLICE),
 });
 
 const availableServiceSchema = z.object({
@@ -86,6 +90,10 @@ export const duffelOfferRequestResponseSchema = z.object({
 
 export const DUFFEL_UPSTREAM_SCHEMA_FINGERPRINT = createProviderFingerprint({
   contract: 'duffel-offer-request-offers-v2',
+  constraints: {
+    maximumAmountCharacters: DUFFEL_MAX_AMOUNT_CHARACTERS,
+    maximumSegmentsPerSlice: DUFFEL_MAX_SEGMENTS_PER_SLICE,
+  },
   projection: [
     'offer.id',
     'offer.expires_at',

@@ -73,6 +73,7 @@ function cancelResponseBodySafely(response: Response): void {
 async function readBoundedJson(response: Response): Promise<unknown> {
   const declaredLength = declaredResponseLength(response);
   if (declaredLength !== null && declaredLength > DUFFEL_MAX_RESPONSE_BYTES) {
+    cancelResponseBodySafely(response);
     throw new ProviderHttpClientError({ kind: 'INVALID_JSON' });
   }
   if (response.body === null) {
@@ -127,7 +128,12 @@ export class ProviderHttpClient {
     ) {
       throw new TypeError('Provider HTTP path is not allowlisted.');
     }
-    const token = await this.token();
+    let token: unknown;
+    try {
+      token = await this.token();
+    } catch {
+      throw new ProviderHttpClientError({ kind: 'NETWORK' });
+    }
     if (!safeToken(token)) throw new ProviderHttpClientError({ kind: 'NETWORK' });
 
     let response: Response;

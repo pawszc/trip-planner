@@ -17,13 +17,17 @@ import {
 } from '../../srv/providers/duffel/duffel-search-policy.js';
 import {
   DUFFEL_MAX_ADULTS_PER_SEARCH,
+  DUFFEL_MAX_AMOUNT_CHARACTERS,
+  DUFFEL_MAX_CONNECTIONS_PER_SLICE,
   DUFFEL_MAX_DESTINATIONS_PER_SEARCH,
+  DUFFEL_MAX_SEGMENTS_PER_SLICE,
 } from '../../srv/providers/duffel/duffel-contracts.js';
 import { duffelOfferRequestResponseSchema } from '../../srv/providers/duffel/duffel-schemas.js';
 import {
   DUFFEL_API_BASE_URL,
   DUFFEL_MAX_RESPONSE_BYTES,
   ProviderHttpClient,
+  ProviderHttpClientError,
   type ProviderHttpTransport,
 } from '../../srv/providers/http/provider-http-client.js';
 import { ProviderExecutionScope } from '../../srv/providers/provider-execution.js';
@@ -100,6 +104,8 @@ describe('Duffel Search Policy v1', () => {
     expect(DUFFEL_DESTINATION_IATA_CATALOG_VERSION).toBe('duffel-destination-iata-catalog-v1');
     expect(DUFFEL_MAX_ADULTS_PER_SEARCH).toBe(9);
     expect(DUFFEL_MAX_DESTINATIONS_PER_SEARCH).toBe(8);
+    expect(DUFFEL_MAX_CONNECTIONS_PER_SLICE).toBe(1);
+    expect(DUFFEL_MAX_SEGMENTS_PER_SLICE).toBe(2);
     expect(plans.map((plan) => plan.destination.code)).toEqual(['PRG', 'VIE']);
     expect(plans[0]).toMatchObject({
       path: '/air/offer_requests?return_offers=true&supplier_timeout=8000&view=offers',
@@ -331,9 +337,24 @@ describe('Duffel schemas and mapper', () => {
         fixture.data.offers[0]!.total_amount = '12.345';
       },
     ],
+    [
+      'unbounded amount',
+      (fixture: ReturnType<typeof duffelFixture>) => {
+        fixture.data.offers[0]!.total_amount = '1'.repeat(DUFFEL_MAX_AMOUNT_CHARACTERS + 1);
+      },
+    ],
   ] as const)('rejects malformed fixture: %s', (_label, mutate) => {
     const fixture = duffelFixture();
     mutate(fixture);
+    expect(duffelOfferRequestResponseSchema.safeParse(fixture).success).toBe(false);
+  });
+
+  it('rejects an offer exceeding Search Policy max_connections before mapping', () => {
+    const fixture = duffelFixture();
+    const segments = fixture.data.offers[0]!.slices[0]!.segments;
+    segments.push(structuredClone(segments[0]!), structuredClone(segments[0]!));
+
+    expect(segments).toHaveLength(DUFFEL_MAX_SEGMENTS_PER_SLICE + 1);
     expect(duffelOfferRequestResponseSchema.safeParse(fixture).success).toBe(false);
   });
 
@@ -636,6 +657,66 @@ describe('Duffel HTTP/provider boundary', () => {
     expect(JSON.stringify((error as ProviderExecutionError).toSafeJSON())).not.toContain(
       'secret-test-token',
     );
+  });
+
+  it('cancels an oversized successful response body before returning a safe error', async () => {
+    const cancel = vi.fn(async () => {
+      throw new Error('raw oversized cancellation secret-test-token');
+    });
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const scope = new ProviderExecutionScope();
+    const error = await provider(
+      async () =>
+        new Response(body, {
+          status: 200,
+          headers: { 'content-length': String(DUFFEL_MAX_RESPONSE_BYTES + 1) },
+        }),
+    )
+      .search(request, executionOptions(scope))
+      .catch((caught: unknown) => caught);
+
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+    expect(error).toBeInstanceOf(ProviderExecutionError);
+    expect(error).toMatchObject({
+      category: 'PARTIAL_DESTINATION',
+      evidence: {
+        underlyingCategory: 'INVALID_SCHEMA',
+        destinationCode: 'PRG',
+      },
+    });
+    expect(JSON.stringify((error as ProviderExecutionError).toSafeJSON())).not.toContain(
+      'raw oversized cancellation',
+    );
+    expect(JSON.stringify((error as ProviderExecutionError).toSafeJSON())).not.toContain(
+      'secret-test-token',
+    );
+  });
+
+  it('normalizes a token resolver failure before it crosses the HTTP boundary', async () => {
+    const transport = vi.fn<ProviderHttpTransport>();
+    const token = vi.fn(async () => {
+      throw new Error('raw credential resolver secret-test-token');
+    });
+    const httpClient = new ProviderHttpClient({
+      baseUrl: DUFFEL_API_BASE_URL,
+      token,
+      transport,
+      now: clock,
+    });
+    const error = await httpClient
+      .postJson(
+        '/air/offer_requests?return_offers=true&supplier_timeout=8000&view=offers',
+        {},
+        new AbortController().signal,
+      )
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ProviderHttpClientError);
+    expect(error).toMatchObject({ kind: 'NETWORK' });
+    expect(String(error)).not.toContain('raw credential resolver');
+    expect(String(error)).not.toContain('secret-test-token');
+    expect(token).toHaveBeenCalledTimes(1);
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it('drops an offer expired exactly at the injected mapper checkpoint', async () => {
