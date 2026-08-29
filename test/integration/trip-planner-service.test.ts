@@ -121,6 +121,8 @@ interface PlanningRunResponse {
   rejectedCandidateCount: number;
   selectedOptionCount: number;
   providerExecutionCallCount: number | null;
+  providerResultFingerprint: string | null;
+  selectedSourceFingerprint: string | null;
   errorCode: string | null;
   errorMessage: string | null;
 }
@@ -223,6 +225,7 @@ interface OfferChargeCollectionResponse {
 }
 
 interface ProviderExecutionRecord {
+  ID: string;
   planningRun_ID: string;
   sequence: number;
   providerManifestVersion: string;
@@ -1078,6 +1081,24 @@ describe('TripPlannerService', () => {
     ).resolves.toHaveLength(3);
   });
 
+  it('preserves pre-4B1 current-v2 fixture replay when durable bindings are absent', async () => {
+    const tripRequest = await createConfirmedReferenceTrip();
+    const first = await startReferencePlanning(tripRequest.ID);
+    expect(first.providerResultFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.selectedSourceFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    await cds.db.run(
+      cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+        .set({ providerResultFingerprint: null, selectedSourceFingerprint: null })
+        .where({ ID: first.ID }),
+    );
+
+    const repeat = await startReferencePlanning(tripRequest.ID);
+
+    expect(repeat.ID).toBe(first.ID);
+    expect(repeat.providerResultFingerprint).toBeNull();
+    expect(repeat.selectedSourceFingerprint).toBeNull();
+  });
+
   it('coalesces concurrent startPlanning calls into one planning execution', async () => {
     const tripRequest = await createConfirmedReferenceTrip();
     const service = cds.services.TripPlannerService as unknown as {
@@ -1408,12 +1429,116 @@ describe('TripPlannerService', () => {
         providerFixtureVersion: null,
         providerExecutionCallCount: 24,
       });
+      expect(planningRun.providerResultFingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(planningRun.selectedSourceFingerprint).toMatch(/^[0-9a-f]{64}$/);
       expect(candidateFreshnessClock).toHaveBeenCalled();
       expect(transport).toHaveBeenCalledTimes(8);
       const replay = await startReferencePlanning(tripRequest.ID);
       expect(replay.ID).toBe(planningRun.ID);
       expect(transport).toHaveBeenCalledTimes(8);
       expect(providerFactory).toHaveBeenCalledTimes(1);
+
+      const liveSources = await readPlanningCollection<SourceSnapshotResponse>(
+        'SourceSnapshots',
+        'planningRun_ID',
+        planningRun.ID,
+      );
+      const duffelSource = liveSources.find((source) => source.provider === 'Duffel');
+      if (duffelSource === undefined || duffelSource.attribution === null) {
+        throw new TypeError('Expected a persisted Duffel source with attribution.');
+      }
+      const originalAttribution = duffelSource.attribution;
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.SourceSnapshots')
+          .set({ attribution: 'Duffel; operated by Tampered Safe Airline' })
+          .where({ ID: duffelSource.ID }),
+      );
+      await expect(startReferencePlanning(tripRequest.ID)).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      expect(transport).toHaveBeenCalledTimes(8);
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.SourceSnapshots')
+          .set({ attribution: originalAttribution })
+          .where({ ID: duffelSource.ID }),
+      );
+      const originalProviderResultFingerprint = planningRun.providerResultFingerprint;
+      if (originalProviderResultFingerprint === null) {
+        throw new TypeError('Expected a persisted provider result fingerprint.');
+      }
+      const tamperedProviderResultFingerprint =
+        originalProviderResultFingerprint === 'f'.repeat(64) ? 'e'.repeat(64) : 'f'.repeat(64);
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+          .set({ providerResultFingerprint: tamperedProviderResultFingerprint })
+          .where({ ID: planningRun.ID }),
+      );
+      await expect(startReferencePlanning(tripRequest.ID)).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      expect(transport).toHaveBeenCalledTimes(8);
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+          .set({ providerResultFingerprint: originalProviderResultFingerprint })
+          .where({ ID: planningRun.ID }),
+      );
+      const providerExecutionRecord = (await cds.db.run(
+        cds.ql.SELECT.one.from('trip.planner.ProviderExecutionRecords').where({
+          planningRun_ID: planningRun.ID,
+        }),
+      )) as ProviderExecutionRecord | undefined;
+      if (
+        providerExecutionRecord === undefined ||
+        providerExecutionRecord.resultFingerprint === null
+      ) {
+        throw new TypeError('Expected a successful provider execution result fingerprint.');
+      }
+      const originalAuditResultFingerprint = providerExecutionRecord.resultFingerprint;
+      const tamperedAuditResultFingerprint =
+        originalAuditResultFingerprint === 'd'.repeat(64) ? 'c'.repeat(64) : 'd'.repeat(64);
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.ProviderExecutionRecords')
+          .set({ resultFingerprint: tamperedAuditResultFingerprint })
+          .where({ ID: providerExecutionRecord.ID }),
+      );
+      await expect(startReferencePlanning(tripRequest.ID)).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      expect(transport).toHaveBeenCalledTimes(8);
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.ProviderExecutionRecords')
+          .set({ resultFingerprint: originalAuditResultFingerprint })
+          .where({ ID: providerExecutionRecord.ID }),
+      );
+      const originalSelectedSourceFingerprint = planningRun.selectedSourceFingerprint;
+      if (originalSelectedSourceFingerprint === null) {
+        throw new TypeError('Expected a persisted selected source fingerprint.');
+      }
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+          .set({ providerResultFingerprint: null, selectedSourceFingerprint: null })
+          .where({ ID: planningRun.ID }),
+      );
+      await expect(startReferencePlanning(tripRequest.ID)).rejects.toMatchObject({
+        status: 409,
+        response: { data: { error: { code: 'PLANNING_STATE_INCONSISTENT' } } },
+      });
+      expect(transport).toHaveBeenCalledTimes(8);
+      await cds.db.run(
+        cds.ql.UPDATE.entity('trip.planner.PlanningRuns')
+          .set({
+            providerResultFingerprint: originalProviderResultFingerprint,
+            selectedSourceFingerprint: originalSelectedSourceFingerprint,
+          })
+          .where({ ID: planningRun.ID }),
+      );
+      await expect(startReferencePlanning(tripRequest.ID)).resolves.toMatchObject({
+        ID: planningRun.ID,
+      });
+      expect(transport).toHaveBeenCalledTimes(8);
 
       freshnessNow = '2026-10-01T13:00:00.000Z';
       await expect(startReferencePlanning(tripRequest.ID)).rejects.toMatchObject({
@@ -1506,6 +1631,8 @@ describe('TripPlannerService', () => {
           providerManifestFingerprint: null,
           providerManifestJson: null,
           providerExecutionCallCount: null,
+          providerResultFingerprint: null,
+          selectedSourceFingerprint: null,
         })
         .where({ ID: currentRun.ID }),
     );

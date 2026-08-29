@@ -106,12 +106,18 @@ import {
   type OfferFreshnessClock,
 } from './providers/offer-freshness.ts';
 import type { ProviderCallAuditEvent } from './providers/provider-execution.ts';
+import { isSha256Fingerprint } from './providers/provider-fingerprint.ts';
 import {
   isLegacyFixtureCompatibleManifest,
   MOCK_PROVIDER_MANIFEST,
   providerManifestLineage,
   type ProviderConfigurationManifest,
 } from './providers/provider-manifest.ts';
+import {
+  createSelectedSourceBindingFingerprint,
+  type SelectedSourceBinding,
+} from './providers/selected-source-binding.ts';
+import { createProviderResultSetFingerprint } from './providers/provider-result-set.ts';
 import { canonicalSourceSnapshot, isCompleteSourceSnapshot } from './providers/source-snapshot.ts';
 import { SCORE_VERSION } from './ranking/candidate-scoring.ts';
 import { INTERNAL_COST_FIXTURE_VERSION } from './ranking/budget.ts';
@@ -144,12 +150,16 @@ interface PersistedPlanningRun {
   rejectedCandidateCount: number;
   selectedOptionCount: number;
   providerExecutionCallCount: number | null;
+  providerResultFingerprint: string | null;
+  selectedSourceFingerprint: string | null;
   errorCode: string | null;
   errorMessage: string | null;
 }
 
 interface PersistedRankedOptionLineage {
   ID: string;
+  rank: number;
+  candidateId: string;
   destinationCode: string;
   tripRequest_ID: string;
   workflowRun_ID: string;
@@ -460,6 +470,7 @@ function assertCurrentPlanningReplayDescendants(
   const collectionById = new Map(
     descendants.offerChargeCollections.map((collection) => [collection.ID, collection] as const),
   );
+  const selectedSourceBindings: SelectedSourceBinding[] = [];
   const validSources = descendants.sourceSnapshots.every((source) => {
     const snapshot = {
       contractVersion: source.sourceContractVersion,
@@ -543,7 +554,7 @@ function assertCurrentPlanningReplayDescendants(
       providerEntry?.mode !== 'LIVE' ||
       (providerEntry.role !== 'TRANSPORT' && providerEntry.role !== 'ACCOMMODATION') ||
       sourceFreshnessValidationIssues(snapshot, freshnessClock).length === 0;
-    return (
+    const validSource =
       hasCurrentReplayManifestLineage(
         source,
         tripRequestId,
@@ -558,9 +569,38 @@ function assertCurrentPlanningReplayDescendants(
       source.demonstrationData === (source.sourceType !== 'LIVE') &&
       exactProviderSource &&
       exactProviderAuditBinding &&
-      selectableOfferIsFresh
-    );
+      selectableOfferIsFresh;
+    if (validSource && rankedOption !== undefined) {
+      selectedSourceBindings.push({
+        optionRank: rankedOption.rank,
+        candidateId: rankedOption.candidateId,
+        source: snapshot,
+      });
+    }
+    return validSource;
   });
+  let exactDurableResultBinding = false;
+  if (validSources) {
+    try {
+      exactDurableResultBinding =
+        isSha256Fingerprint(planningRun.providerResultFingerprint) &&
+        isSha256Fingerprint(planningRun.selectedSourceFingerprint) &&
+        planningRun.selectedSourceFingerprint ===
+          createSelectedSourceBindingFingerprint(
+            selectedSourceBindings,
+            planningRun.providerResultFingerprint,
+          );
+    } catch {
+      exactDurableResultBinding = false;
+    }
+  }
+  const requiresDurableResultBinding = providerManifest.entries.some(
+    (entry) => entry.mode === 'LIVE',
+  );
+  const exactPre4b1FixtureBinding =
+    !requiresDurableResultBinding &&
+    planningRun.providerResultFingerprint === null &&
+    planningRun.selectedSourceFingerprint === null;
   const everyOptionHasSources = [...optionIds].every((optionId) =>
     descendants.sourceSnapshots.some((source) => source.rankedOption_ID === optionId),
   );
@@ -702,6 +742,15 @@ function assertCurrentPlanningReplayDescendants(
   } catch {
     validAuditContract = false;
   }
+  let exactProviderResultSet = false;
+  if (validAuditLineage && validAuditContract) {
+    try {
+      exactProviderResultSet =
+        planningRun.providerResultFingerprint === createProviderResultSetFingerprint(auditEvents);
+    } catch {
+      exactProviderResultSet = false;
+    }
+  }
   const validRejections = [
     ...descendants.rejectionReasons,
     ...descendants.rejectionSummaries,
@@ -717,6 +766,8 @@ function assertCurrentPlanningReplayDescendants(
 
   if (
     !validSources ||
+    (!exactDurableResultBinding && !exactPre4b1FixtureBinding) ||
+    (exactDurableResultBinding && !exactProviderResultSet) ||
     !everyOptionHasSources ||
     !everyMandatoryTotalHasSource ||
     !validBudgets ||
@@ -876,6 +927,8 @@ function assertLegacyPlanningReplay(
     planningRun.engineVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.engineVersion &&
     planningRun.scoringVersion === LEGACY_PLANNING_RUN_V0_LINEAGE.scoringVersion &&
     planningRun.providerExecutionCallCount === null &&
+    planningRun.providerResultFingerprint === null &&
+    planningRun.selectedSourceFingerprint === null &&
     planningRun.selectedOptionCount === 3;
 
   if (
@@ -923,7 +976,9 @@ function assertLegacyPlanningReplayV1(
     hasNoProviderManifestLineage(planningRun) &&
     planningRun.engineVersion === LEGACY_PLANNING_RUN_V1_LINEAGE.engineVersion &&
     planningRun.scoringVersion === LEGACY_PLANNING_RUN_V1_LINEAGE.scoringVersion &&
-    planningRun.providerExecutionCallCount === null;
+    planningRun.providerExecutionCallCount === null &&
+    planningRun.providerResultFingerprint === null &&
+    planningRun.selectedSourceFingerprint === null;
   const succeededRun =
     planningRun.status === 'SUCCEEDED' &&
     workflowRun.state === 'OPTIONS_READY' &&

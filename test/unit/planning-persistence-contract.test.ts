@@ -41,6 +41,7 @@ function engineResult(options: readonly RankedOption[]): CandidateEngineResult {
     shortage: null,
     providerExecution: {
       policyVersion: MOCK_PROVIDER_MANIFEST.executionPolicy.version,
+      resultFingerprint: 'a'.repeat(64),
       calls: [],
     },
   };
@@ -82,6 +83,44 @@ function rankedOption(
 }
 
 describe('planning persistence contract', () => {
+  it('persists deterministic provider and selected-source commitments', () => {
+    const candidate = candidateFixture();
+    const options = [
+      rankedOption(candidate, 1, 'BEST_OVERALL'),
+      rankedOption(candidate, 2, 'MOST_CONVENIENT'),
+      rankedOption(candidate, 3, 'BEST_VALUE'),
+    ];
+
+    const forward = buildPlanningPersistenceBundle(persistenceInput(engineResult(options)));
+    const reverse = buildPlanningPersistenceBundle(
+      persistenceInput(engineResult([...options].reverse())),
+    );
+
+    expect(forward.planningRun.providerResultFingerprint).toBe('a'.repeat(64));
+    expect(forward.planningRun.selectedSourceFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(reverse.planningRun.selectedSourceFingerprint).toBe(
+      forward.planningRun.selectedSourceFingerprint,
+    );
+  });
+
+  it('rejects a malformed aggregate provider result fingerprint', () => {
+    const candidate = candidateFixture();
+    const result = engineResult([
+      rankedOption(candidate, 1, 'BEST_OVERALL'),
+      rankedOption(candidate, 2, 'MOST_CONVENIENT'),
+      rankedOption(candidate, 3, 'BEST_VALUE'),
+    ]);
+
+    expect(() =>
+      buildPlanningPersistenceBundle(
+        persistenceInput({
+          ...result,
+          providerExecution: { ...result.providerExecution, resultFingerprint: 'invalid' },
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_PLANNING_RESULT' }));
+  });
+
   it('rejects a SourceSnapshot id collision across selected options', () => {
     const first = candidateFixture();
     const baseSecond = candidateFixture();

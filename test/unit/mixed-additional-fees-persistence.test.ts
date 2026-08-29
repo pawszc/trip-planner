@@ -84,6 +84,7 @@ function successfulResult(candidate: TripCandidate): CandidateEngineResult {
     shortage: null,
     providerExecution: {
       policyVersion: 'provider-execution-policy-v1',
+      resultFingerprint: 'a'.repeat(64),
       calls: [],
     },
   };

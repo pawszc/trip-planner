@@ -535,6 +535,8 @@ async function convertPlanningRunToLegacyV0(
         providerManifestFingerprint: null,
         providerManifestJson: null,
         providerExecutionCallCount: null,
+        providerResultFingerprint: null,
+        selectedSourceFingerprint: null,
       })
       .where({ ID: planningRunId }),
   );
@@ -628,6 +630,8 @@ async function convertPlanningRunToLegacyV1(
         providerManifestFingerprint: null,
         providerManifestJson: null,
         providerExecutionCallCount: null,
+        providerResultFingerprint: null,
+        selectedSourceFingerprint: null,
       })
       .where({ ID: planningRunId }),
   );
@@ -1109,6 +1113,8 @@ describe('grounded option narrative CAP use case', () => {
         'providerManifestFingerprint',
         'providerManifestJson',
         'offerPricingContractVersion',
+        'providerResultFingerprint',
+        'selectedSourceFingerprint',
       ],
       RankedOptions: [
         'providerFixtureVersion',

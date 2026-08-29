@@ -9,7 +9,13 @@ const safeText = z
   .string()
   .min(1)
   .max(160)
-  .refine((value) => ![...value].some((character) => (character.codePointAt(0) ?? 0) <= 31));
+  .refine(
+    (value) =>
+      ![...value].some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159);
+      }),
+  );
 const amount = z
   .string()
   .max(DUFFEL_MAX_AMOUNT_CHARACTERS)
@@ -93,6 +99,10 @@ export const DUFFEL_UPSTREAM_SCHEMA_FINGERPRINT = createProviderFingerprint({
   constraints: {
     maximumAmountCharacters: DUFFEL_MAX_AMOUNT_CHARACTERS,
     maximumSegmentsPerSlice: DUFFEL_MAX_SEGMENTS_PER_SLICE,
+    safeText: {
+      maximumCharacters: 160,
+      rejectedControlRanges: ['U+0000-U+001F', 'U+007F-U+009F'],
+    },
   },
   projection: [
     'offer.id',

@@ -50,6 +50,7 @@ function resultFor(candidate: TripCandidate): CandidateEngineResult {
     shortage: null,
     providerExecution: {
       policyVersion: MOCK_PROVIDER_MANIFEST.executionPolicy.version,
+      resultFingerprint: 'a'.repeat(64),
       calls: [],
     },
   };

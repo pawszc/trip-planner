@@ -46,6 +46,7 @@ import {
   isCompleteSourceSnapshot,
 } from '../providers/source-snapshot.ts';
 import type { OfferFreshnessClock } from '../providers/offer-freshness.ts';
+import { createProviderResultSetFingerprint } from '../providers/provider-result-set.ts';
 import { buildCandidates, type CandidateBuilderResult } from '../ranking/candidate-builder.ts';
 import { filterCandidates, type CandidateValidationResult } from '../ranking/candidate-filter.ts';
 import { rankCandidates, type ScoredCandidate } from '../ranking/candidate-scoring.ts';
@@ -95,6 +96,7 @@ export interface CandidateEngineResult {
   shortage: CandidateShortage | null;
   providerExecution: {
     policyVersion: string;
+    resultFingerprint: string;
     calls: readonly ProviderCallAuditEvent[];
   };
 }
@@ -422,21 +424,39 @@ function providerSearchFailed(): DomainError {
   return new DomainError('PROVIDER_SEARCH_FAILED', 'Nie udało się pobrać danych do planowania.');
 }
 
+interface ProviderSearchResult<T> {
+  readonly result: T;
+  readonly resultFingerprint: string;
+}
+
 async function executeProviderSearch<T>(
   execution: ProviderExecutionScope,
   entry: ProviderManifestEntry,
   descriptor: ProviderCallDescriptor<T>,
   invoke: (options: ProviderCallOptions) => Promise<T>,
-): Promise<T> {
+): Promise<ProviderSearchResult<T>> {
   if (entry.mode === 'FIXTURE') {
-    return execution.execute(descriptor, ({ signal }) =>
-      invoke({
-        signal,
-        executeUpstream: async () => {
-          throw new TypeError('Fixture adapters cannot create nested upstream calls.');
+    let resultFingerprint: string | undefined;
+    const result = await execution.execute(
+      {
+        ...descriptor,
+        resultFingerprint: (value) => {
+          resultFingerprint = descriptor.resultFingerprint(value);
+          return resultFingerprint;
         },
-      }),
+      },
+      ({ signal }) =>
+        invoke({
+          signal,
+          executeUpstream: async () => {
+            throw new TypeError('Fixture adapters cannot create nested upstream calls.');
+          },
+        }),
     );
+    if (resultFingerprint === undefined) {
+      throw new TypeError('Fixture provider result fingerprint was not finalized.');
+    }
+    return Object.freeze({ result, resultFingerprint });
   }
 
   let upstreamCallCount = 0;
@@ -469,7 +489,7 @@ async function executeProviderSearch<T>(
   ) {
     throw new TypeError('Live adapter result failed aggregate validation.');
   }
-  return result;
+  return Object.freeze({ result, resultFingerprint });
 }
 
 function assertSelectedFixtureQueryLineage(
@@ -675,7 +695,12 @@ export async function runCandidateEngine(
     throw providerSearchFailed();
   }
   execution.dispose();
-  const [transportOptions, stayGroups, placeGroups] = providerResults;
+  const providerExecutionCalls = execution.getAuditEvents();
+  const providerResultSetFingerprint = createProviderResultSetFingerprint(providerExecutionCalls);
+  const [transportSearch, staySearches, placeSearches] = providerResults;
+  const transportOptions = transportSearch.result;
+  const stayGroups = staySearches.map((search) => search.result);
+  const placeGroups = placeSearches.map((search) => search.result);
   const builder: CandidateBuilderResult = buildCandidates({
     context: input.context,
     destinations,
@@ -729,7 +754,8 @@ export async function runCandidateEngine(
     shortage: selected.shortage,
     providerExecution: {
       policyVersion: execution.policy.version,
-      calls: execution.getAuditEvents(),
+      resultFingerprint: providerResultSetFingerprint,
+      calls: providerExecutionCalls,
     },
   };
 }

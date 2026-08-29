@@ -129,11 +129,16 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   arithmetic, `UNKNOWN` services dla endpointowej fixture oraz osobną syntetyczną fixture
   services, envelope/per-offer validation z zachowaniem poprawnych siblings, ponad 200 ofert
   bez sztucznego limitu elementów, limit 64 MiB odpowiedzi, pełny segmentowy
-  sort/dedup/truncation, exact manifest identity przed pustym wynikiem oraz TEST lineage jako
-  `LIVE`;
+  sort/dedup/truncation, canonical ancillary order, izolację powtórzonego ancillary ID,
+  same-ID conflict obejmujący carrier attribution, exact manifest identity przed pustym wynikiem
+  oraz TEST lineage jako `LIVE`;
 - zamknięte 429/5xx/network/invalid JSON/schema/timeout/cancellation/partial-destination bez
   raw body, provider text, headerów, stack trace lub tokenu oraz dokładnie jeden
   `executeUpstream` permit per fizyczny request;
+- trwały fingerprint pełnego znormalizowanego provider result set oraz replay-time rekalkulację
+  tego fingerprintu z audytu i fingerprintu wiążącego wybrane kanoniczne źródła; zmiana
+  bezpiecznej atrybucji albo audit result hash w bazie kończy się fail-closed bez konstrukcji
+  providera i bez network;
 
 Scenariusz referencyjny 2B wymaga dokładnie 28 zbudowanych, 6 poprawnych i 22
 odrzuconych kandydatów. Wynik to Praga `BEST_OVERALL`, Wiedeń `MOST_CONVENIENT` i

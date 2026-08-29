@@ -90,7 +90,11 @@ aktywnej transakcji DB oraz krótki request write. Writer ponownie odczytuje bri
 przelicza fingerprint z aktualnego manifestu, a INSERT `PlanningRun` stanowi atomowy claim
 między instancjami. Przegrany writer po rollbacku sprawdza zgodny, committed wynik równoległego
 wykonania w nowej transakcji. Replay v2/v1/v0 nadal kończy się w read checkpoint przed
-konstrukcją providerów i bez write.
+konstrukcją providerów i bez write. Nowy run utrwala fingerprint pełnego znormalizowanego zestawu
+wyników providerów oraz osobny fingerprint wiążący go z kanonicznymi `SourceSnapshot` wybranych
+opcji. Current replay przelicza pierwsze zobowiązanie z bezpiecznych rekordów audytu, a drugie
+z potomków. Zmiana proweniencji albo result fingerprintu requestu nie może więc zostać
+zaakceptowana tylko dlatego, że audit nadal ma poprawny query hash.
 
 ## Deterministyczny silnik kandydatów
 
@@ -117,7 +121,8 @@ offer request per destynacja używa platformowego fetch wyłącznie przez `execu
 Search Policy v1 zamraża adults/economy/two-slice/no-split-ticket oraz bounded fan-out.
 Wstrzykiwany, wersjonowany katalog origin jest częścią identity manifestu i query. Zod stripuje
 envelope do allowlisty i waliduje każdą ofertę niezależnie, a mapper zachowuje wyłącznie jawne
-route/carrier/time/money/service facts. Pojedyncza błędna oferta nie usuwa poprawnych siblings,
+route/carrier/time/money/service facts. Services są sortowane kanonicznie, a powtórzony service ID
+odrzuca wyłącznie własną ofertę. Pojedyncza błędna oferta nie usuwa poprawnych siblings,
 ale niepusta odpowiedź bez poprawnej oferty jest błędem schematu. Granicą zasobów jest
 strumieniowy limit 64 MiB odpowiedzi po dekompresji, związany z Search Policy identity, a nie
 arbitralny limit liczby ofert. Brak `available_services` w odpowiedzi Offer Request zachowuje

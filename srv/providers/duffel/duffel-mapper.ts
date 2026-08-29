@@ -216,6 +216,17 @@ export function mapDuffelOffer(offer: DuffelOffer, context: DuffelMapperContext)
     throw new TypeError('Duffel offer mandatory price arithmetic is inconsistent.');
   }
 
+  const availableServices = [...(offer.available_services ?? [])].sort(
+    (left, right) =>
+      left.id.localeCompare(right.id, 'en') ||
+      left.type.localeCompare(right.type, 'en') ||
+      left.total_currency.localeCompare(right.total_currency, 'en') ||
+      left.total_amount.localeCompare(right.total_amount, 'en'),
+  );
+  if (availableServices.some((service, index) => service.id === availableServices[index - 1]?.id)) {
+    throw new TypeError('Duffel optional service IDs must be unique within one offer.');
+  }
+
   const outbound = mapSlice(outboundSlice);
   const returnLeg = mapSlice(returnSlice);
   const sourceInput: SourceSnapshotResultFingerprintInput = {
@@ -252,7 +263,7 @@ export function mapDuffelOffer(offer: DuffelOffer, context: DuffelMapperContext)
       conditionalCharges: { completeness: 'UNKNOWN', items: [] },
       optionalAncillaries: {
         completeness: offer.available_services === undefined ? 'UNKNOWN' : 'COMPLETE',
-        items: (offer.available_services ?? []).map((service) => ({
+        items: availableServices.map((service) => ({
           id: service.id,
           code: service.type === 'baggage' ? 'CHECKED_BAGGAGE' : 'SEAT',
           label: service.type === 'baggage' ? 'Optional baggage service' : 'Optional seat service',
@@ -325,6 +336,7 @@ export function duffelOfferSemanticFingerprint(
         duration: segment.duration,
         operatingCarrierId: segment.operating_carrier.id,
         operatingCarrierIataCode: segment.operating_carrier.iata_code,
+        operatingCarrierName: segment.operating_carrier.name,
         operatingCarrierFlightNumber: segment.operating_carrier_flight_number,
       })),
     })),

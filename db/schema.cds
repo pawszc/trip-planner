@@ -340,6 +340,10 @@ entity PlanningRuns : cuid, managed {
   selectedOptionCount : Integer not null;
   // Exact terminal audit length for current v2 rows; nullable/no-default preserves legacy.
   providerExecutionCallCount : Integer;
+  // Durable normalized provider-result commitment. Nullable preserves pre-4B1 v2 fixture rows.
+  providerResultFingerprint : String(64);
+  // Recomputed from selected canonical SourceSnapshots before replay; never contains raw payloads.
+  selectedSourceFingerprint : String(64);
   errorCode : String(80);
   errorMessage : String(500);
 }

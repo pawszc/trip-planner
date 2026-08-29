@@ -113,6 +113,7 @@ describe('candidate engine orchestration', () => {
       },
     ]);
     expect(result.shortage).toBeNull();
+    expect(result.providerExecution.resultFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect([...REJECTION_CODES].every((code) => codes.has(code))).toBe(true);
     expect(
       result.options.every((option) => option.score.total >= 0 && option.score.total <= 100),
@@ -133,6 +134,7 @@ describe('candidate engine orchestration', () => {
       })),
       options: engineResult.options,
       shortage: engineResult.shortage,
+      providerResultFingerprint: engineResult.providerExecution.resultFingerprint,
     });
     expect(importantResult(repeat)).toStrictEqual(importantResult(result));
   });

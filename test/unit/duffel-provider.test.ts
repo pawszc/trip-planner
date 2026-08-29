@@ -746,6 +746,77 @@ describe('Duffel HTTP/provider boundary', () => {
     expect(scope.getAuditEvents()[0]?.status).toBe('SUCCEEDED');
   });
 
+  it('keeps a valid sibling when carrier text contains a downstream-unsafe control character', async () => {
+    const fixture = duffelFixture();
+    const unsafeCarrier = structuredClone(fixture.data.offers[0]!);
+    unsafeCarrier.id = 'off_000000unsafecontrol';
+    unsafeCarrier.slices[0]!.segments[0]!.operating_carrier.name = 'Unsafe\u0085Carrier';
+    fixture.data.offers.push(unsafeCarrier);
+    const scope = new ProviderExecutionScope();
+
+    const results = await provider(
+      async () => new Response(JSON.stringify(fixture), { status: 200 }),
+    ).search(request, executionOptions(scope));
+
+    expect(results.map((offer) => offer.id)).toEqual(['duffel:off_000000validoffer']);
+    expect(scope.getAuditEvents()[0]).toMatchObject({ status: 'SUCCEEDED', resultCount: 1 });
+  });
+
+  it('rejects duplicate ancillary IDs inside one offer while keeping a valid sibling', async () => {
+    const fixture = duffelFixtureWithAvailableServices();
+    const malformed = fixture.data.offers[0]!;
+    malformed.available_services.push(structuredClone(malformed.available_services[0]!));
+    const validSibling = structuredClone(fixture.data.offers[0]!);
+    validSibling.id = 'off_000000validsibling';
+    validSibling.available_services = [validSibling.available_services[0]!];
+    fixture.data.offers.push(validSibling);
+    const scope = new ProviderExecutionScope();
+
+    const results = await provider(
+      async () => new Response(JSON.stringify(fixture), { status: 200 }),
+    ).search(request, executionOptions(scope));
+
+    expect(results.map((offer) => offer.id)).toEqual(['duffel:off_000000validsibling']);
+    expect(scope.getAuditEvents()).toEqual([
+      expect.objectContaining({ status: 'SUCCEEDED', resultCount: 1 }),
+    ]);
+  });
+
+  it('canonicalizes ancillary order before mapping and fingerprinting', async () => {
+    const fixture = duffelFixtureWithAvailableServices();
+    const services = fixture.data.offers[0]!.available_services as unknown as Array<{
+      id: string;
+      type: 'baggage' | 'seat';
+      total_amount: string;
+      total_currency: string;
+      ignored_service_field: string;
+    }>;
+    services.push({
+      id: 'ase_000000seatservice',
+      type: 'seat',
+      total_amount: '10.00',
+      total_currency: 'PLN',
+      ignored_service_field: 'must be stripped',
+    });
+    const run = async (reverseServices: boolean) => {
+      const response = structuredClone(fixture);
+      if (reverseServices) response.data.offers[0]!.available_services.reverse();
+      const scope = new ProviderExecutionScope();
+      const results = await provider(
+        async () => new Response(JSON.stringify(response), { status: 200 }),
+      ).search(request, executionOptions(scope));
+      return { results, resultFingerprint: scope.getAuditEvents()[0]?.resultFingerprint };
+    };
+
+    const forward = await run(false);
+    const reverse = await run(true);
+    expect(reverse).toEqual(forward);
+    expect(forward.results[0]?.pricing.optionalAncillaries.items.map((item) => item.id)).toEqual([
+      'ase_000000baggage',
+      'ase_000000seatservice',
+    ]);
+  });
+
   it.each([
     [
       '429',
@@ -931,6 +1002,31 @@ describe('Duffel HTTP/provider boundary', () => {
         underlyingFailureCategory: 'INVALID_SCHEMA',
       }),
     ]);
+  });
+
+  it('rejects same-ID carrier-name conflicts independently of upstream order', async () => {
+    const fixture = duffelFixture();
+    const conflicting = structuredClone(fixture.data.offers[0]!);
+    conflicting.slices[0]!.segments[0]!.operating_carrier.name = 'Alternate Safe Airline';
+    fixture.data.offers.push(conflicting);
+    const run = async (offers: typeof fixture.data.offers) => {
+      const response = structuredClone(fixture);
+      response.data.offers = offers;
+      const scope = new ProviderExecutionScope();
+      return provider(async () => new Response(JSON.stringify(response), { status: 200 }))
+        .search(request, executionOptions(scope))
+        .catch((caught: unknown) => caught);
+    };
+
+    const forward = await run(fixture.data.offers);
+    const reverse = await run([...fixture.data.offers].reverse());
+    for (const error of [forward, reverse]) {
+      expect(error).toBeInstanceOf(ProviderExecutionError);
+      expect(error).toMatchObject({
+        category: 'PARTIAL_DESTINATION',
+        evidence: { underlyingCategory: 'INVALID_SCHEMA', destinationCode: 'PRG' },
+      });
+    }
   });
 
   it('keeps different operating flights with identical aggregate times and prices', async () => {
