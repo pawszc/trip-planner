@@ -598,6 +598,7 @@ describe('Duffel HTTP/provider boundary', () => {
     );
     expect(init).toMatchObject({
       method: 'POST',
+      redirect: 'error',
       headers: expect.objectContaining({
         Accept: 'application/json',
         'Accept-Encoding': 'gzip',
@@ -607,6 +608,34 @@ describe('Duffel HTTP/provider boundary', () => {
     });
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer secret-test-token');
     expect(JSON.stringify(scope.getAuditEvents())).not.toContain('secret-test-token');
+  });
+
+  it('cancels a failed response body without exposing cancellation errors', async () => {
+    const cancel = vi.fn(async () => {
+      throw new Error('raw cancellation secret-test-token');
+    });
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const scope = new ProviderExecutionScope();
+    const error = await provider(async () => new Response(body, { status: 503 }))
+      .search(request, executionOptions(scope))
+      .catch((caught: unknown) => caught);
+
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+    expect(error).toBeInstanceOf(ProviderExecutionError);
+    expect(error).toMatchObject({
+      category: 'PARTIAL_DESTINATION',
+      evidence: {
+        underlyingCategory: 'UPSTREAM_5XX',
+        httpStatus: 503,
+        destinationCode: 'PRG',
+      },
+    });
+    expect(JSON.stringify((error as ProviderExecutionError).toSafeJSON())).not.toContain(
+      'raw cancellation',
+    );
+    expect(JSON.stringify((error as ProviderExecutionError).toSafeJSON())).not.toContain(
+      'secret-test-token',
+    );
   });
 
   it('drops an offer expired exactly at the injected mapper checkpoint', async () => {

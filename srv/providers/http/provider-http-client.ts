@@ -61,6 +61,15 @@ function declaredResponseLength(response: Response): number | null {
   return Number.isSafeInteger(length) ? length : null;
 }
 
+function cancelResponseBodySafely(response: Response): void {
+  if (response.body === null) return;
+  try {
+    void response.body.cancel().catch(() => undefined);
+  } catch {
+    // A custom or already-locked stream can fail synchronously. The HTTP error remains authoritative.
+  }
+}
+
 async function readBoundedJson(response: Response): Promise<unknown> {
   const declaredLength = declaredResponseLength(response);
   if (declaredLength !== null && declaredLength > DUFFEL_MAX_RESPONSE_BYTES) {
@@ -125,6 +134,7 @@ export class ProviderHttpClient {
     try {
       response = await this.transport(`${DUFFEL_API_BASE_URL}${path}`, {
         method: 'POST',
+        redirect: 'error',
         signal,
         headers: {
           Accept: 'application/json',
@@ -139,13 +149,15 @@ export class ProviderHttpClient {
       throw new ProviderHttpClientError({ kind: 'NETWORK' });
     }
     if (!response.ok) {
+      const retryAfterMs =
+        response.status === 429
+          ? safeRetryAfterMs(response.headers.get('retry-after'), this.now())
+          : null;
+      cancelResponseBodySafely(response);
       throw new ProviderHttpClientError({
         kind: 'HTTP_STATUS',
         status: response.status,
-        retryAfterMs:
-          response.status === 429
-            ? safeRetryAfterMs(response.headers.get('retry-after'), this.now())
-            : null,
+        retryAfterMs,
       });
     }
     return readBoundedJson(response);
