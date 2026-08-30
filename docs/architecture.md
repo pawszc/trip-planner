@@ -131,6 +131,17 @@ domyślny profil produktu pozostaje fixture bez silent fallbacku.
 Instancja adaptera live musi przed fan-outem potwierdzić dokładną tożsamość z manifestu, także
 dla pustego wyniku; źródła wybranych fixture są związane z faktycznie wykonanym query.
 
+Phase 4B2 dodaje wyłącznie izolowaną granicę aktywacyjną. Credential-free preflight wiąże
+exact source SHA, czyste drzewo, przyszłe daty, scenariusz `WRO → PRG → WRO`, TEST manifest,
+query fingerprint i obniżoną politykę 1 call / concurrency 1 / 1 attempt w kanoniczny plan.
+Dormant runner jest poza produktem i standardową weryfikacją; nie tworzy `PlanningRun`, nie
+uruchamia CAP ani persistence. Exact approval i opt-in są sprawdzane przed credential access,
+a test-mode identity tokenu przed transportem. Runner ponownie używa adaptera 4B1 oraz
+`ProviderExecutionScope`, a jego terminalny wynik jest strict allowlistą SHA, wersji,
+fingerprintów, liczników, czasu i zamkniętego statusu bez requestu, response, oferty, ceny,
+przewoźnika lub sekretu. Granica nie włącza Duffel w profilu produktu i nie jest zgodą na
+request ani production activation.
+
 Kwoty są dyskryminowaną unią `Money`: znane ceny przechowują bezpieczną całkowitą
 liczbę minor units, natomiast `UNKNOWN` ma `amountMinor: null`. Każda cena ma
 `PriceType` i `source-snapshot-v2` z jawnym typem `LIVE`, `FIXTURE` albo
