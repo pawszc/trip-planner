@@ -9,19 +9,19 @@ są zamknięte. Nie zezwala na wykonanie requestu do Duffel.
 
 ## Status
 
-`READY — OFFLINE IMPLEMENTATION ONLY / TEST-MODE REQUEST NOT AUTHORIZED`
+`REVIEW — OFFLINE IMPLEMENTATION COMPLETE / TEST-MODE REQUEST NOT AUTHORIZED`
 
-Kierunek i kolejność zostały zaakceptowane 2026-08-30. Implementację wolno rozpocząć dopiero
-po spełnieniu preconditions. Uruchomienie smoke pozostaje osobną decyzją wymagającą dokładnego
-planu i jawnej zgody.
+Kierunek i kolejność zostały zaakceptowane 2026-08-30. Implementacja offline jest kompletna
+na dedykowanym branchu i oczekuje na review. Uruchomienie smoke pozostaje osobną decyzją
+wymagającą dokładnego planu i jawnej zgody.
 
 ## Preconditions
 
-- Phase 4B1 jest zmergowana na `main` w PR #24 (`main@08877d5`), a jej implementacja
-  pozostaje bazowym kontraktem adaptera.
-- PR #25 musi zostać zmergowany, a Phase 4B1 oznaczona `DONE` na `main`, zanim rozpocznie się
-  implementacja 4B2. Kontrakt 4B2 nie może cicho dublować closeoutu 4B1.
-- Ten kontrakt musi zostać zmergowany do `main` przed utworzeniem brancha implementacyjnego.
+- Implementacja Phase 4B1 z PR #24 i jej closeout PR #25 są zmergowane; Phase 4B1 ma status
+  `DONE` na `main@942853f4d0f6779f2f7320daa967948bacb053ce`.
+- Kontrakt 4B2 został zmergowany w PR #26 do
+  `main@4517dc8260b11be68cd52ac710008b0eb4004264`; branch implementacyjny powstał dokładnie z
+  tego SHA.
 - Obowiązują ADR 0011, `source-snapshot-v2`, `offer-price-v2`,
   `planning-provider-manifest-v1`, `provider-execution-policy-v1`, Duffel Search Policy v1
   oraz fail-closed mapper Phase 4B1.

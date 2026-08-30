@@ -77,5 +77,16 @@ transakcji DB oraz krótki write z rewalidacją briefu, workflow, manifestu, fin
 równoległego wyniku. Pełna decyzja i zasady migracji są opisane w
 [ADR 0011](../../docs/decisions/0011-live-provider-contract-hardening.md).
 
-Dormant smoke command nie został dodany: jest opcjonalny, a offline adapter, profile i testy nie
-wymagają ścieżki odczytu credentials. Jakikolwiek przyszły smoke nadal wymaga osobnej zgody.
+## Activation readiness Phase 4B2
+
+`duffel:smoke:preflight` tworzy offline kanoniczny plan związany z exact HEAD, czystym drzewem,
+przyszłymi datami, wersjami runtime i jednym scenariuszem `WRO → PRG → WRO`. Nie odczytuje
+`process.env` ani credentiali, nie konstruuje transportu i raportuje 0 requestów oraz koszt 0.
+
+`duffel:smoke:test` jest dormant, nie jest częścią startu, buildu, CI, `verify` ani
+`verify:full`. Używa tej samej implementacji `DuffelApiTransportProvider`, klienta HTTP,
+Search Policy v1, mappera i run-scoped executora. Przed siecią wymaga exact fingerprintu planu,
+jawnego opt-in i tokenu z test-mode identity; token LIVE/nieznany jest odrzucany. Scope obniża
+limity do 1 call, concurrency 1 i 1 attempt, bez retry/fallbacku. Wynik przechodzi zamknięty
+schema evidence bez raw danych providera. Istnienie runnera nie autoryzuje requestu; osobna
+zgoda jest opisana w [ADR 0012](../../docs/decisions/0012-duffel-test-mode-activation-readiness.md).

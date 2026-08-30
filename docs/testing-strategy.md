@@ -135,6 +135,13 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - zamknięte 429/5xx/network/invalid JSON/schema/timeout/cancellation/partial-destination bez
   raw body, provider text, headerów, stack trace lub tokenu oraz dokładnie jeden
   `executeUpstream` permit per fizyczny request;
+- Duffel activation readiness offline: deterministyczny plan exact SHA/dates/versions,
+  blokadę dirty tree i zmienionego fingerprintu, brak environment/credential/network w
+  preflight, exact approval + opt-in przed credential read, odrzucenie tokenu LIVE/unknown
+  przed transportem, jeden TEST request/attempt bez retry oraz `PASS` wyłącznie po lokalnym
+  schema/mapowaniu co najmniej jednej oferty. Pusty wynik, `live_mode=true`, malformed
+  JSON/schema, 429, 4xx/5xx, timeout i network kończą się bez drugiego requestu. Strict evidence
+  odrzuca raw payload, token, offer ID, cenę, carrier facts i provider text;
 - trwały fingerprint pełnego znormalizowanego provider result set oraz replay-time rekalkulację
   tego fingerprintu z audytu i fingerprintu wiążącego wybrane kanoniczne źródła; zmiana
   bezpiecznej atrybucji albo audit result hash w bazie kończy się fail-closed bez konstrukcji
@@ -286,6 +293,14 @@ Smoke testy są celowo poza CI i standardową weryfikacją, ponieważ są płatn
 zewnętrznej dostępności i uprawnień konta. Nie wolno ich uruchamiać automatycznie ani
 używać do omijania testów offline. Evale LLM nie zastąpią testów twardych reguł,
 persistence ani arytmetyki kodu.
+
+Dla Duffel `npm run duffel:smoke:preflight -- --start-date YYYY-MM-DD --end-date YYYY-MM-DD`
+jest oddzielnym, credential-free i network-free generatorem planu. Dormant
+`duffel:smoke:test` nie ładuje `.env` i nie jest wywoływany przez standardowy test, build,
+start, `verify`, `verify:full` ani CI. Jego przyszłe uruchomienie wymaga osobnej zgody na exact
+SHA, fingerprint, daty i limit jednego TEST requestu. Testy jednostkowe używają wyłącznie
+wstrzykniętego transportu; sama implementacja i weryfikacja Phase 4B2 wykonują 0 requestów,
+0 credential reads i koszt 0.
 
 Finalny live baseline jest osobną ścieżką od smoke. Wymaga
 `AI_LIVE_EVAL_ENABLED=true`, istniejącego gateway opt-in, credentiali, znanych
