@@ -9,15 +9,23 @@ respektować kontrakty 4B0 oraz przejść pełną weryfikację offline bez reque
 
 ## Status
 
-`REVIEW — OFFLINE IMPLEMENTATION COMPLETE`
+`DONE — MERGED AND VERIFIED OFFLINE ON MAIN`
 
-Implementacja znajduje się w Draft PR #24. Pełna weryfikacja offline przeszła 2026-08-28;
-faza pozostaje w `REVIEW` do czasu review i osobnej decyzji o dalszym statusie.
+Implementacja została zmergowana 2026-08-30 w PR #24 jako
+`main@08877d5a733129a6d8f8863e390cc4034abaa2a5`. Finalny head przeszedł lokalne
+`npm run verify:full`, `git diff --check` oraz dwa niezależne joby CI `verify`.
+GitHub issues #23 i #21 zostały zamknięte jako ukończone.
 
 Faza została jawnie uruchomiona 2026-08-28 z
 `main@2a5362c8ffc7f53ca06c40615ca946620e789afb` po merge Phase 4B0 w PR #22.
-Tracker: GitHub #23; parent tracker: #21. Branch:
+Tracker: GitHub #23; parent tracker: #21. Branch implementacyjny:
 `codex/phase-4b1-duffel-transport-provider`.
+
+Zakończenie fazy potwierdza gotowość adaptera i kontraktów do użycia w testach offline;
+nie autoryzuje requestu Duffel, odczytu credentials ani produkcyjnego włączenia. External,
+Duffel test/live i paid calls, credential use oraz koszt tej fazy wyniosły odpowiednio
+`0`, `0`, `0`, `0` i `USD 0`. Produkcyjny terms/commercial/attribution/persistence gate,
+smoke test oraz następny vertical wymagają osobnego kontraktu ze statusem `READY`.
 
 ## Preconditions
 
