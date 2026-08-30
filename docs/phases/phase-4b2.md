@@ -226,9 +226,9 @@ jednorazowym zatwierdzonym smoke również jest eskalacją, nie zgodą na drugi 
 - Post-merge CI run
   [33316151852](https://github.com/pawszc/trip-planner/actions/runs/33316151852) dla exact merge
   SHA zakończył się `SUCCESS`.
-- Implementacja, review, testy, CI i closeout wykonały: Duffel/external requests `0`,
-  credential reads/use `0`, odczyty/wydruki/logi `.env` `0`, planowany koszt `0 USD` i
-  rzeczywisty koszt `0 USD`.
+- Implementacja, review, testy, CI i closeout wykonały: Duffel/travel-provider/live API
+  requests `0`, credential reads/use `0`, odczyty/wydruki/logi `.env` `0`, planowany koszt
+  `0 USD` i rzeczywisty koszt `0 USD`. Ruch GitHub użyty do PR i CI nie jest provider call.
 - Żaden fingerprint preflightu sprzed merge nie jest ważną approval identity dla bieżącego
   `main`. Po merge nie uruchomiono `duffel:smoke:test`, nie odczytano tokenu i nie powstała
   zgoda na request. Nowy preflight należy wykonać dopiero z finalnego SHA po merge closeoutu.
