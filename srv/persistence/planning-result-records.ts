@@ -30,6 +30,11 @@ import {
 } from '../providers/provider-execution.ts';
 import { isSha256Fingerprint } from '../providers/provider-fingerprint.ts';
 import { PROVIDER_MANIFEST_JSON_MAX_LENGTH } from '../providers/provider-manifest.ts';
+import { createProviderResultSetFingerprint } from '../providers/provider-result-set.ts';
+import {
+  createSelectedSourceBindingFingerprint,
+  type SelectedSourceBinding,
+} from '../providers/selected-source-binding.ts';
 import { canonicalSourceSnapshot, isCompleteSourceSnapshot } from '../providers/source-snapshot.ts';
 import { SCORE_VERSION } from '../ranking/candidate-scoring.ts';
 
@@ -74,6 +79,8 @@ export interface PlanningRunRecord {
   rejectedCandidateCount: number;
   selectedOptionCount: number;
   providerExecutionCallCount: number;
+  providerResultFingerprint: string;
+  selectedSourceFingerprint: string;
   errorCode: string | null;
   errorMessage: string | null;
 }
@@ -492,6 +499,7 @@ function recordsForOption(
   offerChargeCollections: readonly Record<string, unknown>[];
   offerChargeDisclosures: readonly Record<string, unknown>[];
   optionNotes: readonly Record<string, unknown>[];
+  sourceBindings: readonly SelectedSourceBinding[];
 } {
   const rankedOptionId = randomUUID();
   const candidate = option.candidate;
@@ -807,6 +815,11 @@ function recordsForOption(
     offerChargeCollections,
     offerChargeDisclosures,
     optionNotes: optionNotes(input, planningRunId, rankedOptionId, option),
+    sourceBindings: [...sourceContexts.values()].map(({ source }) => ({
+      optionRank: option.rank,
+      candidateId: candidate.id,
+      source,
+    })),
   };
 }
 
@@ -901,6 +914,31 @@ export function buildPlanningPersistenceBundle(
   const optionRecords = succeeded
     ? input.result.options.map((option) => recordsForOption(input, planningRunId, version, option))
     : [];
+  assertProviderExecutionAudit(
+    input.result.providerExecution.policyVersion,
+    input.result.providerExecution.calls,
+  );
+  let providerResultFingerprint: string;
+  try {
+    providerResultFingerprint = createProviderResultSetFingerprint(
+      input.result.providerExecution.calls,
+    );
+  } catch {
+    throw new DomainError(
+      'INVALID_PLANNING_RESULT',
+      'PlanningRun nie ma kompletnego zbioru poprawnych wyników providerów.',
+    );
+  }
+  if (input.result.providerExecution.resultFingerprint !== providerResultFingerprint) {
+    throw new DomainError(
+      'INVALID_PLANNING_RESULT',
+      'PlanningRun ma fingerprint niespójny z audytem wyników providerów.',
+    );
+  }
+  const selectedSourceFingerprint = createSelectedSourceBindingFingerprint(
+    optionRecords.flatMap((records) => records.sourceBindings),
+    providerResultFingerprint,
+  );
   const rejections = rejectionRecords(input, planningRunId, version, input.result.rejectionReasons);
   const planningRun: PlanningRunRecord = {
     ID: planningRunId,
@@ -927,14 +965,12 @@ export function buildPlanningPersistenceBundle(
     rejectedCandidateCount: input.result.counts.rejectedCandidates,
     selectedOptionCount: succeeded ? 3 : 0,
     providerExecutionCallCount: input.result.providerExecution.calls.length,
+    providerResultFingerprint,
+    selectedSourceFingerprint,
     errorCode: succeeded ? null : (shortage?.code ?? 'INSUFFICIENT_VALID_CANDIDATES'),
     errorMessage: succeeded ? null : (shortage?.message ?? 'Brak trzech poprawnych wariantów.'),
   };
   const references = commonReferences(input, planningRunId);
-  assertProviderExecutionAudit(
-    input.result.providerExecution.policyVersion,
-    input.result.providerExecution.calls,
-  );
   const providerExecutionRecords = input.result.providerExecution.calls.map((event) => {
     return {
       ID: randomUUID(),

@@ -85,10 +85,16 @@ kontrolowane `PROVIDER_SEARCH_FAILED`, anuluje sibling calls i pozostawia workfl
 `CONSTRAINTS_CONFIRMED` bez wyników. Zaakceptowany replay v2, exact v1 albo exact v0 kończy
 się przed konstrukcją providerów i nie wykonuje żadnego zapisu.
 
-Phase 4B0 nie zmienia topologii transakcji requestu CAP: odczyt i provider fan-out nadal
-odbywają się po utworzeniu `cds.tx(request)`, choć przed pierwszym zapisem. Docelowe krótkie
-read → network bez otwartej transakcji → krótkie write z ponowną walidacją stanu i
-idempotencji należy do 4B1.
+Phase 4B1 rozdziela `startPlanning` na committed read/replay checkpoint, provider fan-out bez
+aktywnej transakcji DB oraz krótki request write. Writer ponownie odczytuje brief i workflow,
+przelicza fingerprint z aktualnego manifestu, a INSERT `PlanningRun` stanowi atomowy claim
+między instancjami. Przegrany writer po rollbacku sprawdza zgodny, committed wynik równoległego
+wykonania w nowej transakcji. Replay v2/v1/v0 nadal kończy się w read checkpoint przed
+konstrukcją providerów i bez write. Nowy run utrwala fingerprint pełnego znormalizowanego zestawu
+wyników providerów oraz osobny fingerprint wiążący go z kanonicznymi `SourceSnapshot` wybranych
+opcji. Current replay przelicza pierwsze zobowiązanie z bezpiecznych rekordów audytu, a drugie
+z potomków. Zmiana proweniencji albo result fingerprintu requestu nie może więc zostać
+zaakceptowana tylko dlatego, że audit nadal ma poprawny query hash.
 
 ## Deterministyczny silnik kandydatów
 
@@ -109,6 +115,19 @@ requesty wewnątrz jednego logicznego `search()` dzielą ten sam budżet i concu
 błąd anuluje sibling calls. Zamknięte błędy i wewnętrzne eventy audytowe zawierają
 wyłącznie bezpieczne metadata i fingerprinty, nigdy raw request/response/error ani headers.
 Manifest live lub mieszany nie uruchamia legacy fixture replay.
+`DuffelApiTransportProvider` jest konkretnym adapterem REST-first poza domeną. Wspólne
+invariants requestu i lokalny limit 9 dorosłych są sprawdzane przed tokenem i siecią. Jeden
+offer request per destynacja używa platformowego fetch wyłącznie przez `executeUpstream`;
+Search Policy v1 zamraża adults/economy/two-slice/no-split-ticket oraz bounded fan-out.
+Wstrzykiwany, wersjonowany katalog origin jest częścią identity manifestu i query. Zod stripuje
+envelope do allowlisty i waliduje każdą ofertę niezależnie, a mapper zachowuje wyłącznie jawne
+route/carrier/time/money/service facts. Services są sortowane kanonicznie, a powtórzony service ID
+odrzuca wyłącznie własną ofertę. Pojedyncza błędna oferta nie usuwa poprawnych siblings,
+ale niepusta odpowiedź bez poprawnej oferty jest błędem schematu. Granicą zasobów jest
+strumieniowy limit 64 MiB odpowiedzi po dekompresji, związany z Search Policy identity, a nie
+arbitralny limit liczby ofert. Brak `available_services` w odpowiedzi Offer Request zachowuje
+kompletność ancillary `UNKNOWN`. Test-mode lineage pozostaje `LIVE`, bez `fixtureVersion`, a
+domyślny profil produktu pozostaje fixture bez silent fallbacku.
 Instancja adaptera live musi przed fan-outem potwierdzić dokładną tożsamość z manifestu, także
 dla pustego wyniku; źródła wybranych fixture są związane z faktycznie wykonanym query.
 

@@ -45,6 +45,8 @@ import {
   createSourceSnapshotResultFingerprint,
   isCompleteSourceSnapshot,
 } from '../providers/source-snapshot.ts';
+import type { OfferFreshnessClock } from '../providers/offer-freshness.ts';
+import { createProviderResultSetFingerprint } from '../providers/provider-result-set.ts';
 import { buildCandidates, type CandidateBuilderResult } from '../ranking/candidate-builder.ts';
 import { filterCandidates, type CandidateValidationResult } from '../ranking/candidate-filter.ts';
 import { rankCandidates, type ScoredCandidate } from '../ranking/candidate-scoring.ts';
@@ -68,6 +70,7 @@ export interface CandidateEngineInput {
   destinations: readonly Destination[];
   providers: CandidateEngineProviders;
   providerManifest: ProviderConfigurationManifest;
+  freshnessClock?: OfferFreshnessClock;
   signal?: AbortSignal;
   config?: CandidateEngineConfigOverride;
 }
@@ -93,6 +96,7 @@ export interface CandidateEngineResult {
   shortage: CandidateShortage | null;
   providerExecution: {
     policyVersion: string;
+    resultFingerprint: string;
     calls: readonly ProviderCallAuditEvent[];
   };
 }
@@ -340,6 +344,7 @@ function providerResultFingerprint<T extends { id: string }>(
   normalizedResult: (value: T) => ProviderJsonValue,
   moneyValues: (value: T) => readonly Money[] = () => [],
   liveShape: (value: T) => boolean = () => true,
+  liveQueryFingerprint: (value: T) => string | undefined = () => queryFingerprint,
 ): string {
   if (!Array.isArray(values)) {
     throw new TypeError('Provider result failed the local array schema.');
@@ -387,19 +392,21 @@ function providerResultFingerprint<T extends { id: string }>(
       })),
     );
   }
-  const lineageIsExact = values.every((value, index) =>
-    sourceSnapshots(value).every((sourceSnapshot) => {
+  const lineageIsExact = values.every((value, index) => {
+    const expectedQueryFingerprint = liveQueryFingerprint(value);
+    return sourceSnapshots(value).every((sourceSnapshot) => {
       if (!isCompleteSourceSnapshot(sourceSnapshot)) return false;
       return (
+        expectedQueryFingerprint !== undefined &&
         sourceSnapshot.sourceType === 'LIVE' &&
         exactConfiguredLineage(sourceSnapshot) &&
-        sourceSnapshot.queryFingerprint === queryFingerprint &&
+        sourceSnapshot.queryFingerprint === expectedQueryFingerprint &&
         sourceSnapshot.fixtureVersion === null &&
         sourceSnapshot.resultFingerprint ===
           createSourceSnapshotResultFingerprint(sourceSnapshot, normalizedResults[index]!)
       );
-    }),
-  );
+    });
+  });
   if (!lineageIsExact) {
     throw new TypeError('Provider result failed the local manifest/source lineage contract.');
   }
@@ -417,21 +424,39 @@ function providerSearchFailed(): DomainError {
   return new DomainError('PROVIDER_SEARCH_FAILED', 'Nie udało się pobrać danych do planowania.');
 }
 
+interface ProviderSearchResult<T> {
+  readonly result: T;
+  readonly resultFingerprint: string;
+}
+
 async function executeProviderSearch<T>(
   execution: ProviderExecutionScope,
   entry: ProviderManifestEntry,
   descriptor: ProviderCallDescriptor<T>,
   invoke: (options: ProviderCallOptions) => Promise<T>,
-): Promise<T> {
+): Promise<ProviderSearchResult<T>> {
   if (entry.mode === 'FIXTURE') {
-    return execution.execute(descriptor, ({ signal }) =>
-      invoke({
-        signal,
-        executeUpstream: async () => {
-          throw new TypeError('Fixture adapters cannot create nested upstream calls.');
+    let resultFingerprint: string | undefined;
+    const result = await execution.execute(
+      {
+        ...descriptor,
+        resultFingerprint: (value) => {
+          resultFingerprint = descriptor.resultFingerprint(value);
+          return resultFingerprint;
         },
-      }),
+      },
+      ({ signal }) =>
+        invoke({
+          signal,
+          executeUpstream: async () => {
+            throw new TypeError('Fixture adapters cannot create nested upstream calls.');
+          },
+        }),
     );
+    if (resultFingerprint === undefined) {
+      throw new TypeError('Fixture provider result fingerprint was not finalized.');
+    }
+    return Object.freeze({ result, resultFingerprint });
   }
 
   let upstreamCallCount = 0;
@@ -464,7 +489,7 @@ async function executeProviderSearch<T>(
   ) {
     throw new TypeError('Live adapter result failed aggregate validation.');
   }
-  return result;
+  return Object.freeze({ result, resultFingerprint });
 }
 
 function assertSelectedFixtureQueryLineage(
@@ -535,10 +560,12 @@ export async function runCandidateEngine(
       policy: input.providerManifest.executionPolicy,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
-    execution.assertCallBudget(1 + destinations.length * 2);
     transportEntry = providerEntry(input.providerManifest, 'TRANSPORT');
     accommodationEntry = providerEntry(input.providerManifest, 'ACCOMMODATION');
     placesEntry = providerEntry(input.providerManifest, 'PLACES');
+    execution.assertCallBudget(
+      (transportEntry.mode === 'LIVE' ? destinations.length : 1) + destinations.length * 2,
+    );
     assertProviderBinding(input.providers.transport, transportEntry);
     assertProviderBinding(input.providers.accommodation, accommodationEntry);
     assertProviderBinding(input.providers.places, placesEntry);
@@ -571,6 +598,18 @@ export async function runCandidateEngine(
           transportResultView,
           offerMoneys,
           liveTransportShape,
+          (value) => {
+            const matchingCalls = execution
+              .getAuditEvents()
+              .filter(
+                (event) =>
+                  event.providerKey === transportEntry.providerKey &&
+                  event.operation === 'TRANSPORT_SEARCH' &&
+                  event.destinationCode === value.destinationCode &&
+                  event.status === 'SUCCEEDED',
+              );
+            return matchingCalls.length === 1 ? matchingCalls[0]!.queryFingerprint : undefined;
+          },
         ),
       resultCount: (result) => result.length,
     },
@@ -656,7 +695,12 @@ export async function runCandidateEngine(
     throw providerSearchFailed();
   }
   execution.dispose();
-  const [transportOptions, stayGroups, placeGroups] = providerResults;
+  const providerExecutionCalls = execution.getAuditEvents();
+  const providerResultSetFingerprint = createProviderResultSetFingerprint(providerExecutionCalls);
+  const [transportSearch, staySearches, placeSearches] = providerResults;
+  const transportOptions = transportSearch.result;
+  const stayGroups = staySearches.map((search) => search.result);
+  const placeGroups = placeSearches.map((search) => search.result);
   const builder: CandidateBuilderResult = buildCandidates({
     context: input.context,
     destinations,
@@ -665,7 +709,12 @@ export async function runCandidateEngine(
     places: placeGroups.flat(),
     config,
   });
-  const filtered = filterCandidates(builder.candidates, input.context, config);
+  const filtered = filterCandidates(
+    builder.candidates,
+    input.context,
+    config,
+    input.freshnessClock,
+  );
   try {
     assertSelectedFixtureQueryLineage(
       filtered.validCandidates,
@@ -705,7 +754,8 @@ export async function runCandidateEngine(
     shortage: selected.shortage,
     providerExecution: {
       policyVersion: execution.policy.version,
-      calls: execution.getAuditEvents(),
+      resultFingerprint: providerResultSetFingerprint,
+      calls: providerExecutionCalls,
     },
   };
 }

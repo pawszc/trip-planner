@@ -15,7 +15,11 @@ import {
 import { calculateBudgetBreakdown } from '../../srv/ranking/budget.ts';
 import { scoreCandidate } from '../../srv/ranking/candidate-scoring.ts';
 import { DEFAULT_CANDIDATE_ENGINE_CONFIG } from '../../srv/ranking/config.ts';
-import { candidateContext, candidateFixture } from './candidate-fixtures.ts';
+import {
+  candidateContext,
+  candidateFixture,
+  candidateProviderExecutionFixture,
+} from './candidate-fixtures.ts';
 
 function engineResult(options: readonly RankedOption[]): CandidateEngineResult {
   const candidates = options.map((option) => option.candidate);
@@ -39,10 +43,7 @@ function engineResult(options: readonly RankedOption[]): CandidateEngineResult {
     })),
     options,
     shortage: null,
-    providerExecution: {
-      policyVersion: MOCK_PROVIDER_MANIFEST.executionPolicy.version,
-      calls: [],
-    },
+    providerExecution: candidateProviderExecutionFixture(),
   };
 }
 
@@ -82,6 +83,82 @@ function rankedOption(
 }
 
 describe('planning persistence contract', () => {
+  it('persists deterministic provider and selected-source commitments', () => {
+    const candidate = candidateFixture();
+    const options = [
+      rankedOption(candidate, 1, 'BEST_OVERALL'),
+      rankedOption(candidate, 2, 'MOST_CONVENIENT'),
+      rankedOption(candidate, 3, 'BEST_VALUE'),
+    ];
+
+    const forward = buildPlanningPersistenceBundle(persistenceInput(engineResult(options)));
+    const reverse = buildPlanningPersistenceBundle(
+      persistenceInput(engineResult([...options].reverse())),
+    );
+
+    expect(forward.planningRun.providerResultFingerprint).toBe(
+      candidateProviderExecutionFixture().resultFingerprint,
+    );
+    expect(forward.planningRun.selectedSourceFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(reverse.planningRun.selectedSourceFingerprint).toBe(
+      forward.planningRun.selectedSourceFingerprint,
+    );
+  });
+
+  it('rejects a malformed aggregate provider result fingerprint', () => {
+    const candidate = candidateFixture();
+    const result = engineResult([
+      rankedOption(candidate, 1, 'BEST_OVERALL'),
+      rankedOption(candidate, 2, 'MOST_CONVENIENT'),
+      rankedOption(candidate, 3, 'BEST_VALUE'),
+    ]);
+
+    expect(() =>
+      buildPlanningPersistenceBundle(
+        persistenceInput({
+          ...result,
+          providerExecution: { ...result.providerExecution, resultFingerprint: 'invalid' },
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_PLANNING_RESULT' }));
+  });
+
+  it('rejects a valid SHA-256 fingerprint that does not match the provider audit', () => {
+    const candidate = candidateFixture();
+    const result = engineResult([
+      rankedOption(candidate, 1, 'BEST_OVERALL'),
+      rankedOption(candidate, 2, 'MOST_CONVENIENT'),
+      rankedOption(candidate, 3, 'BEST_VALUE'),
+    ]);
+
+    expect(() =>
+      buildPlanningPersistenceBundle(
+        persistenceInput({
+          ...result,
+          providerExecution: { ...result.providerExecution, resultFingerprint: '0'.repeat(64) },
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_PLANNING_RESULT' }));
+  });
+
+  it('rejects an empty provider audit before returning persistence records', () => {
+    const candidate = candidateFixture();
+    const result = engineResult([
+      rankedOption(candidate, 1, 'BEST_OVERALL'),
+      rankedOption(candidate, 2, 'MOST_CONVENIENT'),
+      rankedOption(candidate, 3, 'BEST_VALUE'),
+    ]);
+
+    expect(() =>
+      buildPlanningPersistenceBundle(
+        persistenceInput({
+          ...result,
+          providerExecution: { ...result.providerExecution, calls: [] },
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_PLANNING_RESULT' }));
+  });
+
   it('rejects a SourceSnapshot id collision across selected options', () => {
     const first = candidateFixture();
     const baseSecond = candidateFixture();

@@ -16,7 +16,12 @@ import {
   OFFER_PRICING_CONTRACT_VERSION,
   knownEmptyChargeCollection,
 } from '../../srv/domain/offer-pricing.js';
+import {
+  PROVIDER_EXECUTION_POLICY_VERSION,
+  type ProviderCallAuditEvent,
+} from '../../srv/providers/provider-execution.js';
 import { createProviderFingerprint } from '../../srv/providers/provider-fingerprint.js';
+import { createProviderResultSetFingerprint } from '../../srv/providers/provider-result-set.js';
 import { buildCandidates } from '../../srv/ranking/candidate-builder.js';
 
 export const candidateContext: PlanningContext = {
@@ -55,6 +60,37 @@ export const candidateDestination: Destination = {
   city: 'Prague',
   countryCode: 'CZ',
 };
+
+export function candidateProviderExecutionFixture() {
+  const calls = Object.freeze([
+    Object.freeze({
+      sequence: 1,
+      policyVersion: PROVIDER_EXECUTION_POLICY_VERSION,
+      providerKey: 'test-fixture-provider',
+      operation: 'TRANSPORT_SEARCH',
+      destinationCode: null,
+      status: 'SUCCEEDED',
+      providerCallAttempted: true,
+      attempts: 1,
+      latencyMs: 1,
+      queryFingerprint: createProviderFingerprint({ fixture: 'candidate-provider-query-v1' }),
+      resultFingerprint: createProviderFingerprint({ fixture: 'candidate-provider-result-v1' }),
+      resultCount: 1,
+      failureCategory: null,
+      underlyingFailureCategory: null,
+      httpStatus: null,
+      rateLimitRetryAfterMs: null,
+      rateLimitLimit: null,
+      rateLimitRemaining: null,
+      rateLimitResetAt: null,
+    }),
+  ] satisfies readonly ProviderCallAuditEvent[]);
+  return Object.freeze({
+    policyVersion: PROVIDER_EXECUTION_POLICY_VERSION,
+    resultFingerprint: createProviderResultSetFingerprint(calls),
+    calls,
+  });
+}
 
 export function candidateSource(id: string, currency = 'PLN'): SourceSnapshot {
   const queryFingerprint = createProviderFingerprint({

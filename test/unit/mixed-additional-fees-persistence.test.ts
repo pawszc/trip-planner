@@ -20,7 +20,11 @@ import {
 import { calculateBudgetBreakdown } from '../../srv/ranking/budget.ts';
 import { scoreCandidate } from '../../srv/ranking/candidate-scoring.ts';
 import { DEFAULT_CANDIDATE_ENGINE_CONFIG } from '../../srv/ranking/config.ts';
-import { candidateContext, candidateFixture } from './candidate-fixtures.ts';
+import {
+  candidateContext,
+  candidateFixture,
+  candidateProviderExecutionFixture,
+} from './candidate-fixtures.ts';
 
 function candidateWithMixedAdditionalFees(): TripCandidate {
   const base = candidateFixture();
@@ -82,10 +86,7 @@ function successfulResult(candidate: TripCandidate): CandidateEngineResult {
     rankedCandidates: [{ candidate, score }],
     options,
     shortage: null,
-    providerExecution: {
-      policyVersion: 'provider-execution-policy-v1',
-      calls: [],
-    },
+    providerExecution: candidateProviderExecutionFixture(),
   };
 }
 

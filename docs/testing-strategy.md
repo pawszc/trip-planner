@@ -120,6 +120,25 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
 - dokładnie jeden allowlistowany `AI_PRE_START_FAILURE` dla każdej próby `GENERATE`/`JUDGE`
   bez durable `STARTED`, bez `aiRunId`/raw danych i zawsze z `providerCallAttempted=false`;
 - blokadę live smoke, brak credentiali i dokładnie jedno wywołanie po jawnym opt-in.
+- `offer-freshness-policy-v1` z injected clock: LIVE przed/na/po expiry i `null`, zerowy
+  margines oraz brak odczytu zegara dla fixture i `INTERNAL_RULE`;
+- Duffel v2 offline: allowlisted Zod projection, Search Policy v1, wstrzykiwany i wersjonowany
+  origin catalog związany z manifest/query identity, destination IATA allowlist, maksymalny
+  fan-out i limit 9 adults, odrzucenie błędnych dat/waluty/pustych destinations przed tokenem i
+  siecią, headers, two-slice/segments/timezones/carriers, PLN/EUR minor units, mandatory
+  arithmetic, `UNKNOWN` services dla endpointowej fixture oraz osobną syntetyczną fixture
+  services, envelope/per-offer validation z zachowaniem poprawnych siblings, ponad 200 ofert
+  bez sztucznego limitu elementów, limit 64 MiB odpowiedzi, pełny segmentowy
+  sort/dedup/truncation, canonical ancillary order, izolację powtórzonego ancillary ID,
+  same-ID conflict obejmujący carrier attribution, exact manifest identity przed pustym wynikiem
+  oraz TEST lineage jako `LIVE`;
+- zamknięte 429/5xx/network/invalid JSON/schema/timeout/cancellation/partial-destination bez
+  raw body, provider text, headerów, stack trace lub tokenu oraz dokładnie jeden
+  `executeUpstream` permit per fizyczny request;
+- trwały fingerprint pełnego znormalizowanego provider result set oraz replay-time rekalkulację
+  tego fingerprintu z audytu i fingerprintu wiążącego wybrane kanoniczne źródła; zmiana
+  bezpiecznej atrybucji albo audit result hash w bazie kończy się fail-closed bez konstrukcji
+  providera i bez network;
 
 Scenariusz referencyjny 2B wymaga dokładnie 28 zbudowanych, 6 poprawnych i 22
 odrzuconych kandydatów. Wynik to Praga `BEST_OVERALL`, Wiedeń `MOST_CONVENIENT` i
@@ -152,6 +171,11 @@ deterministyczny wraz z kontraktem 4B0 sprawdza między innymi:
 - kontrolowany niedobór z diagnostyką i zerem częściowych opcji oraz frozen replay historycznego
   `INSUFFICIENT_OPTIONS` v1 bez provider call/write;
 - rollback wszystkich zapisów po awarii providera.
+- realny CAP/SQLite read checkpoint → kontrolowany provider wait bez aktywnej transakcji →
+  niezależny write → rewalidowany product write oraz fail-closed przy zmianie workflow bez
+  zgodnego równoległego runu;
+- wstrzyknięcie mieszanego profilu Duffel TEST + fixture accommodation/places przez istniejące
+  seams serwisu, z 24 audytowanymi calls, trzema niezmienionymi rolami selection i bez sieci;
 - INSERT `STARTED` oraz aktualizację tego samego `AiRuns` do `SUCCEEDED`/`FAILED`;
 - pełne bezpieczne metadata runu, terminalne response ID/status/incomplete reason, opcjonalne
   powiązanie `PlanningRun` i brak raw payloadów;

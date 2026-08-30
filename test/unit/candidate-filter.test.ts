@@ -18,6 +18,91 @@ function reasonsFor(candidate: TripCandidate): readonly RejectionReason[] {
 }
 
 describe('candidate hard filtering', () => {
+  it.each([
+    ['expired', '2026-10-01T12:00:00.000Z'],
+    ['missing expiry', null],
+  ] as const)('rejects LIVE transport with %s before ranking', (_label, expiresAt) => {
+    const candidate = candidateFixture();
+    const fixtureSource = candidate.transport.sourceSnapshot;
+    if (fixtureSource === null) throw new Error('Missing transport source fixture.');
+    const liveSource: SourceSnapshot = {
+      ...fixtureSource,
+      sourceType: 'LIVE',
+      provider: 'Duffel',
+      freshnessType: 'LIVE',
+      fixtureVersion: null,
+      sourceUrl: 'https://duffel.com',
+      expiresAt,
+    };
+    const withSource = <T extends { sourceSnapshot: SourceSnapshot | null }>(money: T): T => ({
+      ...money,
+      sourceSnapshot: liveSource,
+    });
+    const transport = {
+      ...candidate.transport,
+      sourceSnapshot: liveSource,
+      price: withSource(candidate.transport.price),
+      additionalFees: withSource(candidate.transport.additionalFees),
+      pricing: {
+        ...candidate.transport.pricing,
+        mandatoryTotal: withSource(candidate.transport.pricing.mandatoryTotal),
+      },
+    };
+    const result = validateCandidate(
+      { ...candidate, transport },
+      candidateContext,
+      {},
+      () => new Date('2026-10-01T12:00:00.000Z'),
+    );
+
+    expect(result.reasons.map((reason) => reason.code)).toContain('INCOMPLETE_DATA');
+    expect(result.reasons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          details: expect.objectContaining({
+            fields: expect.arrayContaining([expect.stringMatching(/^sourceFreshness:transport:/u)]),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it('does not apply selectable-offer expiry rules to a live place snapshot', () => {
+    const candidate = candidateFixture();
+    const place = candidate.places[0];
+    if (place?.sourceSnapshot === null || place?.sourceSnapshot === undefined) {
+      throw new Error('Missing place source fixture.');
+    }
+    const livePlaceSource: SourceSnapshot = {
+      ...place.sourceSnapshot,
+      sourceType: 'LIVE',
+      provider: 'OfflineLivePlacesProvider',
+      freshnessType: 'LIVE',
+      fixtureVersion: null,
+      sourceUrl: 'https://example.test',
+      expiresAt: null,
+    };
+    const result = validateCandidate(
+      {
+        ...candidate,
+        places: [{ ...place, sourceSnapshot: livePlaceSource }, ...candidate.places.slice(1)],
+      },
+      candidateContext,
+      {},
+      () => new Date('2026-10-01T12:00:00.000Z'),
+    );
+
+    expect(result.reasons).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          details: expect.objectContaining({
+            fields: expect.arrayContaining([expect.stringMatching(/^sourceFreshness:place:/u)]),
+          }),
+        }),
+      ]),
+    );
+  });
+
   const cases: readonly {
     code: RejectionCode;
     evaluate: () => readonly RejectionReason[];
@@ -398,5 +483,58 @@ describe('candidate hard filtering', () => {
       },
     });
     expect(reasons.map((reason) => reason.code)).toContain('INVALID_DATES');
+  });
+
+  it('uses the explicit local calendar date for a departure near the UTC boundary', () => {
+    const candidate = candidateFixture();
+    const result = validateCandidate(
+      {
+        ...candidate,
+        transport: {
+          ...candidate.transport,
+          outbound: {
+            ...candidate.transport.outbound,
+            departureAt: '2026-10-10T00:30:00.000+02:00',
+            arrivalAt: '2026-10-10T04:30:00.000+02:00',
+          },
+        },
+      },
+      {
+        ...candidateContext,
+        hardConstraints: { ...candidateContext.hardConstraints, earliestDepartureTime: null },
+      },
+    );
+
+    expect(result.reasons.map((reason) => reason.code)).not.toContain('INVALID_DATES');
+  });
+
+  it('rejects a return arriving on the next local calendar day even when its UTC day still fits', () => {
+    const candidate = candidateFixture();
+    const result = validateCandidate(
+      {
+        ...candidate,
+        transport: {
+          ...candidate.transport,
+          return: {
+            ...candidate.transport.return,
+            departureAt: '2026-10-13T20:30:00.000+02:00',
+            arrivalAt: '2026-10-14T00:30:00.000+02:00',
+          },
+        },
+      },
+      {
+        ...candidateContext,
+        hardConstraints: { ...candidateContext.hardConstraints, latestReturnTime: null },
+      },
+    );
+
+    expect(result.reasons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'INVALID_DATES',
+          details: { issues: expect.arrayContaining(['outside-trip-window']) },
+        }),
+      ]),
+    );
   });
 });

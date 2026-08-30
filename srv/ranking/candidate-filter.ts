@@ -7,6 +7,11 @@ import {
 import { type Money, type SourceSnapshot } from '../domain/money.ts';
 import { offerPricingValidationIssues } from '../domain/offer-pricing.ts';
 import { canonicalSourceSnapshot, isCompleteSourceSnapshot } from '../providers/source-snapshot.ts';
+import {
+  sourceFreshnessValidationIssues,
+  systemOfferFreshnessClock,
+  type OfferFreshnessClock,
+} from '../providers/offer-freshness.ts';
 import { SOFT_PREFERENCE_KEYS } from '../domain/trip-request.ts';
 import { parseStrictIsoDate } from '../validation/strict-iso-date.ts';
 import { mergeCandidateEngineConfig, type CandidateEngineConfigOverride } from './config.ts';
@@ -48,6 +53,11 @@ function strictInstant(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function localCalendarDate(value: string): string | null {
+  const date = /^(\d{4}-\d{2}-\d{2})T/u.exec(value)?.[1] ?? '';
+  return parseStrictIsoDate(date) === null ? null : date;
+}
+
 /** Provider IDs do not participate in semantic transport + hotel identity. */
 export function candidateSemanticSignature(candidate: TripCandidate): string {
   const transport = candidate.transport;
@@ -71,7 +81,7 @@ export function candidateSemanticSignature(candidate: TripCandidate): string {
   ].join('|');
 }
 
-function moneyEntries(candidate: TripCandidate): readonly (readonly [string, Money])[] {
+function offerMoneyEntries(candidate: TripCandidate): readonly (readonly [string, Money])[] {
   return [
     ['transport.price', candidate.transport.price],
     ['transport.additionalFees', candidate.transport.additionalFees],
@@ -91,11 +101,29 @@ function moneyEntries(candidate: TripCandidate): readonly (readonly [string, Mon
     ...candidate.stay.pricing.optionalAncillaries.items.map(
       (charge) => [`stay.pricing.optionalAncillaries.${charge.id}`, charge.amount] as const,
     ),
+  ];
+}
+
+function moneyEntries(candidate: TripCandidate): readonly (readonly [string, Money])[] {
+  return [
+    ...offerMoneyEntries(candidate),
     ['budget.localTransport', candidate.budget.localTransport],
     ['budget.food', candidate.budget.food],
     ['budget.attractions', candidate.budget.attractions],
     ['budget.additionalFees', candidate.budget.additionalFees],
     ['budget.buffer', candidate.budget.buffer],
+  ];
+}
+
+function offerSourceEntries(
+  candidate: TripCandidate,
+): readonly (readonly [string, SourceSnapshot | null])[] {
+  return [
+    ['transport', candidate.transport.sourceSnapshot],
+    ['stay', candidate.stay.sourceSnapshot],
+    ...offerMoneyEntries(candidate).map(
+      ([path, money]) => [`money:${path}`, money.sourceSnapshot] as const,
+    ),
   ];
 }
 
@@ -118,21 +146,22 @@ function invalidDates(candidate: TripCandidate, context: PlanningContext): reado
   const outboundArrival = strictInstant(candidate.transport.outbound.arrivalAt);
   const returnDeparture = strictInstant(candidate.transport.return.departureAt);
   const returnArrival = strictInstant(candidate.transport.return.arrivalAt);
-  const tripStart = parseStrictIsoDate(context.startDate) ?? Number.NaN;
-  const tripEndStart = parseStrictIsoDate(context.endDate);
-  const tripEnd = tripEndStart === null ? Number.NaN : tripEndStart + 86_400_000 - 1;
+  const outboundDepartureDate = localCalendarDate(candidate.transport.outbound.departureAt);
+  const returnArrivalDate = localCalendarDate(candidate.transport.return.arrivalAt);
   if (
     outboundDeparture === null ||
     outboundArrival === null ||
     returnDeparture === null ||
-    returnArrival === null
+    returnArrival === null ||
+    outboundDepartureDate === null ||
+    returnArrivalDate === null
   ) {
     issues.push('transport-instant-format');
   } else {
     if (outboundDeparture >= outboundArrival) issues.push('outbound-order');
     if (outboundArrival >= returnDeparture) issues.push('stay-window-order');
     if (returnDeparture >= returnArrival) issues.push('return-order');
-    if (outboundDeparture < tripStart || returnArrival > tripEnd)
+    if (outboundDepartureDate < context.startDate || returnArrivalDate > context.endDate)
       issues.push('outside-trip-window');
     if (
       Math.floor((outboundArrival - outboundDeparture) / 60_000) !==
@@ -229,6 +258,7 @@ export function validateCandidate(
   candidate: TripCandidate,
   context: PlanningContext,
   configOverride: CandidateEngineConfigOverride = {},
+  freshnessClock: OfferFreshnessClock = systemOfferFreshnessClock,
 ): CandidateValidationResult {
   const config = mergeCandidateEngineConfig(configOverride);
   const reasons: RejectionReason[] = [];
@@ -416,6 +446,14 @@ export function validateCandidate(
   }
 
   const missingFields = [...incompleteFields(candidate)];
+  for (const [path, source] of offerSourceEntries(candidate)) {
+    if (source === null) continue;
+    missingFields.push(
+      ...sourceFreshnessValidationIssues(source, freshnessClock).map(
+        (issue) => `sourceFreshness:${path}:${issue}`,
+      ),
+    );
+  }
   missingFields.push(
     ...offerPricingValidationIssues(
       candidate.transport.price,
@@ -467,9 +505,10 @@ export function filterCandidates(
   candidates: readonly TripCandidate[],
   context: PlanningContext,
   configOverride: CandidateEngineConfigOverride = {},
+  freshnessClock: OfferFreshnessClock = systemOfferFreshnessClock,
 ): CandidateFilterResult {
   const results = candidates.map((candidate) => {
-    const validation = validateCandidate(candidate, context, configOverride);
+    const validation = validateCandidate(candidate, context, configOverride, freshnessClock);
     return { ...validation, mutableReasons: [...validation.reasons] };
   });
   const bySignature = new Map<string, typeof results>();
