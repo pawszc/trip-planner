@@ -9,7 +9,7 @@ są zamknięte. Nie zezwala na wykonanie requestu do Duffel.
 
 ## Status
 
-`DONE — OFFLINE READINESS MERGED / ONE-SHOT TEST FAILED CLOSED / REPAIR REVIEW`
+`DONE — OFFLINE READINESS MERGED / ONE-SHOT TEST FAILED CLOSED / REPAIR MERGED AND VERIFIED`
 
 Kierunek i kolejność zostały zaakceptowane 2026-08-30. Implementacja offline, review i
 wymagane testy są zmergowane i zweryfikowane na `main`. Uruchomienie smoke pozostaje osobną
@@ -52,6 +52,28 @@ Evidence implementacji follow-upu przed Draft PR:
 Znane ograniczenie: evidence v1 z pierwszego smoke nie pozwala ustalić, który zamknięty etap
 spowodował historyczne `INVALID_SCHEMA`. Zmiana zwiększa bezpieczeństwo przyszłej diagnostyki i
 zgodność z udokumentowaną nullability, ale nie gwarantuje, że kolejny sandbox smoke zwróci ofertę.
+
+Closeout follow-upu 4B2-F1:
+
+- naprawa została zmergowana 2026-08-30 w PR #29; merge commit to
+  `main@19bb2efb8c69738c4c7528ee59697a2ba0d2e5e8`, a ostatni head implementacyjny to
+  `884d4ac90e6abb92a7c424cb4566d09b85e2dcce`;
+- review nie pozostawił findingów blokujących, a targeted regression set zakończył się wynikiem
+  4 pliki / 115 testów PASS;
+- przed merge `npm run verify:full` i `git diff --check` przeszły dla exact head; pełna
+  weryfikacja obejmowała 50 plików i 957 testów unit, 6 plików i 128 testów integration oraz
+  2 testy E2E;
+- oba checki PR
+  [33320422279](https://github.com/pawszc/trip-planner/actions/runs/33320422279) i
+  [33320454541](https://github.com/pawszc/trip-planner/actions/runs/33320454541) oraz post-merge
+  CI [33326387111](https://github.com/pawszc/trip-planner/actions/runs/33326387111) dla exact
+  merge SHA zakończyły się `SUCCESS`;
+- implementacja, review, testy, CI i closeout naprawy wykonały: Duffel/external API requests `0`,
+  provider attempts `0`, credential reads/use `0`, odczyty/wydruki/logi `.env` `0` oraz
+  rzeczywisty koszt `0 USD`;
+- nie wykonano kolejnego preflightu ani smoke. Merge naprawy unieważnił wcześniejszy plan i
+  approval; nowy credential-free preflight wolno utworzyć dopiero z finalnego SHA po merge tego
+  closeout PR, a request nadal wymaga osobnej jawnej zgody zgodnej z 4B2.4.
 
 ## Preconditions
 
