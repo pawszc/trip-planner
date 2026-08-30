@@ -128,6 +128,13 @@ strumieniowy limit 64 MiB odpowiedzi po dekompresji, związany z Search Policy i
 arbitralny limit liczby ofert. Brak `available_services` w odpowiedzi Offer Request zachowuje
 kompletność ancillary `UNKNOWN`. Test-mode lineage pozostaje `LIVE`, bez `fixtureVersion`, a
 domyślny profil produktu pozostaje fixture bez silent fallbacku.
+Adapter v2 i upstream projection v3 dopuszczają udokumentowane `null` w `time_zone` miejsca,
+ale mapper nadal failuje pojedynczą ofertę, jeżeli brak strefy uniemożliwia deterministyczne
+przeliczenie lokalnego czasu. Brak danych nie jest więc ukrywany ani uzupełniany. Błędy
+`INVALID_SCHEMA` mogą dodatkowo zachować wyłącznie zamknięty etap bez danych providera:
+`RESPONSE_JSON`, `RESPONSE_ENVELOPE`, `ENVIRONMENT_IDENTITY`, `RESULT_ITEM_SCHEMA`,
+`RESULT_SEMANTIC_IDENTITY` albo `RESULT_ACCOUNTING`. Etap nie zawiera ścieżki walidacji,
+wartości pola, tekstu upstream, payloadu ani sekretu i nie zmienia ogólnej kategorii błędu.
 Instancja adaptera live musi przed fan-outem potwierdzić dokładną tożsamość z manifestu, także
 dla pustego wyniku; źródła wybranych fixture są związane z faktycznie wykonanym query.
 
@@ -141,6 +148,13 @@ a test-mode identity tokenu przed transportem. Runner ponownie używa adaptera 4
 fingerprintów, liczników, czasu i zamkniętego statusu bez requestu, response, oferty, ceny,
 przewoźnika lub sekretu. Granica nie włącza Duffel w profilu produktu i nie jest zgodą na
 request ani production activation.
+
+Pierwszy jawnie zatwierdzony one-shot TEST smoke zakończył się fail-closed jako
+`INVALID_SCHEMA`, przy dokładnie jednym requestcie, jednej próbie i koszcie `0 USD`; retry nie
+wykonano. Evidence v1 nie zawierało etapu, dlatego dokładnej przyczyny tego historycznego wyniku
+nie da się ustalić bez raw payloadu ani retroaktywnie odtworzyć. Follow-up podbija evidence do v2,
+wiąże przyszły błąd z jednym z powyższych zamkniętych etapów i unieważnia wcześniejszy plan oraz
+approval przez zmianę wersjonowanej identity.
 
 Kwoty są dyskryminowaną unią `Money`: znane ceny przechowują bezpieczną całkowitą
 liczbę minor units, natomiast `UNKNOWN` ma `amountMinor: null`. Każda cena ma

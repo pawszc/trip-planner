@@ -132,6 +132,11 @@ Uruchamiają czystą domenę bez UI i bazy. Obejmują:
   sort/dedup/truncation, canonical ancillary order, izolację powtórzonego ancillary ID,
   same-ID conflict obejmujący carrier attribution, exact manifest identity przed pustym wynikiem
   oraz TEST lineage jako `LIVE`;
+- adapter Duffel v2/upstream projection v3: udokumentowane nullable `time_zone` jest akceptowane
+  na granicy schematu, ale oferta pozostaje odrzucona przez mapper bez syntetyzowania strefy;
+  każdy przyszły `INVALID_SCHEMA` ma dokładnie jeden zamknięty etap JSON/envelope/environment/
+  item/semantic identity/result accounting, a testy dowodzą braku raw path, field value,
+  provider text i sekretu w bezpiecznej serializacji;
 - zamknięte 429/5xx/network/invalid JSON/schema/timeout/cancellation/partial-destination bez
   raw body, provider text, headerów, stack trace lub tokenu oraz dokładnie jeden
   `executeUpstream` permit per fizyczny request;
@@ -301,6 +306,13 @@ start, `verify`, `verify:full` ani CI. Jego przyszłe uruchomienie wymaga osobne
 SHA, fingerprint, daty i limit jednego TEST requestu. Testy jednostkowe używają wyłącznie
 wstrzykniętego transportu; sama implementacja i weryfikacja Phase 4B2 wykonują 0 requestów,
 0 credential reads i koszt 0.
+
+Pierwszy zatwierdzony one-shot smoke wykonał jeden request i jedną próbę, bez retry, i zwrócił
+bezpieczne `FAILED / INVALID_SCHEMA` przy koszcie `0 USD`. Historyczne evidence v1 nie pozwala
+ustalić dokładnego etapu. Evidence v2 wymaga dla przyszłego `INVALID_SCHEMA` jednego
+provider-data-free `schemaFailureStage`; nowe testy pozostają offline i nie upoważniają do
+powtórzenia smoke. Każdy kolejny request wymaga nowego preflightu i osobnej zgody związanej z
+aktualnym SHA oraz fingerprintem.
 
 Finalny live baseline jest osobną ścieżką od smoke. Wymaga
 `AI_LIVE_EVAL_ENABLED=true`, istniejącego gateway opt-in, credentiali, znanych

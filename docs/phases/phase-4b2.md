@@ -9,11 +9,49 @@ są zamknięte. Nie zezwala na wykonanie requestu do Duffel.
 
 ## Status
 
-`DONE — OFFLINE READINESS MERGED / TEST-MODE REQUEST NOT AUTHORIZED`
+`DONE — OFFLINE READINESS MERGED / ONE-SHOT TEST FAILED CLOSED / REPAIR REVIEW`
 
 Kierunek i kolejność zostały zaakceptowane 2026-08-30. Implementacja offline, review i
 wymagane testy są zmergowane i zweryfikowane na `main`. Uruchomienie smoke pozostaje osobną
 decyzją wymagającą nowego planu związanego z aktualnym SHA oraz jawnej zgody.
+
+### Follow-up 4B2-F1 — schema diagnostics repair
+
+Jednorazowy smoke zatwierdzony po closeout wykonał 2026-08-30 dokładnie jeden request i jedną
+próbę dla `main@9a63652a24f6d5df75ef2f0ebe6cfd2b07c91fba` oraz plan fingerprintu
+`7d41763d2201a0cd5e37cb8a0e6e14c4dc1ae4d830232678b6970230761802af`. Bezpieczny wynik to
+`FAILED / INVALID_SCHEMA`, `httpStatus=null`, `resultCount=null`, provider cost `0 USD`.
+Zgoda została zużyta i nie zezwala na retry ani drugi request.
+
+Zakres osobnego tasku naprawczego:
+
+- dodać zamknięty, provider-data-free etap błędu schematu, który rozróżnia JSON, envelope,
+  environment identity, item schema, semantic identity i lokalne result accounting;
+- zachować jedną ogólną kategorię `INVALID_SCHEMA`, bez raw response, provider text, ścieżek
+  walidacji, wartości pól, exception message ani stack trace;
+- dostosować projekcję miejsca do oficjalnie nullable `time_zone`, lecz nadal odrzucać ofertę
+  w mapperze, gdy brak strefy uniemożliwia deterministyczne wyliczenie czasu;
+- podbić wersje adaptera, upstream schema i smoke evidence, aby każdy stary fingerprint i approval
+  pozostał nieważny;
+- dodać wyłącznie offline testy regresyjne dla każdego etapu i nullability.
+
+Poza zakresem follow-upu pozostają: odczyt credentiali, kolejny request Duffel, raw payload
+capture, osłabienie pozostałych walidacji, zmiana trasy, retry/fallback, order/payment oraz
+production activation.
+
+Evidence implementacji follow-upu przed Draft PR:
+
+- adapter `duffel-api-transport-v2`, upstream projection
+  `duffel-offer-request-offers-v3` i evidence `duffel-smoke-evidence-v2`;
+- `npm run verify`: PASS — 957 testów unit, 128 integration, evale offline i oba buildy;
+- `npm run verify:full`: PASS — powyższy zestaw oraz 2 testy E2E;
+- `git diff --check`: PASS;
+- external/Duffel calls: 0, provider attempts: 0, credential reads: 0, `.env` reads: 0,
+  rzeczywisty koszt follow-upu: `0 USD`.
+
+Znane ograniczenie: evidence v1 z pierwszego smoke nie pozwala ustalić, który zamknięty etap
+spowodował historyczne `INVALID_SCHEMA`. Zmiana zwiększa bezpieczeństwo przyszłej diagnostyki i
+zgodność z udokumentowaną nullability, ale nie gwarantuje, że kolejny sandbox smoke zwróci ofertę.
 
 ## Preconditions
 

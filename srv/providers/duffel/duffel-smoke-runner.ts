@@ -92,6 +92,7 @@ interface EvidenceInput {
   readonly completedAt: string;
   readonly status: DuffelSmokeEvidence['status'];
   readonly failureCategory: DuffelSmokeFailureCategory;
+  readonly schemaFailureStage?: DuffelSmokeEvidence['schemaFailureStage'];
   readonly credentialAccessed: boolean;
   readonly events?: readonly ProviderCallAuditEvent[];
 }
@@ -105,6 +106,7 @@ function evidence(input: EvidenceInput): DuffelSmokeEvidence {
     evidenceVersion: DUFFEL_SMOKE_EVIDENCE_VERSION,
     status: auditInvalid ? 'FAILED' : input.status,
     failureCategory: auditInvalid ? 'AUDIT_CONTRACT_VIOLATION' : input.failureCategory,
+    schemaFailureStage: auditInvalid ? null : (input.schemaFailureStage ?? null),
     environment: 'TEST',
     sourceSha: plan.sourceSha,
     planVersion: plan.planVersion,
@@ -254,6 +256,8 @@ export async function runDuffelTestModeSmoke(
         error instanceof ProviderExecutionError
           ? failureCategory(error)
           : 'UNEXPECTED_SAFE_FAILURE',
+      schemaFailureStage:
+        error instanceof ProviderExecutionError ? error.evidence.schemaFailureStage : null,
       credentialAccessed: true,
       events,
     });

@@ -14,6 +14,16 @@ export const PROVIDER_FAILURE_CATEGORY_VALUES = [
 ] as const;
 export type ProviderFailureCategory = (typeof PROVIDER_FAILURE_CATEGORY_VALUES)[number];
 
+export const PROVIDER_SCHEMA_FAILURE_STAGE_VALUES = [
+  'RESPONSE_JSON',
+  'RESPONSE_ENVELOPE',
+  'ENVIRONMENT_IDENTITY',
+  'RESULT_ITEM_SCHEMA',
+  'RESULT_SEMANTIC_IDENTITY',
+  'RESULT_ACCOUNTING',
+] as const;
+export type ProviderSchemaFailureStage = (typeof PROVIDER_SCHEMA_FAILURE_STAGE_VALUES)[number];
+
 export const PROVIDER_OPERATION_VALUES = [
   'TRANSPORT_SEARCH',
   'ACCOMMODATION_SEARCH',
@@ -38,6 +48,7 @@ export interface ProviderFailureEvidence {
   httpStatus: number | null;
   destinationCode: string | null;
   underlyingCategory: ProviderFailureCategory | null;
+  schemaFailureStage: ProviderSchemaFailureStage | null;
   rateLimit: ProviderRateLimitEvidence | null;
 }
 
@@ -119,6 +130,7 @@ export interface ProviderExecutionErrorInput {
   httpStatus?: number | null;
   destinationCode?: string | null;
   underlyingCategory?: ProviderFailureCategory | null;
+  schemaFailureStage?: ProviderSchemaFailureStage | null;
   rateLimit?: Partial<ProviderRateLimitEvidence> | null;
 }
 
@@ -145,6 +157,13 @@ export class ProviderExecutionError extends Error {
       PROVIDER_FAILURE_CATEGORY_VALUES.includes(input.underlyingCategory)
         ? input.underlyingCategory
         : null;
+    const schemaFailureStage =
+      (category === 'INVALID_SCHEMA' || underlyingCategory === 'INVALID_SCHEMA') &&
+      input.schemaFailureStage !== null &&
+      input.schemaFailureStage !== undefined &&
+      PROVIDER_SCHEMA_FAILURE_STAGE_VALUES.includes(input.schemaFailureStage)
+        ? input.schemaFailureStage
+        : null;
     super(CATEGORY_MESSAGES[category]);
     this.name = 'ProviderExecutionError';
     this.category = category;
@@ -159,6 +178,7 @@ export class ProviderExecutionError extends Error {
       httpStatus: safeHttpStatus(input.httpStatus),
       destinationCode: safeIdentifier(input.destinationCode, 12),
       underlyingCategory,
+      schemaFailureStage,
       rateLimit:
         input.rateLimit === null || input.rateLimit === undefined
           ? null

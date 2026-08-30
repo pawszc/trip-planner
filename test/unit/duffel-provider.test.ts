@@ -681,6 +681,7 @@ describe('Duffel HTTP/provider boundary', () => {
       category: 'PARTIAL_DESTINATION',
       evidence: {
         underlyingCategory: 'INVALID_SCHEMA',
+        schemaFailureStage: 'RESPONSE_JSON',
         destinationCode: 'PRG',
       },
     });
@@ -827,12 +828,14 @@ describe('Duffel HTTP/provider boundary', () => {
         }),
       'RATE_LIMITED',
       429,
+      null,
     ],
     [
       '5xx',
       async () => new Response('provider text secret-test-token', { status: 503 }),
       'UPSTREAM_5XX',
       503,
+      null,
     ],
     [
       'oversized JSON',
@@ -843,12 +846,14 @@ describe('Duffel HTTP/provider boundary', () => {
         }),
       'INVALID_SCHEMA',
       null,
+      'RESPONSE_JSON',
     ],
     [
       'invalid JSON',
       async () => new Response('{not-json', { status: 200 }),
       'INVALID_SCHEMA',
       null,
+      'RESPONSE_JSON',
     ],
     [
       'invalid schema',
@@ -859,6 +864,7 @@ describe('Duffel HTTP/provider boundary', () => {
         ),
       'INVALID_SCHEMA',
       null,
+      'RESULT_ITEM_SCHEMA',
     ],
     [
       'network',
@@ -867,10 +873,11 @@ describe('Duffel HTTP/provider boundary', () => {
       },
       'NETWORK',
       null,
+      null,
     ],
   ] as const)(
     'normalizes %s without raw provider data',
-    async (_label, transport, underlying, status) => {
+    async (_label, transport, underlying, status, schemaFailureStage) => {
       const scope = new ProviderExecutionScope();
       const error = await provider(transport)
         .search(request, executionOptions(scope))
@@ -878,13 +885,37 @@ describe('Duffel HTTP/provider boundary', () => {
       expect(error).toBeInstanceOf(ProviderExecutionError);
       expect(error).toMatchObject({
         category: 'PARTIAL_DESTINATION',
-        evidence: { underlyingCategory: underlying, httpStatus: status, destinationCode: 'PRG' },
+        evidence: {
+          underlyingCategory: underlying,
+          httpStatus: status,
+          schemaFailureStage,
+          destinationCode: 'PRG',
+        },
       });
       expect(JSON.stringify((error as ProviderExecutionError).toSafeJSON())).not.toContain(
         'secret-test-token',
       );
     },
   );
+
+  it('accepts documented nullable time zones at the schema boundary and drops the offer', async () => {
+    const fixture = duffelFixture();
+    const origin = fixture.data.offers[0]!.slices[0]!.segments[0]!.origin as {
+      time_zone: string | null;
+    };
+    origin.time_zone = null;
+
+    expect(duffelOfferRequestResponseSchema.safeParse(fixture).success).toBe(true);
+    const scope = new ProviderExecutionScope();
+    const results = await provider(
+      async () => new Response(JSON.stringify(fixture), { status: 200 }),
+    ).search(request, executionOptions(scope));
+
+    expect(results).toEqual([]);
+    expect(scope.getAuditEvents()).toEqual([
+      expect.objectContaining({ status: 'SUCCEEDED', resultCount: 0, failureCategory: null }),
+    ]);
+  });
 
   it('routes every destination request through executeUpstream and keeps empty identity', async () => {
     const empty = duffelFixture();
@@ -993,7 +1024,11 @@ describe('Duffel HTTP/provider boundary', () => {
     expect(error).toBeInstanceOf(ProviderExecutionError);
     expect(error).toMatchObject({
       category: 'PARTIAL_DESTINATION',
-      evidence: { underlyingCategory: 'INVALID_SCHEMA', destinationCode: 'PRG' },
+      evidence: {
+        underlyingCategory: 'INVALID_SCHEMA',
+        schemaFailureStage: 'RESULT_SEMANTIC_IDENTITY',
+        destinationCode: 'PRG',
+      },
     });
     expect(scope.getAuditEvents()).toEqual([
       expect.objectContaining({
@@ -1024,7 +1059,11 @@ describe('Duffel HTTP/provider boundary', () => {
       expect(error).toBeInstanceOf(ProviderExecutionError);
       expect(error).toMatchObject({
         category: 'PARTIAL_DESTINATION',
-        evidence: { underlyingCategory: 'INVALID_SCHEMA', destinationCode: 'PRG' },
+        evidence: {
+          underlyingCategory: 'INVALID_SCHEMA',
+          schemaFailureStage: 'RESULT_SEMANTIC_IDENTITY',
+          destinationCode: 'PRG',
+        },
       });
     }
   });

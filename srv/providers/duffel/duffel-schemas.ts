@@ -26,7 +26,7 @@ const duration = z.string().regex(/^PT(?=\d)(?:\d+H)?(?:\d+M)?$/);
 
 const locationSchema = z.object({
   iata_code: iataCode,
-  time_zone: z.string().min(1).max(80),
+  time_zone: z.string().min(1).max(80).nullable(),
 });
 
 const carrierSchema = z.object({
@@ -95,7 +95,7 @@ export const duffelOfferRequestResponseSchema = z.object({
 });
 
 export const DUFFEL_UPSTREAM_SCHEMA_FINGERPRINT = createProviderFingerprint({
-  contract: 'duffel-offer-request-offers-v2',
+  contract: 'duffel-offer-request-offers-v3',
   constraints: {
     maximumAmountCharacters: DUFFEL_MAX_AMOUNT_CHARACTERS,
     maximumSegmentsPerSlice: DUFFEL_MAX_SEGMENTS_PER_SLICE,
@@ -103,6 +103,7 @@ export const DUFFEL_UPSTREAM_SCHEMA_FINGERPRINT = createProviderFingerprint({
       maximumCharacters: 160,
       rejectedControlRanges: ['U+0000-U+001F', 'U+007F-U+009F'],
     },
+    nullableFields: ['segment.origin.time_zone', 'segment.destination.time_zone'],
   },
   projection: [
     'offer.id',

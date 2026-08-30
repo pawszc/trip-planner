@@ -137,6 +137,9 @@ function mapSlice(slice: DuffelSlice): TransportLeg {
   }
   let previousArrivalAt: string | null = null;
   const mappedSegments = slice.segments.map((segment) => {
+    if (segment.origin.time_zone === null || segment.destination.time_zone === null) {
+      throw new TypeError('Duffel segment is missing a required time zone.');
+    }
     const departureAt = zonedInstant(segment.departing_at, segment.origin.time_zone);
     const arrivalAt = zonedInstant(segment.arriving_at, segment.destination.time_zone);
     const explicitDuration = durationMinutes(segment.duration);

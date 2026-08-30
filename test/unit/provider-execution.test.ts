@@ -373,7 +373,11 @@ describe('provider execution scope', () => {
     expect(error).toBeInstanceOf(ProviderExecutionError);
     expect(error).toMatchObject({
       category: 'INVALID_SCHEMA',
-      evidence: expect.objectContaining({ providerCallAttempted: true, attempts: 1 }),
+      evidence: expect.objectContaining({
+        providerCallAttempted: true,
+        attempts: 1,
+        schemaFailureStage: 'RESULT_ACCOUNTING',
+      }),
     });
     expect(JSON.stringify((error as ProviderExecutionError).toSafeJSON())).not.toContain(
       'RAW_MAPPED_RESULT_SENTINEL',
