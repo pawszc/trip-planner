@@ -9,11 +9,11 @@ są zamknięte. Nie zezwala na wykonanie requestu do Duffel.
 
 ## Status
 
-`REVIEW — OFFLINE IMPLEMENTATION COMPLETE / TEST-MODE REQUEST NOT AUTHORIZED`
+`DONE — OFFLINE READINESS MERGED / TEST-MODE REQUEST NOT AUTHORIZED`
 
-Kierunek i kolejność zostały zaakceptowane 2026-08-30. Implementacja offline jest kompletna
-na dedykowanym branchu i oczekuje na review. Uruchomienie smoke pozostaje osobną decyzją
-wymagającą dokładnego planu i jawnej zgody.
+Kierunek i kolejność zostały zaakceptowane 2026-08-30. Implementacja offline, review i
+wymagane testy są zmergowane i zweryfikowane na `main`. Uruchomienie smoke pozostaje osobną
+decyzją wymagającą nowego planu związanego z aktualnym SHA oraz jawnej zgody.
 
 ## Preconditions
 
@@ -212,6 +212,28 @@ retry, fallback, pagination, polling, order/payment albo raw payload; nie da si�
 granicy 4B1; trzeba osłabić schema/redaction; preflight i runner nie zgadzają się fingerprintem;
 albo request byłby potrzebny tylko do uzyskania zielonego PR. Brak użytecznej oferty po
 jednorazowym zatwierdzonym smoke również jest eskalacją, nie zgodą na drugi request.
+
+## Closeout evidence
+
+- Implementacja 4B2 została zmergowana 2026-08-30 w PR #27. Merge commit to
+  `main@bdf9cd5b5b63d9ae42a550d9411cf2342b76e082`, a ostatni head implementacyjny to
+  `1d33d8528ab371991447a0d20487a76940cabd05`.
+- Review wykrył jedną lukę semantyczną strict evidence: schema dopuszczała sprzeczne ręcznie
+  skonstruowane kombinacje status/count/category. Poprawka i testy regresyjne zostały
+  zmergowane w tym samym PR; po poprawce nie pozostały znane findingi blokujące.
+- Przed merge `npm run verify:full` i `git diff --check` przeszły. Weryfikacja obejmowała 50
+  plików i 953 testy jednostkowe, 6 plików i 128 testów integracyjnych oraz 2 testy E2E.
+- Post-merge CI run
+  [33316151852](https://github.com/pawszc/trip-planner/actions/runs/33316151852) dla exact merge
+  SHA zakończył się `SUCCESS`.
+- Implementacja, review, testy, CI i closeout wykonały: Duffel/travel-provider/live API
+  requests `0`, credential reads/use `0`, odczyty/wydruki/logi `.env` `0`, planowany koszt
+  `0 USD` i rzeczywisty koszt `0 USD`. Ruch GitHub użyty do PR i CI nie jest provider call.
+- Żaden fingerprint preflightu sprzed merge nie jest ważną approval identity dla bieżącego
+  `main`. Po merge nie uruchomiono `duffel:smoke:test`, nie odczytano tokenu i nie powstała
+  zgoda na request. Nowy preflight należy wykonać dopiero z finalnego SHA po merge closeoutu.
+- Pozycje `UNRESOLVED` z ADR 0012 nadal blokują production activation; nie blokują zamknięcia
+  offline-only Phase 4B2 ani przyszłej, osobno zatwierdzonej pojedynczej próby w TEST.
 
 ## Definition of Done
 
