@@ -22,7 +22,11 @@ import { transportResultView } from '../../srv/providers/normalized-result.js';
 import { validateCandidate } from '../../srv/ranking/candidate-filter.js';
 import { scoreCandidate } from '../../srv/ranking/candidate-scoring.js';
 import { DEFAULT_CANDIDATE_ENGINE_CONFIG } from '../../srv/ranking/config.js';
-import { candidateContext, candidateFixture } from './candidate-fixtures.js';
+import {
+  candidateContext,
+  candidateFixture,
+  candidateProviderExecutionFixture,
+} from './candidate-fixtures.js';
 
 function resultFor(candidate: TripCandidate): CandidateEngineResult {
   const score = scoreCandidate(candidate, candidateContext);
@@ -48,11 +52,7 @@ function resultFor(candidate: TripCandidate): CandidateEngineResult {
     rankedCandidates: [{ candidate, score }],
     options,
     shortage: null,
-    providerExecution: {
-      policyVersion: MOCK_PROVIDER_MANIFEST.executionPolicy.version,
-      resultFingerprint: 'a'.repeat(64),
-      calls: [],
-    },
+    providerExecution: candidateProviderExecutionFixture(),
   };
 }
 

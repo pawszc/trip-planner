@@ -30,6 +30,7 @@ import {
 } from '../providers/provider-execution.ts';
 import { isSha256Fingerprint } from '../providers/provider-fingerprint.ts';
 import { PROVIDER_MANIFEST_JSON_MAX_LENGTH } from '../providers/provider-manifest.ts';
+import { createProviderResultSetFingerprint } from '../providers/provider-result-set.ts';
 import {
   createSelectedSourceBindingFingerprint,
   type SelectedSourceBinding,
@@ -913,15 +914,30 @@ export function buildPlanningPersistenceBundle(
   const optionRecords = succeeded
     ? input.result.options.map((option) => recordsForOption(input, planningRunId, version, option))
     : [];
-  if (!isSha256Fingerprint(input.result.providerExecution.resultFingerprint)) {
+  assertProviderExecutionAudit(
+    input.result.providerExecution.policyVersion,
+    input.result.providerExecution.calls,
+  );
+  let providerResultFingerprint: string;
+  try {
+    providerResultFingerprint = createProviderResultSetFingerprint(
+      input.result.providerExecution.calls,
+    );
+  } catch {
     throw new DomainError(
       'INVALID_PLANNING_RESULT',
-      'PlanningRun nie ma poprawnego fingerprintu znormalizowanych wyników providerów.',
+      'PlanningRun nie ma kompletnego zbioru poprawnych wyników providerów.',
+    );
+  }
+  if (input.result.providerExecution.resultFingerprint !== providerResultFingerprint) {
+    throw new DomainError(
+      'INVALID_PLANNING_RESULT',
+      'PlanningRun ma fingerprint niespójny z audytem wyników providerów.',
     );
   }
   const selectedSourceFingerprint = createSelectedSourceBindingFingerprint(
     optionRecords.flatMap((records) => records.sourceBindings),
-    input.result.providerExecution.resultFingerprint,
+    providerResultFingerprint,
   );
   const rejections = rejectionRecords(input, planningRunId, version, input.result.rejectionReasons);
   const planningRun: PlanningRunRecord = {
@@ -949,16 +965,12 @@ export function buildPlanningPersistenceBundle(
     rejectedCandidateCount: input.result.counts.rejectedCandidates,
     selectedOptionCount: succeeded ? 3 : 0,
     providerExecutionCallCount: input.result.providerExecution.calls.length,
-    providerResultFingerprint: input.result.providerExecution.resultFingerprint,
+    providerResultFingerprint,
     selectedSourceFingerprint,
     errorCode: succeeded ? null : (shortage?.code ?? 'INSUFFICIENT_VALID_CANDIDATES'),
     errorMessage: succeeded ? null : (shortage?.message ?? 'Brak trzech poprawnych wariantów.'),
   };
   const references = commonReferences(input, planningRunId);
-  assertProviderExecutionAudit(
-    input.result.providerExecution.policyVersion,
-    input.result.providerExecution.calls,
-  );
   const providerExecutionRecords = input.result.providerExecution.calls.map((event) => {
     return {
       ID: randomUUID(),
