@@ -59,6 +59,10 @@ nowego runu jest związana z `PlanningRun`, więc utrata końcowego suffixu fail
   Mapper przyjmuje tylko spójne waluty PLN/EUR, dokładne `base + tax = total`, jednoznaczne
   lokalne timestampy z IANA timezone, ciągłe segmenty bez airport change oraz dwie odwrócone
   slices. Optional services pozostają disclosure i nie zwiększają mandatory total.
+- Adapter v2/upstream projection v3 dopuszczają udokumentowane nullable `time_zone` na granicy
+  schematu. Mapper nie zgaduje brakującej strefy i odrzuca taką ofertę. `INVALID_SCHEMA`
+  zachowuje co najwyżej jeden zamknięty, provider-data-free etap JSON/envelope/environment/item/
+  semantic identity/result accounting; nie zachowuje raw path, field value ani provider text.
 - Profil `TEST` nadal zapisuje `sourceType: LIVE`; jawne środowisko jest częścią
   `providerVersion` w manifeście i snapshotach. Adapter porównuje cały code-owned manifest entry
   z wybranym środowiskiem przed fan-outem; `fixtureVersion` pozostaje `null`.
@@ -69,6 +73,7 @@ nowego runu jest związana z `PlanningRun`, więc utrata końcowego suffixu fail
 Kontrakty oparto na oficjalnych opisach Duffel:
 [Offer Requests v2](https://duffel.com/docs/api/v2/offer-requests),
 [Offers](https://duffel.com/docs/api/offers),
+[Places schema](https://duffel.com/docs/api/places/schema),
 [Making requests](https://duffel.com/docs/api/overview/making-requests) i
 [Response handling](https://duffel.com/docs/api/overview/response-handling).
 
@@ -90,3 +95,9 @@ jawnego opt-in i tokenu z test-mode identity; token LIVE/nieznany jest odrzucany
 limity do 1 call, concurrency 1 i 1 attempt, bez retry/fallbacku. Wynik przechodzi zamknięty
 schema evidence bez raw danych providera. Istnienie runnera nie autoryzuje requestu; osobna
 zgoda jest opisana w [ADR 0012](../../docs/decisions/0012-duffel-test-mode-activation-readiness.md).
+
+Pierwszy zatwierdzony one-shot TEST smoke zakończył się `FAILED / INVALID_SCHEMA` po jednym
+requestcie i jednej próbie, bez retry, przy koszcie `0 USD`. Historyczne evidence v1 nie
+zawierało etapu, więc dokładna przyczyna pozostaje nieustalona. Evidence v2 dodaje wyłącznie
+zamknięty `schemaFailureStage`; zmiana wersji adaptera/schema/evidence unieważnia poprzedni plan
+i nie stanowi zgody na następny request.

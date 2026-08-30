@@ -1,8 +1,8 @@
 export const DUFFEL_API_VERSION = 'v2';
 export const DUFFEL_ADAPTER_ID = 'duffel-api-transport';
-export const DUFFEL_ADAPTER_VERSION = 'duffel-api-transport-v1';
+export const DUFFEL_ADAPTER_VERSION = 'duffel-api-transport-v2';
 export const DUFFEL_SEARCH_POLICY_VERSION = 'duffel-search-policy-v1';
-export const DUFFEL_UPSTREAM_SCHEMA_VERSION = 'duffel-offer-request-offers-v2';
+export const DUFFEL_UPSTREAM_SCHEMA_VERSION = 'duffel-offer-request-offers-v3';
 export const DUFFEL_TERMS_POLICY_VERSION = 'duffel-flight-offer-display-terms-v1';
 export const DUFFEL_SUPPLIER_TIMEOUT_MS = 8_000;
 export const DUFFEL_MAX_DESTINATIONS_PER_SEARCH = 8;
@@ -16,7 +16,7 @@ export type DuffelEnvironment = 'TEST' | 'LIVE';
 
 export interface DuffelLocation {
   readonly iata_code: string;
-  readonly time_zone: string;
+  readonly time_zone: string | null;
 }
 
 export interface DuffelCarrier {

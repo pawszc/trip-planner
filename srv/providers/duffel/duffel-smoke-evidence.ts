@@ -3,8 +3,9 @@ import { DUFFEL_ADAPTER_VERSION, DUFFEL_UPSTREAM_SCHEMA_VERSION } from './duffel
 import { DUFFEL_SMOKE_PLAN_VERSION } from './duffel-smoke-plan.ts';
 import { PROVIDER_EXECUTION_POLICY_VERSION } from '../provider-execution.ts';
 import { PROVIDER_MANIFEST_VERSION } from '../provider-manifest.ts';
+import { PROVIDER_SCHEMA_FAILURE_STAGE_VALUES } from '../provider-errors.ts';
 
-export const DUFFEL_SMOKE_EVIDENCE_VERSION = 'duffel-smoke-evidence-v1';
+export const DUFFEL_SMOKE_EVIDENCE_VERSION = 'duffel-smoke-evidence-v2';
 
 export const DUFFEL_SMOKE_STATUS_VALUES = ['PASS', 'NO_USABLE_OFFER', 'BLOCKED', 'FAILED'] as const;
 
@@ -56,6 +57,7 @@ export const duffelSmokeEvidenceSchema = z
     evidenceVersion: z.literal(DUFFEL_SMOKE_EVIDENCE_VERSION),
     status: z.enum(DUFFEL_SMOKE_STATUS_VALUES),
     failureCategory: z.enum(DUFFEL_SMOKE_FAILURE_CATEGORY_VALUES).nullable(),
+    schemaFailureStage: z.enum(PROVIDER_SCHEMA_FAILURE_STAGE_VALUES).nullable(),
     environment: z.literal('TEST'),
     sourceSha: z.string().regex(/^[0-9a-f]{40}$/u),
     planVersion: z.literal(DUFFEL_SMOKE_PLAN_VERSION),
@@ -95,6 +97,15 @@ export const duffelSmokeEvidenceSchema = z
 
     if (evidence.requestCount !== evidence.attemptCount) {
       addIssue('requestCount', 'Smoke request and attempt counts must match.');
+    }
+
+    const stagedSchemaFailure =
+      evidence.status === 'FAILED' && evidence.failureCategory === 'INVALID_SCHEMA';
+    if (stagedSchemaFailure !== (evidence.schemaFailureStage !== null)) {
+      addIssue(
+        'schemaFailureStage',
+        'A schema failure stage is required only for FAILED / INVALID_SCHEMA evidence.',
+      );
     }
 
     if (evidence.status === 'PASS') {

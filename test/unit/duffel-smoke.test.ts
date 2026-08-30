@@ -316,6 +316,7 @@ describe('dormant Duffel TEST smoke runner', () => {
     expect(result).toMatchObject({
       status: 'PASS',
       failureCategory: null,
+      schemaFailureStage: null,
       environment: 'TEST',
       sourceSha: SOURCE_SHA,
       planFingerprint: prepared.planFingerprint,
@@ -351,6 +352,7 @@ describe('dormant Duffel TEST smoke runner', () => {
     expect(result).toMatchObject({
       status: 'NO_USABLE_OFFER',
       failureCategory: 'NO_USABLE_OFFER',
+      schemaFailureStage: null,
       requestCount: 1,
       attemptCount: 1,
       httpStatus: null,
@@ -383,12 +385,18 @@ describe('dormant Duffel TEST smoke runner', () => {
   });
 
   it.each([
-    ['network failure', async () => Promise.reject(new Error('raw network secret')), 'NETWORK'],
-    ['malformed JSON', async () => new Response('{not-json'), 'INVALID_SCHEMA'],
     [
-      'invalid schema',
+      'network failure',
+      async () => Promise.reject(new Error('raw network secret')),
+      'NETWORK',
+      null,
+    ],
+    ['malformed JSON', async () => new Response('{not-json'), 'INVALID_SCHEMA', 'RESPONSE_JSON'],
+    [
+      'invalid envelope schema',
       async () => new Response(JSON.stringify({ data: { offers: 'not-an-array' } })),
       'INVALID_SCHEMA',
+      'RESPONSE_ENVELOPE',
     ],
     [
       'LIVE response',
@@ -398,25 +406,52 @@ describe('dormant Duffel TEST smoke runner', () => {
         return new Response(JSON.stringify(fixture));
       },
       'INVALID_SCHEMA',
+      'ENVIRONMENT_IDENTITY',
     ],
-  ] as const)('closes %s into safe evidence', async (_label, response, category) => {
-    const prepared = preparedPlan();
-    const transport = vi.fn<ProviderHttpTransport>(response);
+    [
+      'invalid offer item schema',
+      async () => {
+        const fixture = duffelFixture();
+        fixture.data.offers = [{} as (typeof fixture.data.offers)[number]];
+        return new Response(JSON.stringify(fixture));
+      },
+      'INVALID_SCHEMA',
+      'RESULT_ITEM_SCHEMA',
+    ],
+    [
+      'conflicting repeated offer identity',
+      async () => {
+        const fixture = duffelFixture();
+        const conflicting = structuredClone(fixture.data.offers[0]!);
+        conflicting.expires_at = '2026-10-01T14:00:00.000Z';
+        fixture.data.offers.push(conflicting);
+        return new Response(JSON.stringify(fixture));
+      },
+      'INVALID_SCHEMA',
+      'RESULT_SEMANTIC_IDENTITY',
+    ],
+  ] as const)(
+    'closes %s into safe staged evidence',
+    async (_label, response, category, schemaFailureStage) => {
+      const prepared = preparedPlan();
+      const transport = vi.fn<ProviderHttpTransport>(response);
 
-    const result = await runDuffelTestModeSmoke(
-      prepared,
-      approvedDependencies(prepared, transport),
-    );
+      const result = await runDuffelTestModeSmoke(
+        prepared,
+        approvedDependencies(prepared, transport),
+      );
 
-    expect(result).toMatchObject({
-      status: 'FAILED',
-      failureCategory: category,
-      requestCount: 1,
-      attemptCount: 1,
-    });
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(result)).not.toContain('raw network secret');
-  });
+      expect(result).toMatchObject({
+        status: 'FAILED',
+        failureCategory: category,
+        schemaFailureStage,
+        requestCount: 1,
+        attemptCount: 1,
+      });
+      expect(transport).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(result)).not.toContain('raw network secret');
+    },
+  );
 
   it('times out the only request and never retries it', async () => {
     vi.useFakeTimers();
@@ -446,9 +481,10 @@ describe('dormant Duffel TEST smoke runner', () => {
   it('rejects evidence extensions that could carry raw provider data', () => {
     const prepared = preparedPlan();
     const validEvidence = {
-      evidenceVersion: 'duffel-smoke-evidence-v1',
+      evidenceVersion: 'duffel-smoke-evidence-v2',
       status: 'PASS',
       failureCategory: null,
+      schemaFailureStage: null,
       environment: 'TEST',
       sourceSha: SOURCE_SHA,
       planVersion: prepared.plan.planVersion,
@@ -483,9 +519,10 @@ describe('dormant Duffel TEST smoke runner', () => {
   it('rejects status/count/category combinations that contradict terminal evidence', () => {
     const prepared = preparedPlan();
     const validEvidence = {
-      evidenceVersion: 'duffel-smoke-evidence-v1',
+      evidenceVersion: 'duffel-smoke-evidence-v2',
       status: 'PASS',
       failureCategory: null,
+      schemaFailureStage: null,
       environment: 'TEST',
       sourceSha: SOURCE_SHA,
       planVersion: prepared.plan.planVersion,
@@ -550,6 +587,22 @@ describe('dormant Duffel TEST smoke runner', () => {
         ...validEvidence,
         status: 'FAILED',
         failureCategory: 'OPT_IN_REQUIRED',
+        resultCount: null,
+        resultFingerprint: null,
+      },
+      {
+        ...validEvidence,
+        status: 'FAILED',
+        failureCategory: 'INVALID_SCHEMA',
+        schemaFailureStage: null,
+        resultCount: null,
+        resultFingerprint: null,
+      },
+      {
+        ...validEvidence,
+        status: 'FAILED',
+        failureCategory: 'NETWORK',
+        schemaFailureStage: 'RESPONSE_JSON',
         resultCount: null,
         resultFingerprint: null,
       },

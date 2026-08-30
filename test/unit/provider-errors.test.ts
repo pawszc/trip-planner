@@ -103,6 +103,7 @@ describe('provider execution errors', () => {
       httpStatus: null,
       destinationCode: 'WAW',
       underlyingCategory: null,
+      schemaFailureStage: null,
       rateLimit: {
         retryAfterMs: null,
         limit: null,
@@ -110,6 +111,29 @@ describe('provider execution errors', () => {
         resetAt: '2026-08-27T12:00:00.000Z',
       },
     });
+  });
+
+  it('preserves only a closed schema failure stage for schema-classified errors', () => {
+    const staged = new ProviderExecutionError({
+      ...BASE_INPUT,
+      category: 'INVALID_SCHEMA',
+      schemaFailureStage: 'RESPONSE_ENVELOPE',
+    });
+    const unrelated = new ProviderExecutionError({
+      ...BASE_INPUT,
+      category: 'NETWORK',
+      schemaFailureStage: 'RESPONSE_ENVELOPE',
+    });
+    const unsafe = new ProviderExecutionError({
+      ...BASE_INPUT,
+      category: 'INVALID_SCHEMA',
+      schemaFailureStage: 'raw.provider.path[0].secret',
+    } as unknown as ProviderExecutionErrorInput);
+
+    expect(staged.evidence.schemaFailureStage).toBe('RESPONSE_ENVELOPE');
+    expect(unrelated.evidence.schemaFailureStage).toBeNull();
+    expect(unsafe.evidence.schemaFailureStage).toBeNull();
+    expect(JSON.stringify(unsafe.toSafeJSON())).not.toContain('raw.provider.path');
   });
 
   it('rejects an impossible calendar date in rate-limit reset metadata', () => {
@@ -158,6 +182,7 @@ describe('provider execution errors', () => {
         httpStatus: 503,
         destinationCode: null,
         underlyingCategory: null,
+        schemaFailureStage: null,
         rateLimit: null,
       },
     });

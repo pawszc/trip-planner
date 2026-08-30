@@ -1,7 +1,11 @@
 import type { TransportOption } from '../../domain/candidate.ts';
 import { SOURCE_SNAPSHOT_CONTRACT_VERSION } from '../../domain/money.ts';
 import type { TransportProvider, TransportSearchRequest } from '../contracts.ts';
-import { ProviderExecutionError, providerFailureFromHttpMetadata } from '../provider-errors.ts';
+import {
+  ProviderExecutionError,
+  providerFailureFromHttpMetadata,
+  type ProviderSchemaFailureStage,
+} from '../provider-errors.ts';
 import type { ProviderCallOptions } from '../provider-execution.ts';
 import { ProviderHttpClientError, type ProviderHttpClient } from '../http/provider-http-client.ts';
 import { transportResultView } from '../normalized-result.ts';
@@ -39,17 +43,18 @@ export interface DuffelApiTransportProviderOptions {
   readonly clock?: () => Date;
 }
 
-function safeProviderFailure(
-  category: 'INVALID_SCHEMA' | 'NETWORK',
+function invalidSchemaFailure(
+  schemaFailureStage: ProviderSchemaFailureStage,
   destinationCode: string,
 ): ProviderExecutionError {
   return new ProviderExecutionError({
-    category,
+    category: 'INVALID_SCHEMA',
     providerKey: 'duffel-flights',
     operation: 'TRANSPORT_SEARCH',
     callSequence: 0,
     providerCallAttempted: true,
     destinationCode,
+    schemaFailureStage,
   });
 }
 
@@ -74,7 +79,7 @@ function stableOffers(
     const fingerprint = duffelOfferSemanticFingerprint(upstreamOffer, option);
     const previousFingerprint = semanticFingerprintByOfferId.get(option.id);
     if (previousFingerprint !== undefined && previousFingerprint !== fingerprint) {
-      throw safeProviderFailure('INVALID_SCHEMA', destinationCode);
+      throw invalidSchemaFailure('RESULT_SEMANTIC_IDENTITY', destinationCode);
     }
     semanticFingerprintByOfferId.set(option.id, fingerprint);
     if (!unique.has(fingerprint)) unique.set(fingerprint, option);
@@ -183,18 +188,18 @@ export class DuffelApiTransportProvider implements TransportProvider {
                   });
                 }
                 if (error.kind === 'INVALID_JSON') {
-                  throw safeProviderFailure('INVALID_SCHEMA', plan.destination.code);
+                  throw invalidSchemaFailure('RESPONSE_JSON', plan.destination.code);
                 }
               }
               throw error;
             }
 
             const parsedEnvelope = duffelOfferRequestEnvelopeSchema.safeParse(unknownResponse);
-            if (
-              !parsedEnvelope.success ||
-              parsedEnvelope.data.data.live_mode !== (this.environment === 'LIVE')
-            ) {
-              throw safeProviderFailure('INVALID_SCHEMA', plan.destination.code);
+            if (!parsedEnvelope.success) {
+              throw invalidSchemaFailure('RESPONSE_ENVELOPE', plan.destination.code);
+            }
+            if (parsedEnvelope.data.data.live_mode !== (this.environment === 'LIVE')) {
+              throw invalidSchemaFailure('ENVIRONMENT_IDENTITY', plan.destination.code);
             }
             const fetchedAt = this.clock().toISOString();
             let schemaValidOfferCount = 0;
@@ -224,7 +229,7 @@ export class DuffelApiTransportProvider implements TransportProvider {
               }
             }
             if (parsedEnvelope.data.data.offers.length > 0 && schemaValidOfferCount === 0) {
-              throw safeProviderFailure('INVALID_SCHEMA', plan.destination.code);
+              throw invalidSchemaFailure('RESULT_ITEM_SCHEMA', plan.destination.code);
             }
             return stableOffers(mapped, DUFFEL_MAX_OFFERS_PER_DESTINATION, plan.destination.code);
           },

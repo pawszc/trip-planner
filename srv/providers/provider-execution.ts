@@ -3,6 +3,7 @@ import {
   ProviderExecutionError,
   type ProviderFailureCategory,
   type ProviderOperation,
+  type ProviderSchemaFailureStage,
 } from './provider-errors.ts';
 import { isSha256Fingerprint } from './provider-fingerprint.ts';
 
@@ -366,6 +367,7 @@ export class ProviderExecutionScope {
           'INVALID_SCHEMA',
           true,
           elapsedMilliseconds(startedAt, this.now),
+          'RESULT_ACCOUNTING',
         );
       }
       if (!isSha256Fingerprint(resultFingerprint)) {
@@ -375,6 +377,7 @@ export class ProviderExecutionScope {
           'INVALID_SCHEMA',
           true,
           elapsedMilliseconds(startedAt, this.now),
+          'RESULT_ACCOUNTING',
         );
       }
       this.events.push({
@@ -428,6 +431,7 @@ export class ProviderExecutionScope {
                 ? error.evidence.underlyingCategory
                 : error.category
               : error.evidence.underlyingCategory,
+          schemaFailureStage: error.evidence.schemaFailureStage,
           rateLimit: error.evidence.rateLimit,
         });
       } else {
@@ -474,6 +478,7 @@ export class ProviderExecutionScope {
     category: ProviderFailureCategory,
     providerCallAttempted: boolean,
     latencyMs: number,
+    schemaFailureStage: ProviderSchemaFailureStage | null = null,
   ): ProviderExecutionError {
     return new ProviderExecutionError({
       category,
@@ -483,6 +488,7 @@ export class ProviderExecutionScope {
       providerCallAttempted,
       latencyMs,
       destinationCode: descriptor.destinationCode ?? null,
+      schemaFailureStage,
     });
   }
 
