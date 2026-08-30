@@ -275,6 +275,33 @@ describe('dormant Duffel TEST smoke runner', () => {
     }
   });
 
+  it('closes a credential read failure before transport without exposing its error', async () => {
+    const prepared = preparedPlan();
+    const readToken = vi.fn(() => {
+      throw new Error('raw credential source detail');
+    });
+    const transport = vi.fn<ProviderHttpTransport>();
+
+    const result = await runDuffelTestModeSmoke(prepared, {
+      optIn: 'true',
+      approvedPlanFingerprint: prepared.planFingerprint,
+      readToken,
+      transport,
+      now: CLOCK,
+    });
+
+    expect(result).toMatchObject({
+      status: 'BLOCKED',
+      failureCategory: 'CREDENTIAL_UNAVAILABLE',
+      requestCount: 0,
+      attemptCount: 0,
+      credentialAccessed: true,
+    });
+    expect(readToken).toHaveBeenCalledTimes(1);
+    expect(transport).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('raw credential source detail');
+  });
+
   it('executes exactly one TEST Offer Request and records only bounded evidence on PASS', async () => {
     const prepared = preparedPlan();
     const transport = vi.fn<ProviderHttpTransport>(async (_input, init) => {
@@ -451,5 +478,89 @@ describe('dormant Duffel TEST smoke runner', () => {
         token: TEST_TOKEN,
       }).success,
     ).toBe(false);
+  });
+
+  it('rejects status/count/category combinations that contradict terminal evidence', () => {
+    const prepared = preparedPlan();
+    const validEvidence = {
+      evidenceVersion: 'duffel-smoke-evidence-v1',
+      status: 'PASS',
+      failureCategory: null,
+      environment: 'TEST',
+      sourceSha: SOURCE_SHA,
+      planVersion: prepared.plan.planVersion,
+      planFingerprint: prepared.planFingerprint,
+      queryFingerprint: prepared.plan.execution.queryFingerprint,
+      adapterVersion: prepared.plan.versions.adapterVersion,
+      upstreamSchemaVersion: prepared.plan.versions.upstreamSchemaVersion,
+      manifestVersion: prepared.plan.versions.manifestVersion,
+      manifestFingerprint: prepared.plan.versions.manifestFingerprint,
+      executionPolicyVersion: prepared.plan.versions.executionPolicyVersion,
+      startedAt: CLOCK().toISOString(),
+      completedAt: CLOCK().toISOString(),
+      requestCount: 1,
+      attemptCount: 1,
+      credentialAccessed: true,
+      latencyMs: 1,
+      httpStatus: null,
+      resultCount: 1,
+      resultFingerprint: 'd'.repeat(64),
+      actualExternalCostUsdMicros: 0,
+    } as const;
+    const contradictions: readonly unknown[] = [
+      { ...validEvidence, requestCount: 0, attemptCount: 0 },
+      { ...validEvidence, resultFingerprint: null },
+      {
+        ...validEvidence,
+        status: 'NO_USABLE_OFFER',
+        failureCategory: 'NO_USABLE_OFFER',
+        resultCount: 1,
+      },
+      {
+        ...validEvidence,
+        status: 'BLOCKED',
+        failureCategory: 'OPT_IN_REQUIRED',
+        requestCount: 1,
+        attemptCount: 1,
+        credentialAccessed: false,
+        resultCount: null,
+        resultFingerprint: null,
+      },
+      {
+        ...validEvidence,
+        status: 'BLOCKED',
+        failureCategory: 'NETWORK',
+        requestCount: 0,
+        attemptCount: 0,
+        resultCount: null,
+        resultFingerprint: null,
+        latencyMs: 0,
+      },
+      {
+        ...validEvidence,
+        status: 'BLOCKED',
+        failureCategory: 'PLAN_NOT_APPROVED',
+        requestCount: 0,
+        attemptCount: 0,
+        resultCount: null,
+        resultFingerprint: null,
+        latencyMs: 0,
+      },
+      {
+        ...validEvidence,
+        status: 'FAILED',
+        failureCategory: 'OPT_IN_REQUIRED',
+        resultCount: null,
+        resultFingerprint: null,
+      },
+      {
+        ...validEvidence,
+        completedAt: '2026-10-01T11:59:59.000Z',
+      },
+    ];
+
+    for (const contradiction of contradictions) {
+      expect(duffelSmokeEvidenceSchema.safeParse(contradiction).success).toBe(false);
+    }
   });
 });

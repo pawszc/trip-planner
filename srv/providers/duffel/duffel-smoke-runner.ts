@@ -97,9 +97,9 @@ interface EvidenceInput {
 }
 
 function evidence(input: EvidenceInput): DuffelSmokeEvidence {
-  const event = input.events?.[0];
   const counts = auditedCounts(input.events ?? []);
   const auditInvalid = counts === null || (input.events?.length ?? 0) > 1;
+  const event = auditInvalid ? undefined : input.events?.[0];
   const plan = input.prepared.plan;
   return createDuffelSmokeEvidence({
     evidenceVersion: DUFFEL_SMOKE_EVIDENCE_VERSION,
